@@ -60,3 +60,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pcd_viewer_widget.set_points(points, colors)
 
 
+if __name__ == "__main__":
+    import sys
+
+    app = QtWidgets.QApplication(sys.argv)
+    main_window = MainWindow()
+    main_window.show()
+    sys.exit(app.exec_())
