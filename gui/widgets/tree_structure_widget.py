@@ -123,7 +123,6 @@ class TreeStructureWidget(QTreeWidget):
     def on_item_selected(self, item):
         """Tracks the currently selected branch or sub-branch."""
         self.current_branch = item
-        print(f"Selected branch: {item.text(0)}")
 
     def get_selected_branch(self):
         """Returns the currently selected branch or sub-branch."""

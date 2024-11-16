@@ -2,7 +2,7 @@
   Create main window for the PCD Toolkit application with a tree structure widget and PCD viewer widget.
 """
 import numpy as np
-from PyQt5 import QtWidgets, QtCore, Qt
+from PyQt5 import QtWidgets, QtCore
 from gui.widgets import PCDViewerWidget, TreeStructureWidget
 from services.file_manager import FileManager
 from core.point_cloud import PointCloud
@@ -50,7 +50,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Left side: TreeStructureWidget for tree structure display
         self.tree_widget = TreeStructureWidget(self.point_clouds)
-        #self.tree_widget.branch_visibility_changed.connect(self.toggle_point_cloud_visibility)
         self.splitter.addWidget(self.tree_widget)
 
         # Right side: PCDViewerWidget for visualisation
@@ -69,13 +68,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # "Open" action
         self.actionOpen = QtWidgets.QAction("Open", self)
         self.menuFile.addAction(self.actionOpen)
+        # Connect the Open action
+        self.actionOpen.triggered.connect(self.open_file_dialog)
 
         # Status bar
         self.statusbar = QtWidgets.QStatusBar(self)
         self.setStatusBar(self.statusbar)
-
-        # Connect the Open action
-        self.actionOpen.triggered.connect(self.open_file_dialog)
 
     def open_file_dialog(self):
         """Handler for 'Open' action to open and display a point cloud file."""
@@ -86,16 +84,15 @@ class MainWindow(QtWidgets.QMainWindow):
         """Slot to handle the file loaded signal and update the tree structure."""
 
         if point_cloud is not None:
+
             # PointCloud instance added to the dictionary and returns an uuid
             self.point_clouds.add_point_cloud(point_cloud)
 
-            # Add a new item to the tree with the file name and uuid as reference
-            #self.tree_widget.add_branch(point_cloud_uuid, parent_uuid=None, text=file_name, checkable=True)
-
-            # Update the point cloud data in the viewer
+            # TODO: Loading point cloud data will change the PointClouds dictionary, which will trigger the signal
+            # Update the point cloud data in the OpenGL viewer
             self.pcd_viewer_widget.set_points(point_cloud.points, point_cloud.colors)
 
-    def on_point_cloud_visibility_changed (self, point_cloud_visibility_status):
+    def on_point_cloud_visibility_changed(self, point_clouds_visibility_status):
         """Slot to handle the visibility change signal and update the point cloud visibility in the viewer."""
         # Iterate through all items in the point_cloud_visibility_status dictionary and:
         # - Merge the points if the visibility status is True
@@ -105,7 +102,7 @@ class MainWindow(QtWidgets.QMainWindow):
         points = np.empty((0, 3), dtype=np.float32)
         colors = np.empty((0, 3), dtype=np.float32)
 
-        for point_cloud_uuid, visibility_status in point_cloud_visibility_status.items():
+        for point_cloud_uuid, visibility_status in point_clouds_visibility_status.items():
             if visibility_status:
                 point_cloud = self.point_clouds.get_point_cloud(point_cloud_uuid)
                 points = np.vstack((points, point_cloud.points))
