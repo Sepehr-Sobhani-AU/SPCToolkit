@@ -313,6 +313,11 @@ class PCDViewerWidget(QOpenGLWidget):
         self.near_plane = 0.1
         self.far_plane = 1000.0
 
+        # TODO: Need to control visibility of several point clouds
+        # New attribute to control visibility of the point cloud
+        self.visible = True
+
+        # Point cloud data
         self.points = None
         self.vbo = None
 
@@ -372,6 +377,11 @@ class PCDViewerWidget(QOpenGLWidget):
 
         # Timer for hiding the axis symbol after panning
         self.axis_timer = None
+
+        # create a slot connection for branches_visibility_status emitted from tree_structure_widget
+
+
+
 
     def initializeGL(self):
         """
@@ -446,16 +456,21 @@ class PCDViewerWidget(QOpenGLWidget):
             AssertionError: If the `points` array does not have the correct shape or data type.
             AssertionError: If the `colors` array is provided but does not have the correct shape or data type.
         """
-        assert points.shape[1] == 3, "Points array must have shape Nx3"
-        assert points.dtype == np.float32, "Points array must be of type float32"
+        if points is not None:
+            assert points.shape[1] == 3, "Points array must have shape Nx3"
+            assert points.dtype == np.float32, "Points array must be of type float32"
+        else:
+            # Hide the point cloud if no points are provided
+            self.points = None
+            self.update()
+            return
 
         if colors is not None:
             assert points.shape[0] == colors.shape[0], "Points and colors must have the same number of entries"
             assert colors.shape[1] == 3, "Colors array must have shape Nx3"
             assert colors.dtype == np.float32, "Colors array must be of type float32"
-
-        # Extract colors
-        if colors is None:
+        else:
+            # Set default colour 'white'
             colors = np.ones_like(points).astype(np.float32)
 
         self.points = np.hstack((points, colors)).astype(np.float32)
@@ -587,7 +602,6 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.vbo is None:
             self.vbo = vbo.VBO(self.points)
 
-        #glEnable(GL_POINT_SMOOTH)
         glPointSize(self.point_size)
 
         # Enable client states
@@ -1135,3 +1149,10 @@ class PCDViewerWidget(QOpenGLWidget):
         self.center[2] = -self.default_pan_z
 
         self.update()
+
+    def show_point_cloud(self, visible=True):
+        """Show the point cloud by setting visibility to True and updating the view."""
+
+        if self.visible == visible:
+            self.visible = visible
+            self.update()
