@@ -13,6 +13,10 @@ class FileManager(QObject):
     # Signal emitted when a point cloud file is loaded
     point_cloud_loaded = pyqtSignal(str, PointCloud)
 
+    def __init__(self):
+        super().__init__()  # Call the parent class constructor
+        self.min_bound = None
+
     def open_point_cloud_file(self, parent=None):
         """Opens a file dialog, loads a point cloud file, and returns the data."""
 
@@ -28,11 +32,20 @@ class FileManager(QObject):
         if file_path:
             # Load the point cloud data using Open3D
             point_cloud_data = o3d.io.read_point_cloud(file_path)
-            points = np.asarray(point_cloud_data.points, dtype=np.float32)
+            points = np.asarray(point_cloud_data.points, dtype=np.float64)
             colors = np.asarray(point_cloud_data.colors, dtype=np.float32) if point_cloud_data.colors else None
             normals = np.asarray(point_cloud_data.normals, dtype=np.float32) if point_cloud_data.normals else None
 
+            # Find the min bound of the point cloud
+            if self.min_bound is None:
+                self.min_bound = np.min(points, axis=0)
+
+            # Translate the point cloud to the origin to save memory by using float32
+            points = (points - self.min_bound).astype(np.float32)
+
             point_cloud = PointCloud(points=points, colors=colors, normals=normals)
+
+            point_cloud.translation = -self.min_bound
             point_cloud.name = file_path.split("/")[-1]
 
             # Emit signal with file path

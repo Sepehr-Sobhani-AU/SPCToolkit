@@ -32,8 +32,8 @@ class PointCloud:
                                                                          [xn, yn, zn]]
 
     Optional Keyword Arguments:
-    - parent_uuid (str): The uuid of the parent cluster.
-    - child_uuid (str): The uuid of the child cluster.
+    - parent_uuid (str): The uid of the parent cluster.
+    - child_uuid (str): The uid of the child cluster.
     - color (np.ndarray): An array (n, 3) of color values (R, G, B) for each point.
     - normal (np.ndarray): An array (n, 3) of normal unit vector values (Nx, Ny, Nz) for each point.
     - intensity (np.ndarray): An array (n) of intensity values (0-255) for each point.
@@ -55,8 +55,9 @@ class PointCloud:
         self.points = points
         self.colors = colors
         self.normals = normals
+        self.translation = np.array([0, 0, 0])
         self.name = kwargs.get('name', None)
-        self.uuid = kwargs.get('uuid', None)
+        self.uuid = kwargs.get('uid', None)
         self.parent_uuid = kwargs.get('parent_uuid', None)
         self.child_uuid = kwargs.get('child_uuid', None)
 
@@ -82,6 +83,16 @@ class PointCloud:
 
         self.feature = kwargs.get('feature', [])
         self.metadata = kwargs.get('metadata', {})
+
+    def translate(self, translation):
+        """
+        Translate the cluster by a given translation vector.
+
+        Parameters:
+        - translation (np.ndarray): A 1D numpy array representing the translation vector [dx, dy, dz].
+        """
+        self.points += translation
+        self.translation += translation
 
     def augment_points(self, scale=0.005, augmentation_factor=2):
         """

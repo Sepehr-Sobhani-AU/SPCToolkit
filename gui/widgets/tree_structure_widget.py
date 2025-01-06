@@ -1,135 +1,161 @@
-
-# Standard library imports
-import uuid
-
-# Third party imports
-from PyQt5.QtCore import Qt, pyqtSignal, QPoint
-from PyQt5.QtWidgets import (
-    QTreeWidget, QTreeWidgetItem, QMenu, QPushButton, QWidget
-)
-
-
-UUIDRole = Qt.UserRole + 1  # Custom role specifically for UUIDs
+from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
+from PyQt5.QtCore import pyqtSignal, Qt
 
 
 class TreeStructureWidget(QTreeWidget):
-    """Custom Tree Widget with dynamic branch management, visibility toggling, and context menus."""
+    """
+    A widget to display and manage a tree structure of branches (DataNodes).
+    Handles user interactions such as adding, moving, deleting, and toggling visibility of branches.
 
-    # Define the signal to indicate visibility change
+    Attributes:
+        branch_visibility_changed (pyqtSignal): Signal emitted when branch visibility is toggled.
+        branch_hierarchy_updated (pyqtSignal): Signal emitted when branch hierarchy is modified.
+        selected_branches_changed (pyqtSignal): Signal emitted when branches are selected.
+    """
+
+    # Signals
+    branch_added = pyqtSignal(dict)
     branch_visibility_changed = pyqtSignal(dict)
+    branch_hierarchy_updated = pyqtSignal(dict)
+    selected_branches_changed = pyqtSignal(list)
 
-    def __init__(self, point_clouds, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setHeaderLabels(["Point Cloud Structure", "Actions"])
-        self.current_branch = None  # Track the currently selected branch
-        self.point_clouds = point_clouds
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
-        # Store the visibility status of branches
-        # This dictionary will store the UUIDs of branches and their visibility status (True/False)
-        # {branch_uuid: visibility_status}
-        self.branches_visibility_status = {}
+        # Internal dictionaries to manage tree branches
+        self.branches_dict = {}
+        self.visibility_status = {}
 
-        # Connect checkbox toggle and item selection
+        # Configure tree widget properties
+        self.setHeaderHidden(True)
+        self.setSelectionMode(QTreeWidget.MultiSelection)
+
+        # Connect signals
         self.itemChanged.connect(self.on_item_checked)
-        self.itemClicked.connect(self.on_item_selected)
+        self.itemSelectionChanged.connect(self.on_selection_changed)
 
-        # Connect signal to slot for visibility tracking
-        self.point_clouds.point_clouds_updated.connect(self.update_branches)
+    def add_branch(self, uuid: str, parent_uuid: str, name: str):
+        """
+        Adds a new branch to the tree.
 
-    def add_branch(self, branch_uuid: uuid.UUID, parent_uuid: uuid.UUID = None, text="New Branch", checkable=True):
-        """Adds a new branch or sub-branch to the tree."""
-        item = QTreeWidgetItem(parent_uuid)
-        item.setText(0, text)
+        Args:
+            uuid (str): Unique identifier for the branch.
+            parent_uuid (str): Unique identifier of the parent branch. None for top-level branches.
+            name (str): Name of the branch.
+        """
+        # Create a new tree item for the branch
+        item = QTreeWidgetItem([name])
+        item.setData(0, Qt.UserRole, uuid)
+        item.setCheckState(0, Qt.Checked)
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
 
-        # Store the UUID with the item using a custom role
-        item.setData(0, UUIDRole, str(branch_uuid))
-
-        if checkable:
-            item.setCheckState(0, Qt.Checked)  # Make branch checkable for visibility toggle
-
-        # Add a menu button to the second column of the item
-        self.add_menu_button(item)
-
-        # If no parent, add it as a top-level item
-        if parent_uuid is None:
+        # If a parent UUID is provided, find the parent and add as a child
+        if parent_uuid and parent_uuid in self.branches_dict:
+            parent_item = self.branches_dict[parent_uuid]
+            parent_item.addChild(item)
+        else:
             self.addTopLevelItem(item)
 
-        return item  # Return the item to allow further customisation if needed
+        # Update internal dictionaries
+        self.branches_dict[uuid] = item
+        self.visibility_status[uuid] = True
 
-    def remove_branch(self, item):
-        """Removes a branch or sub-branch from the tree."""
+        # Emit the visibility_status update signal
+        self.branch_added.emit(self.visibility_status)
 
-        parent = item.parent()
-        if parent:
-            parent.removeChild(item)
-        else:
-            self.takeTopLevelItem(self.indexOfTopLevelItem(item))
+    # def remove_branch(self, uids: list[str]):
+    #     """
+    #     Removes branches from the tree.
+    #
+    #     Args:
+    #         uids (list[str]): List of unique identifiers for the branches to remove.
+    #     """
+    #     # Store removed branches to emit hierarchy update signal
+    #     removed_branches = []
+    #
+    #     for uid in uids:
+    #         if uid in self.branches_dict:
+    #             item = self.branches_dict.pop(uid)
+    #             removed_branches.append(uid)
+    #             parent_item = item.parent()
+    #             if parent_item:
+    #                 parent_item.removeChild(item)
+    #                 child_uids = [item.data(0, Qt.UserRole) for item in item.takeChildren()]
+    #                 removed_branches.append(uid)
+    #             else:
+    #                 self.takeTopLevelItem(self.indexOfTopLevelItem(item))
+    #             del self.visibility_status[uid]
 
-        branch_uuid = item.data(0, UUIDRole)
-        return branch_uuid
+    # def move_branch(self, uids: list[str], new_parent_uuid: str):
+    #     """
+    #     Moves branches to a new parent.
+    #
+    #     Args:
+    #         uids (list[str]): List of unique identifiers for the branches to move.
+    #         new_parent_uuid (str): Unique identifier of the new parent branch.
+    #     """
+    #     for uid in uids:
+    #         if uid in self.branches_dict:
+    #             item = self.branches_dict[uid]
+    #             parent_item = item.parent()
+    #
+    #             # Remove from current parent
+    #             if parent_item:
+    #                 parent_item.removeChild(item)
+    #             else:
+    #                 self.takeTopLevelItem(self.indexOfTopLevelItem(item))
+    #
+    #             # Add to the new parent
+    #             if new_parent_uuid in self.branches_dict:
+    #                 new_parent_item = self.branches_dict[new_parent_uuid]
+    #                 new_parent_item.addChild(item)
+    #             else:
+    #                 self.addTopLevelItem(item)
+    #
+    #     # Emit the hierarchy update signal
+    #     self.branch_hierarchy_updated.emit(self._get_hierarchy())
 
-    def add_menu_button(self, item):
-        """Adds a menu button to a branch or sub-branch for context actions."""
-        menu_button = QPushButton("...")
-        menu_button.setFixedSize(30, 20)
-        menu_button.setStyleSheet("border: none;")
-
-        # Connect button to open context menu
-        menu_button.clicked.connect(lambda: self.show_menu(item, menu_button))
-        self.setItemWidget(item, 1, menu_button)  # Place button in the second column
-
-    def show_menu(self, item, button):
-        """Shows a customisable context menu when the menu button is clicked."""
-        menu = QMenu()
-
-        # Example dynamic actions - can add/remove actions as needed
-        action_1 = menu.addAction("Toggle Visibility")
-        action_2 = menu.addAction("Delete Branch")
-        custom_action = menu.addAction("Custom Action")
-
-        # Connect actions to specific methods
-        action_1.triggered.connect(lambda: self.toggle_visibility(item))
-        action_2.triggered.connect(lambda: self.remove_branch(item))
-        custom_action.triggered.connect(lambda: self.custom_action(item))
-
-        # Show the menu at the button position
-        menu.exec_(button.mapToGlobal(QPoint(0, button.height())))
-
-    def custom_action(self, item):
-        """Example of a custom action for a branch."""
-        print(f"Custom action performed on branch: {item.text(0)}")
+    # def toggle_visibility(self, uids: list[str]):
+    #     """
+    #     Toggles visibility of branches programmatically.
+    #
+    #     Args:
+    #         uids (list[str]): List of unique identifiers for the branches to toggle.
+    #     """
+    #     for uid in uids:
+    #         if uid in self.branches_dict:
+    #             current_status = self.visibility_status.get(uid, False)
+    #             new_status = not current_status
+    #             self.visibility_status[uid] = new_status
+    #             self.branches_dict[uid].setCheckState(0, Qt.Checked if new_status else Qt.Unchecked)
 
     def on_item_checked(self, item):
-        """Emits a signal when an item is checked or unchecked to toggle visibility."""
+        """
+        Handles item check state changes by user and updates visibility status.
+        """
+        uid = item.data(0, Qt.UserRole)
+        if uid:
+            self.visibility_status[uid] = item.checkState(0) == Qt.Checked
+            self.branch_visibility_changed.emit(self.visibility_status)
 
-        # Retrieve the UUID associated with the item
-        branch_uuid = item.data(0, UUIDRole)
+    def on_selection_changed(self):
+        """
+        Handles item selection changes and emits the selected branches.
+        """
+        selected_items = self.selectedItems()
+        selected_uids = [item.data(0, Qt.UserRole) for item in selected_items if item.data(0, Qt.UserRole)]
+        self.selected_branches_changed.emit(selected_uids)
 
-        # Check if the item is checked or unchecked
-        visibility_status = item.checkState(0) == Qt.Checked
+    def _get_hierarchy(self):
+        """
+        Constructs a dictionary representing the current branch hierarchy.
 
-        # Update the visibility status of all branches in the dictionary
-        # Iterate through all items in the tree (branches and sub-branches) and update the visibility status
-        for i in range(self.topLevelItemCount()):
-            top_level_item = self.topLevelItem(i)
-            self.branches_visibility_status[top_level_item.data(0, UUIDRole)] = top_level_item.checkState(0) == Qt.Checked
-            for j in range(top_level_item.childCount()):
-                child_item = top_level_item.child(j)
-                self.branches_visibility_status[child_item.data(0, UUIDRole)] = child_item.checkState(0) == Qt.Checked
-
-        # Emit the signal with the UUID and visibility status
-        self.branch_visibility_changed.emit(self.branches_visibility_status)
-
-    def on_item_selected(self, item):
-        """Tracks the currently selected branch or sub-branch."""
-        self.current_branch = item
-
-    def get_selected_branch(self):
-        """Returns the currently selected branch or sub-branch."""
-        return self.current_branch
-
-    def update_branches(self, point_clouds: dict):
-        """Updates the tree structure with a list of branches."""
-        self.clear()
-        for point_cloud_uuid, point_cloud in point_clouds.items():
-            self.add_branch(point_cloud_uuid, parent_uuid=point_cloud.parent_uuid, text=point_cloud.name, checkable=True)
+        Returns:
+            dict: Dictionary mapping branch UUIDs to their parent UUIDs.
+        """
+        hierarchy = {}
+        for uid, item in self.branches_dict.items():
+            parent_item = item.parent()
+            parent_uuid = parent_item.data(0, Qt.UserRole) if parent_item else None
+            hierarchy[uid] = parent_uuid
+        return hierarchy

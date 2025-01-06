@@ -9,6 +9,7 @@ from OpenGL.GLU import gluSphere
 from OpenGL.GLU import GLU_LINE, GLU_FILL
 from OpenGL.arrays import vbo
 
+
 class PCDViewerWidget(QOpenGLWidget):
     """
     A Qt-based OpenGL widget for viewing point cloud data (PCD).
@@ -362,7 +363,7 @@ class PCDViewerWidget(QOpenGLWidget):
         self._pixel_threshold = 5
 
         # Properties for the attributes
-        self._default_camera_distance = None
+        self._default_camera_distance = 100
         self._default_zoom_factor = self._zoom_max_factor
         self._default_rot_x = 0.0
         self._default_rot_y = 0.0
@@ -372,16 +373,13 @@ class PCDViewerWidget(QOpenGLWidget):
         self._default_pan_z = 0.0
 
         # Initialize default values
-        self.camera_distance = None
+        self.camera_distance = self._default_camera_distance
         self.zoom_factor = self._default_zoom_factor
 
         # Timer for hiding the axis symbol after panning
         self.axis_timer = None
 
         # create a slot connection for branches_visibility_status emitted from tree_structure_widget
-
-
-
 
     def initializeGL(self):
         """
@@ -401,44 +399,42 @@ class PCDViewerWidget(QOpenGLWidget):
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-    def initialize_view(self):
+    def zoom_extent(self):
         """
-        Initialize the camera and view settings for the new point cloud.
+        Set up default view parameters without zoom extent.
 
-        This method sets the default camera distance, pan, and zoom values
-        after new point cloud data has been set.
+        This method prepares the initial parameters such as default panning and size but
+        does not modify the current view, avoiding an automatic zoom to the extent.
         """
+        if self.points is None or len(self.points) == 0:
+            return
 
-        # Zoom extent
-        # Calculate center, size, and max extent
+        # Calculate the center, size, and maximum extent to prepare initial parameters
         min_bounds = self.points.min(axis=0)
         max_bounds = self.points.max(axis=0)
         self.center = (min_bounds + max_bounds) / 2.0
         self.size = max_bounds - min_bounds
         self.max_extent = self.size.max()
 
-        # Calculate initial camera distance
+        # Set default camera distance, pan, and near/far planes without applying them to the current view
         half_fov_rad = np.radians(self.fov / 2)
-        self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # Include padding factor
+        self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # Padding factor
         self.camera_distance = self.default_camera_distance
 
-        # Pan the camera to the center of the point cloud
-        self.default_pan_x = -self.center[0]
-        self.default_pan_y = -self.center[1]
-        self.default_pan_z = -self.center[2]
-        self.pan_x = self.default_pan_x
-        self.pan_y = self.default_pan_y
-        self.pan_z = self.default_pan_z
+        # Update panning offsets to align the center with the view
+        self.pan_x = -self.center[0]
+        self.pan_y = -self.center[1]
+        self.pan_z = -self.center[2]
 
-        # Set near and far planes based on the new camera distance
-        self.near_plane = max(self.camera_distance - self.max_extent * 2, 0.1)  # Ensure near plane is positive
-        self.far_plane = self.camera_distance + self.max_extent * 2
+        # Set default panning offsets, but do not apply these values yet to the actual view
+        self.default_pan_x = -self.pan_x
+        self.default_pan_y = -self.pan_y
+        self.default_pan_z = -self.pan_z
 
-        # Reset zoom factor
-        self.zoom_factor = self.default_zoom_factor
+        # Save the initial zoom factor as a default reference
+        self.default_zoom_factor = 1.0  # Assume this is the base zoom level
 
-        # Trigger a redraw to reflect the updated point cloud
-        self.update()
+        # self.update()
 
     def set_points(self, points: np.ndarray, colors: np.ndarray = None):
         """
@@ -480,8 +476,7 @@ class PCDViewerWidget(QOpenGLWidget):
             self.vbo.delete()
             self.vbo = None
 
-        # Initialize the view after setting points
-        self.initialize_view()
+        self.update()
 
     def draw_axis_symbol(self, position):
         """
@@ -583,6 +578,15 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.show_axis:
             # Draw axis symbol at the center of rotation
             self.draw_axis_symbol(self.center)
+
+    def zoom_extent1(self):
+        # Calculate the center, size, and maximum extent to prepare initial parameters
+        min_bounds = self.points.min(axis=0)
+        max_bounds = self.points.max(axis=0)
+        self.center = (min_bounds + max_bounds) / 2.0
+        self.size = max_bounds - min_bounds
+        self.max_extent = self.size.max()
+        self.camera_distance = np.linalg.norm(max_bounds - min_bounds) * 1.2
 
     def render_point_cloud(self):
         """
