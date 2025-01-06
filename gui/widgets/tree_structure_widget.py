@@ -17,7 +17,7 @@ class TreeStructureWidget(QTreeWidget):
     branch_added = pyqtSignal(dict)
     branch_visibility_changed = pyqtSignal(dict)
     branch_hierarchy_updated = pyqtSignal(dict)
-    selected_branches_changed = pyqtSignal(list)
+    branch_selection_changed = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -144,7 +144,7 @@ class TreeStructureWidget(QTreeWidget):
         """
         selected_items = self.selectedItems()
         selected_uids = [item.data(0, Qt.UserRole) for item in selected_items if item.data(0, Qt.UserRole)]
-        self.selected_branches_changed.emit(selected_uids)
+        self.branch_selection_changed.emit(selected_uids)
 
     def _get_hierarchy(self):
         """

@@ -43,6 +43,7 @@ class DataManager(QObject):
         self.file_manager.point_cloud_loaded.connect(self._on_point_cloud_loaded)
         self.tree_widget.branch_visibility_changed.connect(self._on_branch_visibility_changed)
         self.tree_widget.branch_added.connect(self._on_branch_added)
+        self.tree_widget.branch_selection_changed.connect(self._on_branch_selection_changed)
         # self.tree_widget.branch_deleted.connect(self.on_branch_deleted)
         # self.tree_widget.branch_moved.connect(self.on_branch_moved)
 
@@ -155,6 +156,18 @@ class DataManager(QObject):
             visibility_status (dict): Dictionary of UUIDs to visibility states.
         """
         self._render_visible_data(visibility_status, zoom_extent=False)
+
+    def _on_branch_selection_changed(self, uids: list[str]):
+        """
+        Handle branch selection changes from the tree structure widget.
+
+        Args:
+            uids (list[str]): List of selected branch UUIDs.
+        """
+        self.selected_branches = uids
+        for uid in uids:
+            print(uid)
+        print()
 
     def _on_branch_added(self, visibility_status: dict):
         """
