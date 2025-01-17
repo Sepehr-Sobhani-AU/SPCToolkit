@@ -19,8 +19,9 @@ class DataNode:
 
     def __init__(
         self,
-        name: str,
-        data: Any,
+        name: str = "",
+        data: Any = None,
+        data_type: str = "",
         parent_uid: uuid.UUID = None,
         depends_on: List[uuid.UUID] = None,
         tags: List[str] = None
@@ -34,10 +35,12 @@ class DataNode:
             parent_uid (UUID, optional): The parent node's UUID, if any. Defaults to None.
             depends_on (List[UUID], optional): List of dependent nodes. Defaults to None.
             tags (List[str], optional): Tags for classification. Defaults to None.
+            data_type (str): The type of data stored in the node.
         """
         self.uid: uuid.UUID = uuid.uuid4()
         self.name: str = name
         self.data: Any = data
+        self.data_type: str = data_type
         self.parent_uid: uuid.UUID = parent_uid
         self.depends_on: List[uuid.UUID] = depends_on if depends_on else []
         self.tags: List[str] = tags if tags else []
@@ -52,6 +55,7 @@ class DataNode:
         return {
             "uid": str(self.uid),
             "name": self.name,
+            "data_type": self.data_type,
             "parent_uid": str(self.parent_uid) if self.parent_uid else None,
             "depends_on": [str(uid) for uid in self.depends_on],
             "tags": self.tags
@@ -66,6 +70,8 @@ class DataNode:
         """
         if "name" in metadata:
             self.name = metadata["name"]
+        if "data_type" in metadata:
+            self.data_type = metadata["data_type"]
         if "parent_uid" in metadata:
             self.parent_uid = uuid.UUID(metadata["parent_uid"])
         if "depends_on" in metadata:

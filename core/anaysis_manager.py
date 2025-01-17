@@ -1,62 +1,67 @@
 # TODO: The type of analysis to perform are hard-coded in the apply_analysis method. This is not scalable and will require changes to the code whenever a new analysis type is added. A better approach would be to use a factory pattern to create the analysis instances based on the analysis type. This way, new analysis types can be added without modifying the AnalysisManager class. The factory pattern can be implemented as a separate class or as a static method within the AnalysisResult class. The factory method would take the analysis type as an argument and return an instance of the corresponding analysis class. This would decouple the AnalysisManager from the specific analysis types and make the code more extensible.
+"""
+    This module implements a Dynamic Task Execution Framework that allows for the execution of different types of
+    tasks based on the task type. The Task class is an abstract base class that defines the interface for all tasks.
+    For example the SubsampleTask and ClusterTask classes are concrete implementations of the task classes that
+    perform subsampling and clustering tasks, respectively. The task_registry dictionary is a registry that maps task
+    types to task classes.
+
+    The "execute" method in each task class is responsible for executing the task.
+    The main function demonstrates how to use the different task classes and execute them.
+"""
 import uuid
 from typing import List, Dict, Any
+
+from PyQt5.QtCore import pyqtSignal, QObject
+
+from tasks.subsample import Subsample
+from tasks.cluster import Cluster
 from core.analysis_result import AnalysisResult
 from core.data_node import DataNode
 
 
-class AnalysisManager:
+class AnalysisManager(QObject):
     """
     Manages and executes analyses on DataNodes and tracks the results.
 
     Attributes:
         analyses (dict): Dictionary mapping UUIDs to their corresponding AnalysisResult instances.
     """
+    analysis_completed = pyqtSignal(object, str, list, object, str, dict)
 
     def __init__(self):
         """
         Initializes the AnalysisManager with an empty analyses dictionary.
         """
+
+        super().__init__()
+        self.tasks_registry = {"subsampling": Subsample,
+                               "clustering": Cluster}
+
         self.analyses: Dict[uuid.UUID, AnalysisResult] = {}
 
-    def apply_analysis(
-        self,
-        uids: List[uuid.UUID],
-        analysis_type: str,
-        params: Dict[str, Any]
-    ) -> List[uuid.UUID]:
+    def apply_analysis(self, data: DataNode, analysis_type: str, params: Dict[str, Any]) -> None:
         """
-        Applies an analysis to the given DataNodes.
+        Applies an analysis task to the given DataNode.
 
         Args:
-            uids (list[UUID]): List of UUIDs for the DataNodes to analyse.
+            data (DataNode): The DataNode to analyze.
             analysis_type (str): The type of analysis to perform.
-            params (dict): Parameters required for the analysis.
+            params (Dict[str, Any]): Parameters for the analysis task.
 
         Returns:
-            list[UUID]: A list of UUIDs for the generated analysis results.
+            AnalysisResult: The result of the analysis.
         """
-        # Placeholder logic for performing analysis
-        # Replace this with actual analysis logic for each analysis type
-        derived_data = None
-        if analysis_type == "clustering":
-            derived_data = {"clusters": [0, 1, 0, 1]}  # Example derived result
-        elif analysis_type == "subsampling":
-            derived_data = {"indices": [True, False, True, True]}  # Example boolean mask
-        else:
-            raise ValueError(f"Unsupported analysis type: {analysis_type}")
 
-        # Create AnalysisResult instance
-        result = AnalysisResult(
-            name=f"{analysis_type.capitalize()} Result",
-            data=derived_data,
-            params=params,
-            depends_on=uids,
-        )
+        if analysis_type not in self.tasks_registry:
+            raise ValueError(f"Analysis type '{analysis_type}' not found in the task registry.")
 
-        # Store the result and return its UUID
-        self.analyses[result.uuid] = result
-        return [result.uuid]
+        task = self.tasks_registry[analysis_type]
+        task_instance = task(params)
+        result, result_type, dependencies = task_instance.execute(data)
+
+        # Emit signal to add the result to the DataNode
+        self.analysis_completed.emit(result, result_type, dependencies, data, analysis_type, params)
 
     def get_analysis_result(self, uid: uuid.UUID) -> AnalysisResult:
         """

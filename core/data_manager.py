@@ -6,6 +6,11 @@ import uuid
 
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtWidgets import QDialog
+
+from gui.dialog_boxes.clustering_dialog import ClusteringDialog
+from gui.dialog_boxes.subsampling_dialog import SubsamplingDialog
+
 from services.file_manager import FileManager
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
@@ -38,9 +43,11 @@ class DataManager(QObject):
         self.viewer_widget = viewer_widget
         self.data_nodes = DataNodes()
         self.analysis_manager = AnalysisManager()
+        self.selected_branches = []
 
         # Connect signals
         self.file_manager.point_cloud_loaded.connect(self._on_point_cloud_loaded)
+        self.analysis_manager.analysis_completed.connect(self._on_analysis_completed)
         self.tree_widget.branch_visibility_changed.connect(self._on_branch_visibility_changed)
         self.tree_widget.branch_added.connect(self._on_branch_added)
         self.tree_widget.branch_selection_changed.connect(self._on_branch_selection_changed)
@@ -57,20 +64,31 @@ class DataManager(QObject):
         """
         try:
             # Create a DataNode from the loaded PointCloud
-            data_node = DataNode(
-                data=point_cloud,
-                name=point_cloud.name,
-                parent_uid=None,  # Top-level branch
-                depends_on=None
-            )
+            data_node = DataNode(name=point_cloud.name, data=point_cloud, data_type="point_cloud", parent_uid=None,
+                                 depends_on=None, tags=[])
             # Add the DataNode to the DataNodes manager
             uid = self.data_nodes.add_data(data_node)
 
             # Update the TreeStructureWidget
-            self.tree_widget.add_branch(str(uid), None, point_cloud.name)
+            self.tree_widget.add_branch(str(uid), "", point_cloud.name)
 
         except Exception as e:
             self.error_occurred.emit(f"Failed to load point cloud: {file_path}. Error: {str(e)}")
+
+    def _on_analysis_completed(self, result: any, result_type: str, dependencies: list, parent: DataNode, analysis_type: str, params: dict):
+
+        try:
+            # Create a DataNode from the analysis result
+            data_node = DataNode(f"{analysis_type}" + f",{params}", data=result, data_type=result_type,
+                                 parent_uid=parent.uid, depends_on=dependencies, tags=[analysis_type, params])
+            # Add the DataNode to the DataNodes manager
+            uid = self.data_nodes.add_data(data_node)
+
+            # Update the TreeStructureWidget
+            self.tree_widget.add_branch(str(uid), str(parent.uid), data_node.name)
+
+        except Exception as e:
+            self.error_occurred.emit(f"Failed to apply analysis: {analysis_type}. Error: {str(e)}")
 
     # def delete_branch(self, uids: list[str]):
     #     """
@@ -117,24 +135,31 @@ class DataManager(QObject):
     #     visibility_status = {uid: visibility for uid in uids}
     #     self.viewer_widget.update_visibility(set(uuid for uid, vis in visibility_status.items() if vis))
 
-    # def apply_analysis(self, uuids: list[str], analysis_type: str, params: dict):
-    #     """
-    #     Apply an analysis task on selected branches.
-    #
-    #     Args:
-    #         uuids (list[str]): Branch UUIDs to analyse.
-    #         analysis_type (str): Type of analysis to perform.
-    #         params (dict): Analysis-specific parameters.
-    #     """
-    #     try:
-    #         results = self.analysis_manager.apply_analysis(uuids, analysis_type, params)
-    #         for result in results:
-    #             result_uuid = self.data_nodes.add_data(result)
-    #             self.tree_widget.add_branch(result_uuid, result.depends_on, result.name)
-    #         self.viewer_widget.set_data_nodes(self.data_nodes.data_nodes)
-    #         self.viewer_widget.update()
-    #     except Exception as e:
-    #         self.error_occurred.emit(f"Failed to apply analysis. Error: {str(e)}")
+    def apply_analysis(self, analysis_type: str):
+        """
+        Apply an analysis to the selected branches.
+
+        Args:
+            analysis_type (str): The type of analysis to apply.
+        """
+
+        # Map analysis types to their dialog classes
+        dialog_classes = {
+            "subsampling": SubsamplingDialog,
+            "clustering": ClusteringDialog,
+        }
+
+        if analysis_type not in dialog_classes:
+            raise ValueError(f"Unknown analysis type: {analysis_type}")
+
+        # Create and execute the dialog
+        dialog_class = dialog_classes[analysis_type]
+        dialog = dialog_class(parent=self.parent())
+        if dialog.exec_() == QDialog.Accepted:
+            params = dialog.get_parameters()
+            for uid in self.selected_branches:
+                data_node = self.data_nodes.get_data(uuid.UUID(uid))
+                self.analysis_manager.apply_analysis(data_node, analysis_type, params)
 
     # def validate_dependency(self, uid: str) -> bool:
     #     """

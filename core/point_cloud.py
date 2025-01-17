@@ -18,6 +18,9 @@ from scipy.stats import norm
 from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 
+# Local application imports
+#from core.point_clouds import PointClouds
+
 
 class PointCloud:
     """
@@ -191,7 +194,7 @@ class PointCloud:
         mask = np.full((len(pcd.points)), False, dtype=bool)
         mask[trace] = True
 
-        return self.get_subcluster(mask)
+        return self.get_subset(mask)
 
     # def get_clusters(self, min_points=200):
     #     """
@@ -306,67 +309,67 @@ class PointCloud:
             self.eigenvalues = eigenvalues
             return eigenvalues
 
-    # def get_subcluster(self, mask, inplace=False):
-    #     """
-    #     Extracts a subcluster based on a mask, either by modifying the current cluster or returning a new one.
-    #
-    #     Parameters:
-    #     - mask (np.ndarray): A boolean array where True values indicate points to include in the subcluster.
-    #     - inplace (bool): If True, modifies the current cluster in-place. Default is False.
-    #
-    #     Returns:
-    #     - Cluster: A new Cluster instance containing the subcluster if inplace is False.
-    #     """
-    #
-    #     if not np.count_nonzero(mask) >= 4:
-    #         # Handle the case where the mask filters out all points
-    #         print("Not enough points found for subcluster.")
-    #         if inplace:
-    #             self.points = np.array([])
-    #             self.label = 0
-    #             self.parent = 0
-    #             self.clusters = np.array([])
-    #             self.prediction = ''
-    #             self.probability = 0
-    #             self.model_weight = ''
-    #             self.length = 0
-    #             self.width = 0
-    #             self.height = 0
-    #             self.feature = []
-    #             self.metadata = {}
-    #         else:
-    #             # Return an empty Cluster instance with (1, 3) dimension as
-    #             # Cluster constructor needs (n, 3) ndarray for points
-    #             return Cluster(np.empty((1, 3)))
-    #     else:
-    #         if inplace:
-    #             # Modify the current cluster's points and attributes in-place
-    #             # Apply the mask to attributes of the cluster
-    #             self.points = self.points[mask]
-    #             self._update_obb_dim()
-    #
-    #             if hasattr(self, 'color') and self.color.shape[0] > 0:
-    #                 self.color = self.color[mask]
-    #             if hasattr(self, 'intensity') and self.intensity.shape[0] > 0:
-    #                 self.intensity = self.intensity[mask]
-    #             if hasattr(self, 'distToGround') and self.distToGround.shape[0] > 0:
-    #                 self.distToGround = self.distToGround[mask]
-    #         else:
-    #             # Create a deep copy of the cluster and apply the mask
-    #             subcluster = copy.deepcopy(self)
-    #
-    #             # Apply the mask to attributes of the cluster
-    #             subcluster.points = subcluster.points[mask]
-    #             subcluster._update_obb_dim()
-    #
-    #             if hasattr(subcluster, 'color') and subcluster.color.shape[0] > 0:
-    #                 subcluster.color = subcluster.color[mask]
-    #             if hasattr(subcluster, 'intensity') and subcluster.intensity.shape[0] > 0:
-    #                 subcluster.intensity = subcluster.intensity[mask]
-    #             if hasattr(subcluster, 'distToGround') and subcluster.distToGround.shape[0] > 0:
-    #                 subcluster.distToGround = subcluster.distToGround[mask]
-    #
-    #             return subcluster
+    def get_subset(self, mask, inplace=False):
+        """
+        Extracts a subset based on a mask, either by modifying the current cluster or returning a new one.
+
+        Parameters:
+        - mask (np.ndarray): A boolean array where True values indicate points to include in the subset.
+        - inplace (bool): If True, modifies the current cluster in-place. Default is False.
+
+        Returns:
+        - Cluster: A new Cluster instance containing the subset if inplace is False.
+        """
+
+        if not np.count_nonzero(mask) >= 4:
+            # Handle the case where the mask filters out all points
+            print("Not enough points found for subset.")
+            if inplace:
+                self.points = np.array([])
+                self.label = 0
+                self.parent = 0
+                self.clusters = np.array([])
+                self.prediction = ''
+                self.probability = 0
+                self.model_weight = ''
+                self.length = 0
+                self.width = 0
+                self.height = 0
+                self.feature = []
+                self.metadata = {}
+            else:
+                # Return an empty Cluster instance with (1, 3) dimension as
+                # Cluster constructor needs (n, 3) ndarray for points
+                return PointCloud(np.empty((1, 3)))
+        else:
+            if inplace:
+                # Modify the current cluster's points and attributes in-place
+                # Apply the mask to attributes of the cluster
+                self.points = self.points[mask]
+                self._update_obb_dim()
+
+                if hasattr(self, 'color') and self.color.shape[0] > 0:
+                    self.color = self.color[mask]
+                if hasattr(self, 'intensity') and self.intensity.shape[0] > 0:
+                    self.intensity = self.intensity[mask]
+                if hasattr(self, 'distToGround') and self.distToGround.shape[0] > 0:
+                    self.distToGround = self.distToGround[mask]
+            else:
+                # Create a deep copy of the cluster and apply the mask
+                subset = copy.deepcopy(self)
+
+                # Apply the mask to attributes of the cluster
+                subset.points = subset.points[mask]
+                subset._update_obb_dim()
+
+                if hasattr(subset, 'color') and subset.color.shape[0] > 0:
+                    subset.color = subset.color[mask]
+                if hasattr(subset, 'intensity') and subset.intensity.shape[0] > 0:
+                    subset.intensity = subset.intensity[mask]
+                if hasattr(subset, 'distToGround') and subset.distToGround.shape[0] > 0:
+                    subset.distToGround = subset.distToGround[mask]
+
+                return subset
 
     def get_obb(self):
         """
@@ -694,9 +697,9 @@ class PointCloud:
         mask = (self.distToGround >= bottom_dist) & (self.distToGround <= top_dist)
 
         if inplace:
-            self.get_subcluster(mask, inplace)
+            self.get_subset(mask, inplace)
         else:
-            return self.get_subcluster(mask, inplace)
+            return self.get_subset(mask, inplace)
 
     def slice_by_dist_to_point(self, picked_point, max_dist, min_dist=0, inplace=False):
         # Finding the distance of each point to a reference point and return a distance array
@@ -711,9 +714,9 @@ class PointCloud:
         mask = (dists >= min_dist) & (dists <= max_dist)
 
         if inplace:
-            self.get_subcluster(mask, inplace=True)
+            self.get_subset(mask, inplace=True)
         else:
-            return self.get_subcluster(mask, inplace=False)
+            return self.get_subset(mask, inplace=False)
 
     def SOR(self, nb_neighbors=20, std_ratio=2.0):
         """
@@ -741,7 +744,7 @@ class PointCloud:
         mask = np.zeros(len(self.points), dtype=bool)
         mask[np.asarray(ind)] = True
 
-        return self.get_subcluster(mask, inplace=False)
+        return self.get_subset(mask, inplace=False)
 
     def size(self):
         """
@@ -752,6 +755,24 @@ class PointCloud:
         """
         # TODO: Why not to set size as property?!
         return len(self.points)
+
+    def subsample(self, rate, inplace=False):
+        """
+        Subsample the point cloud by a given rate.
+
+        Parameters:
+        - rate (float): The subsampling rate. Must be in the range (0, 1].
+
+        Returns:
+        - PointCloud: A new PointCloud instance containing the subsample of points and corresponding attributes.
+        """
+        if rate <= 0 or rate > 1:
+            raise ValueError("Subsampling rate must be in the range (0, 1].")
+
+        # Generate a random mask for subsampling
+        mask = np.random.rand(len(self.points)) < rate
+
+        return self.get_subset(mask, inplace=False)
 
     def _update_obb_dim(self):
         """

@@ -19,14 +19,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # Set up the main window
         self.menuHelp = None
         self.menuFile = None
+        self.menuAction = None
         self.menubar = None
         self.pcd_viewer_widget = None
         self.tree_widget = None
         self.splitter = None
         self.actionOpen = None
+        self.actionSubsample = None
+        self.actionCluster = None
         self.statusbar = None
         self.setWindowTitle("PCD Toolkit")
-        self.resize(800, 600)
+        self.resize(1600, 1200)
 
         # Create an instance of FileManager
         self.file_manager = FileManager()
@@ -57,6 +60,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menubar = self.menuBar()
         self.menuFile = self.menubar.addMenu("File")
         self.menuHelp = self.menubar.addMenu("Help")
+        self.menuAction = self.menubar.addMenu("Action")
 
         # "Open" action
         self.actionOpen = QtWidgets.QAction("Open", self)
@@ -64,6 +68,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # Connect the Open action
         self.actionOpen.triggered.connect(self.open_file_dialog)
 
+        # "Subsample" action
+        self.actionSubsample = QtWidgets.QAction("Subsampling", self)
+        self.menuAction.addAction(self.actionSubsample)
+        # Connect the Subsample action
+        self.actionSubsample.triggered.connect(lambda: self.apply_analysis('subsampling'))
+
+        # "Cluster" action
+        self.actionCluster = QtWidgets.QAction("Clustering", self)
+        self.menuAction.addAction(self.actionCluster)
+        # Connect the Cluster action
+        self.actionCluster.triggered.connect(lambda: self.apply_analysis('clustering'))
+
+        
         # Status bar
         self.statusbar = QtWidgets.QStatusBar(self)
         self.setStatusBar(self.statusbar)
@@ -72,6 +89,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """Handler for 'Open' action to open and display a point cloud file."""
 
         self.file_manager.open_point_cloud_file(self)
+
+    def apply_analysis(self, analysis_type):
+        self.data_manager.apply_analysis(analysis_type)
+
 
 
 
