@@ -132,43 +132,45 @@ class PointCloud:
             augmented_distToGround += noise[:, 2]
             self.distToGround = augmented_distToGround
 
-    # def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False):
-    #     """
-    #     Apply DBSCAN clustering to the points in the cluster using Open3D.
-    #
-    #     Parameters:
-    #     - eps (float): The maximum distance between two samples for one to be considered
-    #                    as in the neighborhood of the other. Default is 0.05.
-    #     - min_points (int): The number of samples in a neighborhood for a point to be considered
-    #                         as a core point. Default is 10.
-    #     - return_clusters_object (bool): If True, returns a Clusters object containing the DBSCAN result.
-    #                                      Default is False.
-    #
-    #     Returns:
-    #     - labels (np.ndarray) or (np.ndarray, Clusters): An array of cluster labels, and optionally a Clusters object.
-    #     """
-    #     if len(self.points) == 0:
-    #         raise ValueError("The cluster has no points for DBSCAN clustering.")
-    #
-    #     # Convert points to Open3D point cloud and perform DBSCAN
-    #     pcd = o3d.geometry.PointCloud()
-    #     pcd.points = o3d.utility.Vector3dVector(self.points)
-    #     with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
-    #         labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=False))
-    #
-    #     # Store the DBSCAN labels
-    #     self.clusters = labels
-    #
-    #     if return_clusters_object:
-    #         # Create and return Clusters object
-    #         clusters = Clusters()
-    #         clusters.points = self.points
-    #         clusters.labels = labels
-    #         clusters.colors = self.color
-    #         clusters.normals = self.normal
-    #         return clusters
-    #     else:
-    #         return labels
+    def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False):
+        """
+        Apply DBSCAN clustering to the points in the cluster using Open3D.
+
+        Parameters:
+        - eps (float): The maximum distance between two samples for one to be considered
+                       as in the neighborhood of the other. Default is 0.05.
+        - min_points (int): The number of samples in a neighborhood for a point to be considered
+                            as a core point. Default is 10.
+        - return_clusters_object (bool): If True, returns a Clusters object containing the DBSCAN result.
+                                         Default is False.
+
+        Returns:
+        - labels (np.ndarray) or (np.ndarray, Clusters): An array of cluster labels, and optionally a Clusters object.
+        """
+        if len(self.points) == 0:
+            raise ValueError("The cluster has no points for DBSCAN clustering.")
+
+        # Convert points to Open3D point cloud and perform DBSCAN
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.points)
+
+        with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
+            labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=False))
+
+        # Store the DBSCAN labels
+        self.clusters = labels
+
+        if return_clusters_object:
+            # Create and return Clusters object
+            # clusters = Clusters()
+            # clusters.points = self.points
+            # clusters.labels = labels
+            # clusters.colors = self.color
+            # clusters.normals = self.normal
+            # return clusters
+            pass
+        else:
+            return labels
 
     def density_downsample(self, voxel_size):
         """

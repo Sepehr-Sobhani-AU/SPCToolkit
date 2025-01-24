@@ -1,4 +1,11 @@
-# TODO: The type of analysis to perform are hard-coded in the apply_analysis method. This is not scalable and will require changes to the code whenever a new analysis type is added. A better approach would be to use a factory pattern to create the analysis instances based on the analysis type. This way, new analysis types can be added without modifying the AnalysisManager class. The factory pattern can be implemented as a separate class or as a static method within the AnalysisResult class. The factory method would take the analysis type as an argument and return an instance of the corresponding analysis class. This would decouple the AnalysisManager from the specific analysis types and make the code more extensible.
+# TODO:
+#  The type of analysis to perform are hard-coded in the apply_analysis method. This is not scalable and will require
+#  changes to the code whenever a new analysis type is added. A better approach would be to use a factory pattern to
+#  create the analysis instances based on the analysis type. This way, new analysis types can be added without modifying
+#  the AnalysisManager class. The factory pattern can be implemented as a separate class or as a static method within
+#  the AnalysisResult class. The factory method would take the analysis type as an argument and return an instance of
+#  the corresponding analysis class. This would decouple the AnalysisManager from the specific analysis types and make
+#  the code more extensible.
 """
     This module implements a Dynamic Task Execution Framework that allows for the execution of different types of
     tasks based on the task type. The Task class is an abstract base class that defines the interface for all tasks.
@@ -10,13 +17,13 @@
     The main function demonstrates how to use the different task classes and execute them.
 """
 import uuid
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 from PyQt5.QtCore import pyqtSignal, QObject
 
 from tasks.subsample import Subsample
 from tasks.cluster import Cluster
-from core.analysis_result import AnalysisResult
+
 from core.data_node import DataNode
 
 
@@ -62,35 +69,6 @@ class AnalysisManager(QObject):
 
         # Emit signal to add the result to the DataNode
         self.analysis_completed.emit(result, result_type, dependencies, data, analysis_type, params)
-
-    def get_analysis_result(self, uid: uuid.UUID) -> AnalysisResult:
-        """
-        Retrieves an AnalysisResult by its UUID.
-
-        Args:
-            uid (UUID): The UUID of the AnalysisResult to retrieve.
-
-        Returns:
-            AnalysisResult: The corresponding AnalysisResult instance.
-        """
-        if uid not in self.analyses:
-            raise KeyError(f"AnalysisResult with UUID {uid} not found.")
-        return self.analyses[uid]
-
-    def remove_analysis_result(self, uid: uuid.UUID) -> bool:
-        """
-        Removes an AnalysisResult by its UUID.
-
-        Args:
-            uid (UUID): The UUID of the AnalysisResult to remove.
-
-        Returns:
-            bool: True if the AnalysisResult was successfully removed, False otherwise.
-        """
-        if uid in self.analyses:
-            del self.analyses[uid]
-            return True
-        return False
 
     def __repr__(self) -> str:
         """

@@ -12,6 +12,7 @@ from gui.dialog_boxes.clustering_dialog import ClusteringDialog
 from gui.dialog_boxes.subsampling_dialog import SubsamplingDialog
 
 from services.file_manager import FileManager
+import services.custom_functions as cf
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
 from core.data_nodes import DataNodes
@@ -81,6 +82,7 @@ class DataManager(QObject):
             # Create a DataNode from the analysis result
             data_node = DataNode(f"{analysis_type}" + f",{params}", data=result, data_type=result_type,
                                  parent_uid=parent.uid, depends_on=dependencies, tags=[analysis_type, params])
+
             # Add the DataNode to the DataNodes manager
             uid = self.data_nodes.add_data(data_node)
 
@@ -190,9 +192,6 @@ class DataManager(QObject):
             uids (list[str]): List of selected branch UUIDs.
         """
         self.selected_branches = uids
-        for uid in uids:
-            print(uid)
-        print()
 
     def _on_branch_added(self, visibility_status: dict):
         """
@@ -212,17 +211,35 @@ class DataManager(QObject):
             zoom_extent (bool): Whether to zoom to the extent of the visible data
         """
         points_to_show = np.empty((0, 3), dtype=np.float32)
+        colors_to_show = np.empty((0, 3), dtype=np.float32)
         uids_to_show = [uid for uid, vis in visibility_status.items() if vis]
         # TODO: Update to handle multiple data types, point clouds, derived data, etc.
         if uids_to_show:
-            nodes_to_show = [self.data_nodes.get_data(uuid.UUID(uid)).data for uid in uids_to_show]
-            for node in nodes_to_show:
-                if isinstance(node, PointCloud):
-                    points_to_show = np.append(points_to_show, node.points, axis=0)
-            #points_to_show = node.points for node in nodes_to_show if isinstance(node, PointCloud)
-            colors_to_show = np.array([node.colors for node in nodes_to_show if isinstance(node, PointCloud)])
-            # TODO: Handle colors
-            self.viewer_widget.set_points(points_to_show)
+            for uid in uids_to_show:
+                node = self.data_nodes.get_data(uuid.UUID(uid))
+                node_type = node.data_type
+                # Render point clouds
+                if node_type == "point_cloud":
+                    data = node.data
+                    points_to_show = np.append(points_to_show, data.points, axis=0)
+                    if data.colors is not None:
+                        colors_to_show = np.append(colors_to_show, data.colors, axis=0)
+                    else:
+                        # If no colors are present, use white
+                        colors_to_show = np.append(colors_to_show, np.ones((data.size(), 3), dtype=np.float32), axis=0)
+
+                if node_type == "cluster_labels":
+
+                    parent_node = self.data_nodes.get_data(node.parent_uid)
+                    parent_data = parent_node.data
+                    points_to_show = np.append(points_to_show, parent_data.points, axis=0)
+
+                    data = node.data
+                    cluster_colors = np.float32(cf.get_random_color(data))
+
+                    colors_to_show = np.append(colors_to_show, cluster_colors, axis=0)
+
+            self.viewer_widget.set_points(points=points_to_show, colors=colors_to_show)
         else:
             self.viewer_widget.set_points(None)
 
