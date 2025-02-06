@@ -1,15 +1,15 @@
 """Centralised manager for handling data operations, analysis, and interactions"""
 
-# TODO: apply_analysis method is incomplete and needs to be implemented
-
 import uuid
 
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QDialog
 
+from core.node_reconstruction_manager import NodeReconstructionManager
 from gui.dialog_boxes.clustering_dialog import ClusteringDialog
 from gui.dialog_boxes.subsampling_dialog import SubsamplingDialog
+from gui.dialog_boxes.filtering_dialog import FilteringDialog
 
 from services.file_manager import FileManager
 import services.custom_functions as cf
@@ -44,6 +44,7 @@ class DataManager(QObject):
         self.viewer_widget = viewer_widget
         self.data_nodes = DataNodes()
         self.analysis_manager = AnalysisManager()
+        self.node_reconstruction_manager = NodeReconstructionManager()
         self.selected_branches = []
 
         # Connect signals
@@ -68,7 +69,7 @@ class DataManager(QObject):
             data_node = DataNode(name=point_cloud.name, data=point_cloud, data_type="point_cloud", parent_uid=None,
                                  depends_on=None, tags=[])
             # Add the DataNode to the DataNodes manager
-            uid = self.data_nodes.add_data(data_node)
+            uid = self.data_nodes.add_node(data_node)
 
             # Update the TreeStructureWidget
             self.tree_widget.add_branch(str(uid), "", point_cloud.name)
@@ -84,7 +85,7 @@ class DataManager(QObject):
                                  parent_uid=parent.uid, depends_on=dependencies, tags=[analysis_type, params])
 
             # Add the DataNode to the DataNodes manager
-            uid = self.data_nodes.add_data(data_node)
+            uid = self.data_nodes.add_node(data_node)
 
             # Update the TreeStructureWidget
             self.tree_widget.add_branch(str(uid), str(parent.uid), data_node.name)
@@ -149,6 +150,7 @@ class DataManager(QObject):
         dialog_classes = {
             "subsampling": SubsamplingDialog,
             "clustering": ClusteringDialog,
+            "filtering": FilteringDialog
         }
 
         if analysis_type not in dialog_classes:
@@ -160,8 +162,53 @@ class DataManager(QObject):
         if dialog.exec_() == QDialog.Accepted:
             params = dialog.get_parameters()
             for uid in self.selected_branches:
-                data_node = self.data_nodes.get_data(uuid.UUID(uid))
+                data_node = self.data_nodes.get_node(uuid.UUID(uid))
+                # If the data node is a derived type (eg. Masks or ClusterLabels) not a PointCloud, reconstruct
+                # the branch first as a PointCloud before applying the analysis. Then apply the analysis to the
+                # reconstructed PointCloud.
+                if data_node.data_type != "point_cloud":
+                    point_cloud = self.reconstruct_branch(uid)
+                    # As apply_analysis method works on DataNode instances, a new temporary DataNode instance is created
+                    reconstructed_data_node = DataNode(name=data_node.name, data=point_cloud, data_type="point_cloud")
+                    reconstructed_data_node.uid = data_node.uid
+                    data_node = reconstructed_data_node
+
                 self.analysis_manager.apply_analysis(data_node, analysis_type, params)
+
+    # TODO: Docstrings
+    # TODO: Validations
+    def reconstruct_branch(self, uid) -> PointCloud:
+        # Step up the hierarchy until the root data node is reached and create a list of data node UUIDs
+        # in the hierarchy.
+        # TODO: There is inconsistancy in type of uid, it is str in some places and uuid.UUID in others.
+        self.data_node_uids = []
+        data_node = self.data_nodes.get_node(uuid.UUID(uid))
+        while data_node.parent_uid is not None:
+            self.data_node_uids.append(data_node.uid)
+            parent_uid = data_node.parent_uid
+            data_node = self.data_nodes.get_node(parent_uid)
+
+        self.data_node_uids.append(data_node.uid)
+
+
+        # Reverse the list of data node UUIDs to step back down the hierarchy from the root data node to the current data node.
+        self.data_node_uids.reverse()
+
+        # Apply the analysis reconstruction to 'data_node_uuids' list of data nodes recursively.
+        # The first data node in the list is the root and is a PointCloud instance.
+        # The AnalysisReconstruction class will be used as a recursive function, it will apply the analysis reconstruction
+        # to all data nodes in the hierarchy.
+        # It will get a PointCloud instance and a DataNode instance as input and return a PointCloud instance.
+        # So, each time the AnalysisReconstruction class is called, it will return a PointCloud instance that will be used
+        # as input for the next call. Also, the DataNode instance will be the next item in 'data_node_uuids' list.
+
+        uid = self.data_node_uids[0]
+        data_node = self.data_nodes.get_node(uid)
+        point_cloud = data_node.data
+        for uid in self.data_node_uids[1:]:
+            data_node = self.data_nodes.get_node(uid)
+            point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, data_node)
+        return point_cloud
 
     # def validate_dependency(self, uid: str) -> bool:
     #     """
@@ -216,28 +263,19 @@ class DataManager(QObject):
         # TODO: Update to handle multiple data types, point clouds, derived data, etc.
         if uids_to_show:
             for uid in uids_to_show:
-                node = self.data_nodes.get_data(uuid.UUID(uid))
+
+                node = self.data_nodes.get_node(uuid.UUID(uid))
                 node_type = node.data_type
                 # Render point clouds
-                if node_type == "point_cloud":
-                    data = node.data
-                    points_to_show = np.append(points_to_show, data.points, axis=0)
-                    if data.colors is not None:
-                        colors_to_show = np.append(colors_to_show, data.colors, axis=0)
-                    else:
-                        # If no colors are present, use white
-                        colors_to_show = np.append(colors_to_show, np.ones((data.size(), 3), dtype=np.float32), axis=0)
 
-                if node_type == "cluster_labels":
+                point_cloud = self.reconstruct_branch(uid)
 
-                    parent_node = self.data_nodes.get_data(node.parent_uid)
-                    parent_data = parent_node.data
-                    points_to_show = np.append(points_to_show, parent_data.points, axis=0)
-
-                    data = node.data
-                    cluster_colors = np.float32(cf.get_random_color(data))
-
-                    colors_to_show = np.append(colors_to_show, cluster_colors, axis=0)
+                points_to_show = np.append(points_to_show, point_cloud.points, axis=0)
+                if point_cloud.colors is not None:
+                    colors_to_show = np.append(colors_to_show, point_cloud.colors, axis=0)
+                else:
+                    # If no colors are present, use white
+                    colors_to_show = np.append(colors_to_show, np.ones((point_cloud.size(), 3), dtype=np.float32), axis=0)
 
             self.viewer_widget.set_points(points=points_to_show, colors=colors_to_show)
         else:

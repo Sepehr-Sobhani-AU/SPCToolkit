@@ -23,20 +23,20 @@ class DataNodes:
         """
         self.data_nodes: Dict[uuid.UUID, DataNode] = {}
 
-    def add_data(self, data: DataNode) -> uuid.UUID:
+    def add_node(self, node: DataNode) -> uuid.UUID:
         """
         Adds a new DataNode to the collection.
 
         Args:
-            data (DataNode): The DataNode instance to add.
+            node (DataNode): The DataNode instance to add.
 
         Returns:
             UUID: The unique identifier of the added DataNode.
         """
-        self.data_nodes[data.uid] = data
-        return data.uid
+        self.data_nodes[node.uid] = node
+        return node.uid
 
-    def remove_data(self, uid: uuid.UUID) -> bool:
+    def remove_node(self, uid: uuid.UUID) -> bool:
         """
         Removes a DataNode instance from the collection.
 
@@ -55,7 +55,7 @@ class DataNodes:
 
         return True
 
-    def get_data(self, uid: uuid.UUID) -> Optional[DataNode]:
+    def get_node(self, uid: uuid.UUID) -> Optional[DataNode]:
         """
         Retrieves a DataNode instance by its UUID.
 

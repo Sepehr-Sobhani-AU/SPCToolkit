@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 
 class PointCloud:
     """
-    Initialize a Cluster object.
+    Initialize a Clusters object.
 
     Required Parameters:
     - points (np.ndarray): A numpy array (n, 3) of points in the format [[x1, y1, z1],
@@ -64,7 +64,7 @@ class PointCloud:
         self.parent_uuid = kwargs.get('parent_uuid', None)
         self.child_uuid = kwargs.get('child_uuid', None)
 
-        self.clusters = []
+        self.cluster_labels = []
         self.prediction = ''
         self.probability = 0
         self.model_weight = ''
@@ -78,7 +78,7 @@ class PointCloud:
             self._update_obb_dim()
 
         # Validation for color, intensity, normal and distToGround
-        for attr_name in ['color', 'intensity', 'distToGround', 'normal']:
+        for attr_name in ['intensity', 'distToGround']:
             attr_value = kwargs.get(attr_name, np.array([]))
             if not isinstance(attr_value, np.ndarray) or (len(attr_value) != 0 and len(attr_value) != len(points)):
                 raise ValueError(f"{attr_name} must be a numpy array of the same length as points")
@@ -119,9 +119,9 @@ class PointCloud:
         # Update the cluster's points
         self.points = augmented_points
 
-        # Update corresponding attributes: color, intensity, and distToGround
-        if len(self.color) > 0:
-            self.color = np.repeat(self.color, augmentation_factor, axis=0)
+        # Update corresponding attributes: colors, intensity, and distToGround
+        if len(self.colors) > 0:
+            self.colors = np.repeat(self.colors, augmentation_factor, axis=0)
 
         if len(self.intensity) > 0:
             self.intensity = np.repeat(self.intensity, augmentation_factor)
@@ -165,7 +165,7 @@ class PointCloud:
             # clusters = Clusters()
             # clusters.points = self.points
             # clusters.labels = labels
-            # clusters.colors = self.color
+            # clusters.colors = self.colors
             # clusters.normals = self.normal
             # return clusters
             pass
@@ -181,7 +181,7 @@ class PointCloud:
         - voxel_size (float): The voxel size to determine the new point cloud density.
 
         Returns:
-        - A Cluster object created from the downsampled point cloud with original attributes of the point.
+        - A Clusters object created from the downsampled point cloud with original attributes of the point.
         """
 
         # Create a point cloud object from the cluster's points
@@ -221,11 +221,11 @@ class PointCloud:
     #     clusters = Clusters()
     #
     #     # Filter labels to include only those with enough points
-    #     valid_labels = [label for label in unique_labels if np.sum(self.clusters == label) >= min_points]
+    #     valid_labels = [labels for labels in unique_labels if np.sum(self.clusters == labels) >= min_points]
     #
-    #     for label in valid_labels:
-    #         # Create mask for points belonging to the current label
-    #         mask = self.clusters == label
+    #     for labels in valid_labels:
+    #         # Create mask for points belonging to the current labels
+    #         mask = self.clusters == labels
     #
     #         # Create a copy of cluster
     #         child_cluster = copy.deepcopy(self)
@@ -257,7 +257,7 @@ class PointCloud:
         Examples:
         --------
         # Assuming 'points' is a numpy array representing points in the cluster
-        cluster_instance = Cluster(points=np.random.rand(100, 3))
+        cluster_instance = Clusters(points=np.random.rand(100, 3))
         eigenvalues = cluster_instance.get_eigenvalues(k=5, smooth=True)
         print("Averaged Eigenvalues:", eigenvalues)
 
@@ -320,7 +320,7 @@ class PointCloud:
         - inplace (bool): If True, modifies the current cluster in-place. Default is False.
 
         Returns:
-        - Cluster: A new Cluster instance containing the subset if inplace is False.
+        - Clusters: A new Clusters instance containing the subset if inplace is False.
         """
 
         if not np.count_nonzero(mask) >= 4:
@@ -328,9 +328,8 @@ class PointCloud:
             print("Not enough points found for subset.")
             if inplace:
                 self.points = np.array([])
-                self.label = 0
                 self.parent = 0
-                self.clusters = np.array([])
+                self.cluster_labels = []
                 self.prediction = ''
                 self.probability = 0
                 self.model_weight = ''
@@ -340,8 +339,8 @@ class PointCloud:
                 self.feature = []
                 self.metadata = {}
             else:
-                # Return an empty Cluster instance with (1, 3) dimension as
-                # Cluster constructor needs (n, 3) ndarray for points
+                # Return an empty Clusters instance with (1, 3) dimension as
+                # Clusters constructor needs (n, 3) ndarray for points
                 return PointCloud(np.empty((1, 3)))
         else:
             if inplace:
@@ -350,8 +349,8 @@ class PointCloud:
                 self.points = self.points[mask]
                 self._update_obb_dim()
 
-                if hasattr(self, 'color') and self.color.shape[0] > 0:
-                    self.color = self.color[mask]
+                if hasattr(self, 'colors') and self.colors.shape[0] > 0:
+                    self.colors = self.colors[mask]
                 if hasattr(self, 'intensity') and self.intensity.shape[0] > 0:
                     self.intensity = self.intensity[mask]
                 if hasattr(self, 'distToGround') and self.distToGround.shape[0] > 0:
@@ -363,9 +362,9 @@ class PointCloud:
                 # Apply the mask to attributes of the cluster
                 subset.points = subset.points[mask]
                 subset._update_obb_dim()
-
-                if hasattr(subset, 'color') and subset.color.shape[0] > 0:
-                    subset.color = subset.color[mask]
+                # TODO: Add normals to the subset
+                if hasattr(subset, 'colors') and subset.colors.shape[0] > 0:
+                    subset.colors = subset.colors[mask]
                 if hasattr(subset, 'intensity') and subset.intensity.shape[0] > 0:
                     subset.intensity = subset.intensity[mask]
                 if hasattr(subset, 'distToGround') and subset.distToGround.shape[0] > 0:
@@ -548,7 +547,7 @@ class PointCloud:
 
     def save(self, file_name):
         """
-        Saves the Cluster instance to a file. The format is determined by the file extension.
+        Saves the Clusters instance to a file. The format is determined by the file extension.
 
         Parameters:
         file_name (str): The name of the file to save the instance to.
@@ -568,7 +567,7 @@ class PointCloud:
 
     def save_property(self, property_name, file_name):
         """
-        Saves a specified property of the Cluster to a .npy file.
+        Saves a specified property of the Clusters to a .npy file.
 
         Parameters:
         property_name (str): The name of the property to save.
@@ -582,11 +581,11 @@ class PointCloud:
             property_data = getattr(self, property_name)
             np.save(file_name, property_data)
         else:
-            raise AttributeError(f"Property '{property_name}' not found in Cluster.")
+            raise AttributeError(f"Property '{property_name}' not found in Clusters.")
 
             # o3d.io.write_point_cloud(groundFile, pcd_ground)
 
-    def show(self, pick_point=False, show_obb=False, random_color_attr=None):
+    def show(self, pick_point=False, show_obb=False):
         """
         Visualizes the cluster using Open3D. If colors are set for the cluster points, they will be
         used in the visualization. The method also supports visualizing the oriented bounding box (OBB)
@@ -616,7 +615,7 @@ class PointCloud:
         if len(self.points) == 0:
             print("The cluster has no points to show.")
             return None
-        elif pick_point and show_obb == True:
+        elif pick_point and show_obb is True:
             raise ValueError(
                 "Bounding box cannot be visible when picking point is enabled. Both pick_point and show_obb"
                 " parameters cannot be set to True simultaneously.")
@@ -624,6 +623,7 @@ class PointCloud:
         # Convert points to Open3D point cloud
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(self.points[:, :3])
+        pcd.colors = o3d.utility.Vector3dVector(self.colors[:, :3]) if len(self.colors) > 0 else None
 
         geometries_to_draw = [pcd]
 
@@ -639,7 +639,7 @@ class PointCloud:
 
         if not pick_point:
             # Visualize the point cloud (and OBB if included)
-            o3d.visualization.draw_geometries(geometries_to_draw, window_name="Cluster Visualization")
+            o3d.visualization.draw_geometries(geometries_to_draw, window_name="Clusters Visualization")
         else:
             # Visualize the point cloud to be able to select a point
             vis = o3d.visualization.VisualizerWithEditing()
@@ -668,8 +668,8 @@ class PointCloud:
         # Shuffling points and related attributes
         self.points = self.points[shuffle_indices]
         # TODO: What if there is no color/intensity/distToGround provided?
-        if len(self.color) != 0:
-            self.color = self.color[shuffle_indices]
+        if len(self.colors) != 0:
+            self.colors = self.colors[shuffle_indices]
         if len(self.intensity) != 0:
             self.intensity = self.intensity[shuffle_indices]
         if len(self.distToGround) != 0:
@@ -683,10 +683,10 @@ class PointCloud:
         Parameters:
         - bottom_dist (float): The lower bound of the distance range (inclusive).
         - top_dist (float): The upper bound of the distance range (inclusive).
-        - inplace (bool): If True, modifies the current Cluster object in place by removing points outside the specified distance range. If False, returns a new Cluster object containing only the points within the specified range, leaving the original Cluster unchanged.
+        - inplace (bool): If True, modifies the current Clusters object in place by removing points outside the specified distance range. If False, returns a new Clusters object containing only the points within the specified range, leaving the original Clusters unchanged.
 
         Returns:
-        - Cluster: A new Cluster object containing the sliced points and corresponding attributes, unless inplace is True, in which case the original Cluster is modified and nothing is returned.
+        - Clusters: A new Clusters object containing the sliced points and corresponding attributes, unless inplace is True, in which case the original Clusters is modified and nothing is returned.
 
         Raises:
         - ValueError: If `distToGround` property is not available for slicing.
@@ -758,15 +758,17 @@ class PointCloud:
         # TODO: Why not to set size as property?!
         return len(self.points)
 
-    def subsample(self, rate, inplace=False):
+    def subsample(self, rate, boolean=False):
         """
-        Subsample the point cloud by a given rate.
+        Subsample the points of the cluster using a random mask.
 
-        Parameters:
-        - rate (float): The subsampling rate. Must be in the range (0, 1].
+        Vars:
+        - rate (float): The subsampling rate in the range (0, 1].
+        - boolean : Return a mask array
 
         Returns:
-        - PointCloud: A new PointCloud instance containing the subsample of points and corresponding attributes.
+        - PointCloud: A new PointCloud instance containing the subsampled points.
+        - np.ndarray: A boolean mask array where True values indicate points to include in the subset.
         """
         if rate <= 0 or rate > 1:
             raise ValueError("Subsampling rate must be in the range (0, 1].")
@@ -774,7 +776,10 @@ class PointCloud:
         # Generate a random mask for subsampling
         mask = np.random.rand(len(self.points)) < rate
 
-        return self.get_subset(mask, inplace=False)
+        if not boolean:
+            return self.get_subset(mask, inplace=False)
+        else:
+            return mask
 
     def _update_obb_dim(self):
         """
@@ -819,22 +824,22 @@ class PointCloud:
 
     def _save_as_ply(self, file_name):
         """
-        Saves the Cluster instance as a PLY file.
+        Saves the Clusters instance as a PLY file.
 
         Parameters:
         file_name (str): The name of the PLY file to save the instance to.
         """
-        # Assuming the Cluster instance has a point cloud attribute named 'points'
+        # Assuming the Clusters instance has a point cloud attribute named 'points'
         if hasattr(self, 'points'):
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(self.points)
 
-            if hasattr(self, 'color'):
-                pcd.colors = o3d.utility.Vector3dVector(self.color)
+            if hasattr(self, 'colors'):
+                pcd.colors = o3d.utility.Vector3dVector(self.colors)
 
             #            if hasattr(self, 'normal'):
             #                pcd.normals = o3d.utility.Vector3dVector(self.normal)
 
             o3d.io.write_point_cloud(file_name, pcd)
         else:
-            raise AttributeError("Cluster instance does not have 'points' attribute.")
+            raise AttributeError("Clusters instance does not have 'points' attribute.")

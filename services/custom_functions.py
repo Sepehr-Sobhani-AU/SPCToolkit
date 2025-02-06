@@ -119,11 +119,11 @@ def get_eigenvalues(data, k, smooth=True):
     Compute the eigenvalues of the covariance matrix of k-nearest neighbor points for each point.
 
     This function supports input data in two forms:
-    - A Cluster object, where it uses `data.points` for the points.
+    - A Clusters object, where it uses `data.points` for the points.
     - A numpy array directly representing 3D points.
 
     Parameters:
-    - data (Cluster or np.ndarray): A Cluster object or a numpy array representing points.
+    - data (Clusters or np.ndarray): A Clusters object or a numpy array representing points.
     - k (int): The number of nearest neighbors to consider for each point.
     - smooth (bool, optional): If True, averages the eigenvalues across neighbors. Defaults to True.
 
@@ -136,7 +136,7 @@ def get_eigenvalues(data, k, smooth=True):
     elif hasattr(data, 'points'):
         point_cloud = data.points
     else:
-        raise ValueError("The first parameter must be a Cluster object or a numpy array.")
+        raise ValueError("The first parameter must be a Clusters object or a numpy array.")
 
     # Create a k-d tree
     tree = KDTree(point_cloud)
@@ -562,7 +562,7 @@ def change_layer_color(doc, layer_name, new_color):
 
 def get_random_color(cluster_labels: np.ndarray, noise_color: np.ndarray = [0.2, 0.2, 0.2]):
     """
-    Generates a random RGB color for each unique label in cluster_labels.
+    Generates a random RGB color for each unique labels in cluster_labels.
 
     Args:
         cluster_labels (np.array): An array of cluster labels.
@@ -578,7 +578,7 @@ def get_random_color(cluster_labels: np.ndarray, noise_color: np.ndarray = [0.2,
     np.random.seed(42)  # Optional: Set a seed for reproducibility
     cluster_colors = np.random.rand(len(unique_labels), 3)
 
-    # Assign a color for noise (-1 label)
+    # Assign a color for noise (-1 labels)
     noise_labels = unique_labels == -1
     cluster_colors[noise_labels] = noise_color
 
@@ -664,11 +664,11 @@ def read_excel_to_nested_dict(file_path):
 def size_check(pcdCluster, predictionLabel, dic):
     """
     This function checks whether the size of the provided point cloud cluster
-    is within the predefined range specified in the dictionary for a given label.
+    is within the predefined range specified in the dictionary for a given labels.
 
     :param pcdCluster: The point cloud cluster for which the size is to be checked.
                        Expected to be an instance of open3d.geometry.PointCloud or equivalent.
-    :param predictionLabel: The label predicted by the model for the given point cloud cluster.
+    :param predictionLabel: The labels predicted by the model for the given point cloud cluster.
                             Expected to be a key in the provided dictionary.
     :param dic: A dictionary containing the acceptable size ranges for different labels.
                 The keys are expected to be the possible values of predictionLabel.
@@ -677,7 +677,7 @@ def size_check(pcdCluster, predictionLabel, dic):
                 the minimum or maximum acceptable size along a specific axis.
 
     :return: A boolean value, True if the size of the point cloud cluster is within the acceptable
-             range for the given label, False otherwise.
+             range for the given labels, False otherwise.
     """
 
     sizeCheck = False
@@ -693,7 +693,7 @@ def size_check(pcdCluster, predictionLabel, dic):
     W = obbDim[1]
     H = obbDim[2]
 
-    # Retrieve the acceptable size range for the given prediction label from the dictionary.
+    # Retrieve the acceptable size range for the given prediction labels from the dictionary.
     morph = dic[predictionLabel]["Morphology"]
     minL = morph["Min_Length"]
     maxL = morph["Max_Length"]
@@ -734,11 +734,11 @@ def get_obb_corners(obb):
 def obb_size_check(obb, predictionLabel, dic):
     """
     This function checks whether the size of the provided oriented bounding box
-    is within the predefined range specified in the dictionary for a given label.
+    is within the predefined range specified in the dictionary for a given labels.
 
     :param obb: The point cloud cluster oriented bounding box for which the size is to be checked.
                        Expected to be an instance of open3d oriented bounding box or equivalent.
-    :param predictionLabel: The label predicted by the model for the given point cloud cluster.
+    :param predictionLabel: The labels predicted by the model for the given point cloud cluster.
                             Expected to be a key in the provided dictionary.
     :param dic: A dictionary containing the acceptable size ranges for different labels.
                 The keys are expected to be the possible values of predictionLabel.
@@ -747,7 +747,7 @@ def obb_size_check(obb, predictionLabel, dic):
                 the minimum or maximum acceptable size along a specific axis.
 
     :return: A boolean value, True if the size of the point cloud cluster is within the acceptable
-             range for the given label, False otherwise.
+             range for the given labels, False otherwise.
     """
 
     sizeCheck = False
@@ -760,7 +760,7 @@ def obb_size_check(obb, predictionLabel, dic):
     W = obbDim[1]
     H = obbDim[2]
 
-    # Retrieve the acceptable size range for the given prediction label from the dictionary.
+    # Retrieve the acceptable size range for the given prediction labels from the dictionary.
     morph = dic[predictionLabel]["Morphology"]
     minL = morph["Min_Length"]
     maxL = morph["Max_Length"]
@@ -780,13 +780,13 @@ def elev_check(pcdCluster, pcdGround, predictionLabel, dic):
     """
     This function checks whether the elevation of the provided point cloud cluster
     above the ground is within the predefined range specified in the dictionary for
-    a given label.
+    a given labels.
 
     :param pcdCluster: The point cloud cluster for which the elevation is to be checked.
                        Expected to be an instance of open3d.geometry.PointCloud or equivalent.
     :param pcdGround: The point cloud representing the ground.
                       Expected to be an instance of open3d.geometry.PointCloud or equivalent.
-    :param predictionLabel: The label predicted by the model for the given point cloud cluster.
+    :param predictionLabel: The labels predicted by the model for the given point cloud cluster.
                             Expected to be a key in the provided dictionary.
     :param dic: A dictionary containing the acceptable elevation ranges for different labels.
                 The keys are expected to be the possible values of predictionLabel.
@@ -794,7 +794,7 @@ def elev_check(pcdCluster, pcdGround, predictionLabel, dic):
                 corresponding to the minimum and maximum acceptable elevation above the ground.
 
     :return: A boolean value, True if the elevation of the point cloud cluster is within the
-             acceptable range for the given label, False otherwise.
+             acceptable range for the given labels, False otherwise.
     """
 
     elevCheck = False
@@ -803,7 +803,7 @@ def elev_check(pcdCluster, pcdGround, predictionLabel, dic):
     # which serves as the elevation of the cluster above the ground.
     distToGround = min(pcdCluster.compute_point_cloud_distance(pcdGround))
 
-    # Retrieve the acceptable elevation range for the given prediction label from the dictionary.
+    # Retrieve the acceptable elevation range for the given prediction labels from the dictionary.
     morph = dic[predictionLabel]["Morphology"]
     minElev = morph["Min_Elev"]
     maxElev = morph["Max_Elev"]
@@ -819,13 +819,13 @@ def obb_elev_check(obb, pcdGround, predictionLabel, dic):
     """
     This function checks whether the elevation of the provided point cloud cluster
     above the ground is within the predefined range specified in the dictionary for
-    a given label.
+    a given labels.
 
     :param pcdCluster: The point cloud cluster for which the elevation is to be checked.
                        Expected to be an instance of open3d.geometry.PointCloud or equivalent.
     :param pcdGround: The point cloud representing the ground.
                       Expected to be an instance of open3d.geometry.PointCloud or equivalent.
-    :param predictionLabel: The label predicted by the model for the given point cloud cluster.
+    :param predictionLabel: The labels predicted by the model for the given point cloud cluster.
                             Expected to be a key in the provided dictionary.
     :param dic: A dictionary containing the acceptable elevation ranges for different labels.
                 The keys are expected to be the possible values of predictionLabel.
@@ -833,7 +833,7 @@ def obb_elev_check(obb, pcdGround, predictionLabel, dic):
                 corresponding to the minimum and maximum acceptable elevation above the ground.
 
     :return: A boolean value, True if the elevation of the point cloud cluster is within the
-             acceptable range for the given label, False otherwise.
+             acceptable range for the given labels, False otherwise.
     """
 
     elevCheck = False
@@ -845,7 +845,7 @@ def obb_elev_check(obb, pcdGround, predictionLabel, dic):
     # which serves as the elevation of the cluster above the ground.
     distToGround = min(pcd.compute_point_cloud_distance(pcdGround))
 
-    # Retrieve the acceptable elevation range for the given prediction label from the dictionary.
+    # Retrieve the acceptable elevation range for the given prediction labels from the dictionary.
     morph = dic[predictionLabel]["Morphology"]
     minElev = morph["Min_Elev"]
     maxElev = morph["Max_Elev"]
@@ -909,7 +909,7 @@ def compute_projection_angle_to_x_axis(pcd):
 
 def get_prediction(clusterPoints, model, NUM_POINTS, MIN_NUM_POINTS):
     """
-    This function predicts the label for a single cluster of points using a specified model.
+    This function predicts the labels for a single cluster of points using a specified model.
 
     Args:
     clusterPoints (ndarray): The points in the cluster.
@@ -918,7 +918,7 @@ def get_prediction(clusterPoints, model, NUM_POINTS, MIN_NUM_POINTS):
     MIN_NUM_POINTS (int): The minimum number of points required for a valid prediction.
 
     Returns:
-    tuple: A tuple containing the predicted label and the maximum probability.
+    tuple: A tuple containing the predicted labels and the maximum probability.
     """
     # Shuffle the points in the cluster
     np.random.shuffle(clusterPoints)
@@ -964,7 +964,7 @@ def get_prediction(clusterPoints, model, NUM_POINTS, MIN_NUM_POINTS):
     probabilities = model.predict(points)
     probability = np.max(probabilities)
 
-    # Retrieve the predicted label with the highest probability
+    # Retrieve the predicted labels with the highest probability
     prediction = tf.math.argmax(probabilities, -1)
 
     # Return the prediction and the maximum probability
@@ -984,8 +984,8 @@ def get_predictions(clustersPoints, clusterLabels, model, NUM_POINTS, MIN_NUM_PO
 
     Returns:
     list: A list of predictions, each prediction includes:
-                                            cluster label,
-                                            predicted label,
+                                            cluster labels,
+                                            predicted labels,
                                             probability,
                                             number of points in the cluster,
                                             oriented bounding box,
@@ -997,12 +997,12 @@ def get_predictions(clustersPoints, clusterLabels, model, NUM_POINTS, MIN_NUM_PO
     # Identify unique cluster labels.
     unique_labels = np.unique(clusterLabels)
 
-    # Iterate through each unique cluster label.
+    # Iterate through each unique cluster labels.
     for clusterLabel in unique_labels:
-        # Gather points corresponding to the current cluster label.
+        # Gather points corresponding to the current cluster labels.
         clusterPoints = clustersPoints[(clusterLabels == clusterLabel)]
 
-        # Predict the label for the current cluster of points.
+        # Predict the labels for the current cluster of points.
         # Invalid clusters return 'None' for prediction and probability
         prediction, probability = get_prediction(clusterPoints, model, NUM_POINTS, MIN_NUM_POINTS)
 
@@ -1115,7 +1115,7 @@ def o3d_dbscan(clustersPoints, eps, min_points):
     min_points (int): The number of points in a neighborhood for a point to be considered as a core point. This includes the point itself.
 
     Returns:
-    np.ndarray: An array where the ith entry is the cluster label of the ith input point. Noise points are labeled as -1.
+    np.ndarray: An array where the ith entry is the cluster labels of the ith input point. Noise points are labeled as -1.
     """
 
     # Create an Open3D PointCloud object
@@ -1131,7 +1131,7 @@ def o3d_dbscan(clustersPoints, eps, min_points):
         # 'print_progress' shows a progress bar, useful for large datasets
         labels_Sliced = np.array(pcd_Sliced.cluster_dbscan(eps, min_points, print_progress=False))
 
-    # Return the labels of the points, each label represents the cluster index each point belongs to
+    # Return the labels of the points, each labels represents the cluster index each point belongs to
     return labels_Sliced
 
 
@@ -1289,7 +1289,7 @@ def voxel_based_distance_to_ground(non_ground_points, non_ground_voxels_index, g
     for voxel in common_voxels:
         print("Voxel: ", voxel)
 
-        # Mask for current voxel
+        # Masks for current voxel
 
         ground_mask = np.all(ground_voxels_index == voxel, axis=1)
         non_ground_mask = np.all(non_ground_voxels_index == voxel, axis=1)
@@ -1646,10 +1646,10 @@ def check_and_install_package(package, required_version):
                 f"Failed to install/update {package} to version {required_version}. Please check your permissions or internet connection.")
 '''
 
-class Cluster:
+class Clusters:
     def __init__(self, points, **kwargs):
         """
-        Initialize a Cluster object.
+        Initialize a Clusters object.
 
         Required Parameters:
         - points (np.ndarray): A numpy array (n, 3) of points in the format [[x1, y1, z1],
@@ -1660,8 +1660,8 @@ class Cluster:
                                                                              [xn, yn, zn]]
 
         Optional Keyword Arguments:
-        - label (int): A unique identifier for the cluster.
-        - parent (int): The label of the parent cluster.
+        - labels (int): A unique identifier for the cluster.
+        - parent (int): The labels of the parent cluster.
         - color (np.ndarray): An array (n, 3) of color values (R, G, B) for each point.
         - normal (np.ndarray): An array (n, 3) of normal unit vector values (Nx, Ny, Nz) for each point.
         - intensity (np.ndarray): An array (n) of intensity values (0-255) for each point.
@@ -1679,7 +1679,7 @@ class Cluster:
             raise ValueError("Points must be a numpy array with shape (n, 3)")
 
         self.points = points
-        self.label = kwargs.get('label', None)
+        self.label = kwargs.get('labels', None)
         self.parent = kwargs.get('parent', None)
         self.clusters = []
         self.prediction = ''
@@ -1828,7 +1828,7 @@ class Cluster:
         - voxel_size (float): The voxel size to determine the new point cloud density.
 
         Returns:
-        - A Cluster object created from the downsampled point cloud with original attributes of the point.
+        - A Clusters object created from the downsampled point cloud with original attributes of the point.
         """
 
         # Create a point cloud object from the cluster's points
@@ -1871,7 +1871,7 @@ class Cluster:
         valid_labels = [label for label in unique_labels if np.sum(self.clusters == label) >= min_points]
 
         for label in valid_labels:
-            # Create mask for points belonging to the current label
+            # Create mask for points belonging to the current labels
             mask = self.clusters == label
 
             # Create a copy of cluster
@@ -1904,7 +1904,7 @@ class Cluster:
         Examples:
         --------
         # Assuming 'points' is a numpy array representing points in the cluster
-        cluster_instance = Cluster(points=np.random.rand(100, 3))
+        cluster_instance = Clusters(points=np.random.rand(100, 3))
         eigenvalues = cluster_instance.get_eigenvalues(k=5, smooth=True)
         print("Averaged Eigenvalues:", eigenvalues)
 
@@ -1967,7 +1967,7 @@ class Cluster:
         - inplace (bool): If True, modifies the current cluster in-place. Default is False.
 
         Returns:
-        - Cluster: A new Cluster instance containing the subcluster if inplace is False.
+        - Clusters: A new Clusters instance containing the subcluster if inplace is False.
         """
 
         if not np.count_nonzero(mask) >= 4:
@@ -1987,8 +1987,8 @@ class Cluster:
                 self.feature = []
                 self.metadata = {}
             else:
-                # Return an empty Cluster instance with (1, 3) dimension as
-                # Cluster constructor needs (n, 3) ndarray for points
+                # Return an empty Clusters instance with (1, 3) dimension as
+                # Clusters constructor needs (n, 3) ndarray for points
                 return Cluster(np.empty((1, 3)))
         else:
             if inplace:
@@ -2195,9 +2195,9 @@ class Cluster:
 
     def predict(self, model, class_map, weight_path):
         """
-        Predicts the feature label for the cluster using the provided PointNet model.
+        Predicts the feature labels for the cluster using the provided PointNet model.
 
-        This method processes the cluster's points and uses the given model to predict the most likely class label.
+        This method processes the cluster's points and uses the given model to predict the most likely class labels.
         It also computes the probability of the prediction. The prediction, its probability, and the model's weight path
         are stored as attributes of the cluster.
 
@@ -2207,7 +2207,7 @@ class Cluster:
         - weight_path (str): The path to the model's weights.
 
         Returns:
-        tuple: A tuple containing the predicted class label and the corresponding probability.
+        tuple: A tuple containing the predicted class labels and the corresponding probability.
 
         Note:
         The prediction will be 'Noise' if the preprocessed points are not suitable for prediction.
@@ -2239,7 +2239,7 @@ class Cluster:
 
     def save(self, file_name):
         """
-        Saves the Cluster instance to a file. The format is determined by the file extension.
+        Saves the Clusters instance to a file. The format is determined by the file extension.
 
         Parameters:
         file_name (str): The name of the file to save the instance to.
@@ -2259,7 +2259,7 @@ class Cluster:
 
     def save_property(self, property_name, file_name):
         """
-        Saves a specified property of the Cluster to a .npy file.
+        Saves a specified property of the Clusters to a .npy file.
 
         Parameters:
         property_name (str): The name of the property to save.
@@ -2273,7 +2273,7 @@ class Cluster:
             property_data = getattr(self, property_name)
             np.save(file_name, property_data)
         else:
-            raise AttributeError(f"Property '{property_name}' not found in Cluster.")
+            raise AttributeError(f"Property '{property_name}' not found in Clusters.")
 
             # o3d.io.write_point_cloud(groundFile, pcd_ground)
 
@@ -2346,7 +2346,7 @@ class Cluster:
 
         if not pick_point:
             # Visualize the point cloud (and OBB if included)
-            o3d.visualization.draw_geometries(geometries_to_draw, window_name="Cluster Visualization")
+            o3d.visualization.draw_geometries(geometries_to_draw, window_name="Clusters Visualization")
         else:
             # Visualize the point cloud to be able to select a point
             vis = o3d.visualization.VisualizerWithEditing()
@@ -2390,10 +2390,10 @@ class Cluster:
         Parameters:
         - bottom_dist (float): The lower bound of the distance range (inclusive).
         - top_dist (float): The upper bound of the distance range (inclusive).
-        - inplace (bool): If True, modifies the current Cluster object in place by removing points outside the specified distance range. If False, returns a new Cluster object containing only the points within the specified range, leaving the original Cluster unchanged.
+        - inplace (bool): If True, modifies the current Clusters object in place by removing points outside the specified distance range. If False, returns a new Clusters object containing only the points within the specified range, leaving the original Clusters unchanged.
 
         Returns:
-        - Cluster: A new Cluster object containing the sliced points and corresponding attributes, unless inplace is True, in which case the original Cluster is modified and nothing is returned.
+        - Clusters: A new Clusters object containing the sliced points and corresponding attributes, unless inplace is True, in which case the original Clusters is modified and nothing is returned.
 
         Raises:
         - ValueError: If `distToGround` property is not available for slicing.
@@ -2565,12 +2565,12 @@ class Cluster:
 
     def _save_as_ply(self, file_name):
         """
-        Saves the Cluster instance as a PLY file.
+        Saves the Clusters instance as a PLY file.
 
         Parameters:
         file_name (str): The name of the PLY file to save the instance to.
         """
-        # Assuming the Cluster instance has a point cloud attribute named 'points'
+        # Assuming the Clusters instance has a point cloud attribute named 'points'
         if hasattr(self, 'points'):
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(self.points)
@@ -2583,7 +2583,7 @@ class Cluster:
 
             o3d.io.write_point_cloud(file_name, pcd)
         else:
-            raise AttributeError("Cluster instance does not have 'points' attribute.")
+            raise AttributeError("Clusters instance does not have 'points' attribute.")
 
 
 class Clusters1:
@@ -2592,14 +2592,14 @@ class Clusters1:
         Initialize a Clusters container.
 
         Attributes:
-        - clusters (list): A list to store Cluster instances.
+        - clusters (list): A list to store Clusters instances.
         """
         self.clusters = []
         self.labels = []
 
     def add_clusters_from_points(self, points, labels, distToGround=None, color=None, intensity=None, normal=None):
         """
-        Create Cluster objects from points and labels and add them to the Clusters object.
+        Create Clusters objects from points and labels and add them to the Clusters object.
 
         Parameters:
         - points (np.ndarray): A numpy array of points.
@@ -2624,7 +2624,7 @@ class Clusters1:
             cluster_intensity = intensity[mask] if intensity is not None else np.array([])
             cluster_normal = normal[mask] if normal is not None else np.array([])
 
-            # Creating the Cluster object
+            # Creating the Clusters object
             cluster = Cluster(
                 points=cluster_points,
                 distToGround=cluster_distToGround,
@@ -2639,13 +2639,13 @@ class Clusters1:
 
     def add(self, cluster):
         """
-        Add a new Cluster instance to the container.
+        Add a new Clusters instance to the container.
 
         Parameters:
-        - cluster (Cluster): The Cluster instance to add.
+        - cluster (Clusters): The Clusters instance to add.
         """
         if not isinstance(cluster, Cluster):
-            raise TypeError("The added object must be an instance of Cluster.")
+            raise TypeError("The added object must be an instance of Clusters.")
         self.clusters.append(cluster)
 
         # keep labels unique
@@ -2654,75 +2654,75 @@ class Clusters1:
 
     def remove(self, cluster):
         """
-        Remove a Cluster instance from the container.
+        Remove a Clusters instance from the container.
 
         Parameters:
-        - cluster (Cluster): The Cluster instance to remove.
+        - cluster (Clusters): The Clusters instance to remove.
         """
         if not isinstance(cluster, Cluster):
-            raise TypeError("The removed object must be an instance of Cluster.")
+            raise TypeError("The removed object must be an instance of Clusters.")
         self.clusters.remove(cluster)
         self.labels.remove(cluster.label)
 
     def get(self, label):
         """
-        Retrieve a Cluster instance by its label.
+        Retrieve a Clusters instance by its labels.
 
         Parameters:
-        - label (int): The label of the Cluster to retrieve.
+        - labels (int): The labels of the Clusters to retrieve.
 
         Returns:
-        Cluster or None: The Cluster instance with the given label, or None if not found.
+        Clusters or None: The Clusters instance with the given labels, or None if not found.
         """
         for cluster in self.clusters:
-            if cluster.label == label:
+            if cluster.labels == label:
                 return cluster
         return None
 
     def count(self):
         """
-        Get the count of Cluster instances in the container.
+        Get the count of Clusters instances in the container.
 
         Returns:
-        int: The number of Cluster instances.
+        int: The number of Clusters instances.
         """
         return len(self.clusters)
 
     def apply_to_all(self, function, *args, **kwargs):
         """
-        Apply a given function to all Cluster instances in the container.
+        Apply a given function to all Clusters instances in the container.
 
         Parameters:
-        - function (callable): The function to apply. It should take a Cluster instance as its first argument.
+        - function (callable): The function to apply. It should take a Clusters instance as its first argument.
         - args, kwargs: Additional arguments and keyword arguments to pass to the function.
 
         Returns:
-        - list: A list of results from applying the function to each Cluster.
+        - list: A list of results from applying the function to each Clusters.
 
         Example:
         --------
-        Assume we have a container of Cluster instances named `cluster_container`, and we define the following function to count the number of points in each Cluster:
+        Assume we have a container of Clusters instances named `cluster_container`, and we define the following function to count the number of points in each Clusters:
 
             def count_points(cluster):
                 return len(cluster.points)
 
-        We can apply this function to all Cluster instances in the container like this:
+        We can apply this function to all Clusters instances in the container like this:
 
             results = cluster_container.apply_to_all(count_points)
 
-        `results` will be a list containing the number of points in each Cluster within the container.
+        `results` will be a list containing the number of points in each Clusters within the container.
         """
         return [function(cluster, *args, **kwargs) for cluster in self.clusters]
 
     def filter(self, condition):
         """
-        Filter Cluster instances based on a provided condition.
+        Filter Clusters instances based on a provided condition.
 
         Parameters:
-        - condition (callable): A function that takes a Cluster instance and returns a boolean.
+        - condition (callable): A function that takes a Clusters instance and returns a boolean.
 
         Returns:
-        Clusters: A Clusters instance containing Cluster instances that satisfy the condition.
+        Clusters: A Clusters instance containing Clusters instances that satisfy the condition.
         """
 
         filtered_clusters = Clusters()
@@ -2742,7 +2742,7 @@ class Clusters1:
                                    after merging. Default is True.
 
         Returns:
-        - merged_cluster (Cluster): The new Cluster instance resulting from the merge.
+        - merged_cluster (Clusters): The new Clusters instance resulting from the merge.
         """
 
         first_cluster = self.get(labels_to_merge[0])
@@ -2778,7 +2778,7 @@ class Clusters1:
 
                 self.remove(cluster)
 
-        # Create a new Cluster instance with the merged attributes
+        # Create a new Clusters instance with the merged attributes
         first_cluster.points = merged_points
 
         if hasattr(first_cluster, 'distToGround') and len(first_cluster.distToGround) > 0:
@@ -2803,11 +2803,11 @@ class Clusters1:
         - selected_labels (list, optional): A list of cluster labels to predict. If None, predicts for all clusters.
         """
         for cluster in self.clusters:
-            if selected_labels is None or cluster.label in selected_labels:
+            if selected_labels is None or cluster.labels in selected_labels:
                 try:
                     cluster.predict(model, class_map, weight_path)
                 except Exception as e:
-                    print(f"Prediction failed for cluster {cluster.label}: {e}")
+                    print(f"Prediction failed for cluster {cluster.labels}: {e}")
 
     def pick_clusters(self):
         """
@@ -2821,7 +2821,7 @@ class Clusters1:
         # Create an empty point cloud to merge all clusters
         merged_pcd = o3d.geometry.PointCloud()
 
-        # Dictionary to map the color to cluster label
+        # Dictionary to map the color to cluster labels
         color_label_map = {}
 
         for cluster in self.clusters:
@@ -2834,9 +2834,9 @@ class Clusters1:
             # Merge with the main point cloud
             merged_pcd += pcd
 
-            # Update color-label map
+            # Update color-labels map
             key = color[0] + color[1] + color[2]
-            color_label_map[key] = cluster.label
+            color_label_map[key] = cluster.labels
 
         # Visualize the merged point cloud and allow user to pick points
         vis = o3d.visualization.VisualizerWithEditing()
@@ -2870,7 +2870,7 @@ class Clusters1:
 
         # Add clusters to the visualization
         for cluster in self.clusters:
-            if selected_labels is None or cluster.label in selected_labels:
+            if selected_labels is None or cluster.labels in selected_labels:
                 # Prepare the points for visualization
                 pcd = o3d.geometry.PointCloud()
                 pcd.points = o3d.utility.Vector3dVector(cluster.points)
@@ -2906,8 +2906,8 @@ class Clusters1:
             cluster.points.shape[0], np.nan) for cluster in self.clusters])
         print(all_dists.shape)
         # Create an array of labels with the same length as all_points
-        # For each cluster, repeat its label for each of its points
-        all_labels = np.concatenate([np.full(cluster.points.shape[0], cluster.label) for cluster in self.clusters])
+        # For each cluster, repeat its labels for each of its points
+        all_labels = np.concatenate([np.full(cluster.points.shape[0], cluster.labels) for cluster in self.clusters])
         print(all_labels.shape)
         # Save points, labels and distance to grounds as .npy files
         np.save(f"{filepath}_points.npy", all_points)
@@ -2916,19 +2916,19 @@ class Clusters1:
 
     def __iter__(self):
         """
-        Make the Clusters class iterable over its Cluster instances.
+        Make the Clusters class iterable over its Clusters instances.
         """
         return iter(self.clusters)
 
     def __len__(self):
         """
-        Return the number of Cluster instances in the container.
+        Return the number of Clusters instances in the container.
         """
         return len(self.clusters)
 
     def __getitem__(self, index):
         """
-        Allow indexed access to Cluster instances.
+        Allow indexed access to Clusters instances.
         """
         return self.clusters[index]
 
@@ -2946,7 +2946,7 @@ class Clusters:
 
         Attributes:
             points (np.ndarray): Stores points for all clusters.
-            labels (np.ndarray): Stores the label for each point.
+            labels (np.ndarray): Stores the labels for each point.
             colors (np.ndarray): Stores colors for each point, NaN if absent.
             normals (np.ndarray): Stores normals for each point, NaN if absent.
             distToGround (np.ndarray): Stores distance to the ground for each point, NaN if absent.
@@ -2967,10 +2967,10 @@ class Clusters:
         Add a new cluster's data to the Clusters1 container.
 
         Parameters:
-        - cluster (Cluster): The cluster instance to add. It is expected to have attributes like points, label, and optionally colors, normals, distToGround, intensity.
+        - cluster (Clusters): The cluster instance to add. It is expected to have attributes like points, labels, and optionally colors, normals, distToGround, intensity.
         """
         if not isinstance(cluster, Cluster):
-            raise TypeError("The added object must be an instance of Cluster.")
+            raise TypeError("The added object must be an instance of Clusters.")
 
         if next_label:
             if len(self.labels) == 0:
@@ -2979,7 +2979,7 @@ class Clusters:
                 label = np.max(self.labels)
         else:
             if cluster.label is None:
-                raise ValueError("Cluster label cannot be None.")
+                raise ValueError("Clusters labels cannot be None.")
             label = cluster.label
 
         num_points = len(cluster.points)
@@ -3026,10 +3026,10 @@ class Clusters:
         """
 
         if not noise:
-            # Skip noise points with label -1
+            # Skip noise points with labels -1
             valid_mask = labels != -1
         else:
-            # Include noise points with label -1
+            # Include noise points with labels -1
             valid_mask = np.full(len(points), True, dtype=bool)
 
         valid_points = points[valid_mask]
@@ -3077,19 +3077,19 @@ class Clusters:
 
     def get(self, label):
         """
-        Retrieve a Cluster instance by its label. This method searches through the labels
-        stored in the Clusters container and constructs a new Cluster object with attributes
-        corresponding to the specified label.
+        Retrieve a Clusters instance by its labels. This method searches through the labels
+        stored in the Clusters container and constructs a new Clusters object with attributes
+        corresponding to the specified labels.
 
         Parameters:
-        - label (int): The label of the Cluster to retrieve.
+        - labels (int): The labels of the Clusters to retrieve.
 
         Returns:
-        - Cluster or None: The Cluster instance with the given label, or None if the label
+        - Clusters or None: The Clusters instance with the given labels, or None if the labels
           is not found in the dataset.
 
         Raises:
-        - ValueError: If the label type is not an integer.
+        - ValueError: If the labels type is not an integer.
 
         Example:
         --------
@@ -3098,10 +3098,10 @@ class Clusters:
         if not isinstance(label, int):
             raise ValueError("Label must be an integer")
 
-        # Find the indices where the label matches
+        # Find the indices where the labels matches
         mask = self.labels == label
         if not np.any(mask):
-            return None  # No points with the given label
+            return None  # No points with the given labels
 
         # Use filtered attributes or create empty numpy arrays if attributes are not present
         filtered_points = self.points[mask]

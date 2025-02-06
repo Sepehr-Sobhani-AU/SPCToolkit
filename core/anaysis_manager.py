@@ -1,11 +1,3 @@
-# TODO:
-#  The type of analysis to perform are hard-coded in the apply_analysis method. This is not scalable and will require
-#  changes to the code whenever a new analysis type is added. A better approach would be to use a factory pattern to
-#  create the analysis instances based on the analysis type. This way, new analysis types can be added without modifying
-#  the AnalysisManager class. The factory pattern can be implemented as a separate class or as a static method within
-#  the AnalysisResult class. The factory method would take the analysis type as an argument and return an instance of
-#  the corresponding analysis class. This would decouple the AnalysisManager from the specific analysis types and make
-#  the code more extensible.
 """
     This module implements a Dynamic Task Execution Framework that allows for the execution of different types of
     tasks based on the task type. The Task class is an abstract base class that defines the interface for all tasks.
@@ -21,8 +13,9 @@ from typing import Dict, Any
 
 from PyQt5.QtCore import pyqtSignal, QObject
 
-from tasks.subsample import Subsample
-from tasks.cluster import Cluster
+from tasks.subsampling import Subsampling
+from tasks.clustering import Clustering
+from tasks.filtering import Filtering
 
 from core.data_node import DataNode
 
@@ -42,10 +35,10 @@ class AnalysisManager(QObject):
         """
 
         super().__init__()
-        self.tasks_registry = {"subsampling": Subsample,
-                               "clustering": Cluster}
-
-        self.analyses: Dict[uuid.UUID, AnalysisResult] = {}
+        self.tasks_registry = {"subsampling": Subsampling,
+                               "clustering": Clustering,
+                               "filtering": Filtering
+                               }
 
     def apply_analysis(self, data: DataNode, analysis_type: str, params: Dict[str, Any]) -> None:
         """

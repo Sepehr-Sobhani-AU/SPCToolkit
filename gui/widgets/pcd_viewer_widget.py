@@ -3,7 +3,7 @@ import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
 from OpenGL.GL import *
-from OpenGL.GLU import gluPerspective,gluProject, gluUnProject
+from OpenGL.GLU import gluPerspective, gluProject, gluUnProject
 from OpenGL.GLU import gluNewQuadric, gluDeleteQuadric, gluQuadricDrawStyle
 from OpenGL.GLU import gluSphere
 from OpenGL.GLU import GLU_LINE, GLU_FILL

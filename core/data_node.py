@@ -40,44 +40,10 @@ class DataNode:
         self.uid: uuid.UUID = uuid.uuid4()
         self.name: str = name
         self.data: Any = data
-        self.data_type: str = data_type
+        self.data_type: str = self.data.__class__.__name__ if data_type == "" else data_type
         self.parent_uid: uuid.UUID = parent_uid
         self.depends_on: List[uuid.UUID] = depends_on if depends_on else []
         self.tags: List[str] = tags if tags else []
-
-    def get_metadata(self) -> Dict[str, Any]:
-        """
-        Retrieves metadata about the DataNode.
-
-        Returns:
-            dict: A dictionary containing metadata about the node.
-        """
-        return {
-            "uid": str(self.uid),
-            "name": self.name,
-            "data_type": self.data_type,
-            "parent_uid": str(self.parent_uid) if self.parent_uid else None,
-            "depends_on": [str(uid) for uid in self.depends_on],
-            "tags": self.tags
-        }
-
-    def update_metadata(self, metadata: Dict[str, Any]) -> None:
-        """
-        Updates metadata for the DataNode. Only updates provided keys.
-
-        Args:
-            metadata (dict): A dictionary containing metadata keys to update.
-        """
-        if "name" in metadata:
-            self.name = metadata["name"]
-        if "data_type" in metadata:
-            self.data_type = metadata["data_type"]
-        if "parent_uid" in metadata:
-            self.parent_uid = uuid.UUID(metadata["parent_uid"])
-        if "depends_on" in metadata:
-            self.depends_on = [uuid.UUID(uid) for uid in metadata["depends_on"]]
-        if "tags" in metadata:
-            self.tags = metadata["tags"]
 
     def __repr__(self) -> str:
         """

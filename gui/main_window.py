@@ -27,6 +27,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actionOpen = None
         self.actionSubsample = None
         self.actionCluster = None
+        self.actionFilter = None
         self.statusbar = None
         self.setWindowTitle("PCD Toolkit")
         self.resize(1600, 1200)
@@ -74,13 +75,18 @@ class MainWindow(QtWidgets.QMainWindow):
         # Connect the Subsample action
         self.actionSubsample.triggered.connect(lambda: self.apply_analysis('subsampling'))
 
-        # "Cluster" action
+        # "Filter" action
+        self.actionFilter = QtWidgets.QAction("Filtering", self)
+        self.menuAction.addAction(self.actionFilter)
+        # Connect the Filter action
+        self.actionFilter.triggered.connect(lambda: self.apply_analysis('filtering'))
+
+        # "Clusters" action
         self.actionCluster = QtWidgets.QAction("Clustering", self)
         self.menuAction.addAction(self.actionCluster)
-        # Connect the Cluster action
+        # Connect the Clusters action
         self.actionCluster.triggered.connect(lambda: self.apply_analysis('clustering'))
 
-        
         # Status bar
         self.statusbar = QtWidgets.QStatusBar(self)
         self.setStatusBar(self.statusbar)
