@@ -1,22 +1,20 @@
 """Centralised manager for handling data operations, analysis, and interactions"""
-
+from config.config import global_variables
 import uuid
 
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
-from PyQt5.QtWidgets import QDialog
 
 from core.node_reconstruction_manager import NodeReconstructionManager
-from gui.dialog_boxes.clustering_dialog import ClusteringDialog
-from gui.dialog_boxes.subsampling_dialog import SubsamplingDialog
-from gui.dialog_boxes.filtering_dialog import FilteringDialog
 
 from services.file_manager import FileManager
-import services.custom_functions as cf
+
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
 from core.data_nodes import DataNodes
 from core.anaysis_manager import AnalysisManager
+
+from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from gui.widgets.tree_structure_widget import TreeStructureWidget
 from gui.widgets.pcd_viewer_widget import PCDViewerWidget
 
@@ -37,12 +35,18 @@ class DataManager(QObject):
     visibility_changed = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, file_manager: FileManager, tree_widget: TreeStructureWidget, viewer_widget: PCDViewerWidget, parent=None):
-        super().__init__(parent)
+    def __init__(self, file_manager: FileManager, tree_widget: TreeStructureWidget, viewer_widget: PCDViewerWidget, dialog_boxes_manager: DialogBoxesManager):
+        super().__init__()
         self.file_manager = file_manager
         self.tree_widget = tree_widget
         self.viewer_widget = viewer_widget
+        self.dialog_boxes_manager = dialog_boxes_manager
         self.data_nodes = DataNodes()
+        # Set the data nodes instance in the global variables for easy access from other modules
+        global global_data_nodes
+        global_variables.global_data_nodes = self.data_nodes
+        global_data_nodes = global_variables.global_data_nodes
+
         self.analysis_manager = AnalysisManager()
         self.node_reconstruction_manager = NodeReconstructionManager()
         self.selected_branches = []
@@ -53,6 +57,7 @@ class DataManager(QObject):
         self.tree_widget.branch_visibility_changed.connect(self._on_branch_visibility_changed)
         self.tree_widget.branch_added.connect(self._on_branch_added)
         self.tree_widget.branch_selection_changed.connect(self._on_branch_selection_changed)
+        self.dialog_boxes_manager.analysis_params.connect(self.apply_analysis)
         # self.tree_widget.branch_deleted.connect(self.on_branch_deleted)
         # self.tree_widget.branch_moved.connect(self.on_branch_moved)
 
@@ -138,42 +143,30 @@ class DataManager(QObject):
     #     visibility_status = {uid: visibility for uid in uids}
     #     self.viewer_widget.update_visibility(set(uuid for uid, vis in visibility_status.items() if vis))
 
-    def apply_analysis(self, analysis_type: str):
+    def apply_analysis(self, analysis_type: str, params: dict):
         """
         Apply an analysis to the selected branches.
 
         Args:
             analysis_type (str): The type of analysis to apply.
+            params (dict): Parameters for the analysis.
         """
 
         # Map analysis types to their dialog classes
-        dialog_classes = {
-            "subsampling": SubsamplingDialog,
-            "clustering": ClusteringDialog,
-            "filtering": FilteringDialog
-        }
 
-        if analysis_type not in dialog_classes:
-            raise ValueError(f"Unknown analysis type: {analysis_type}")
+        for uid in self.selected_branches:
+            data_node = self.data_nodes.get_node(uuid.UUID(uid))
+            # If the data node is a derived type (e.g. Masks or ClusterLabels) not a PointCloud, reconstruct
+            # the branch first as a PointCloud before applying the analysis. Then apply the analysis to the
+            # reconstructed PointCloud.
+            if data_node.data_type != "point_cloud":
+                point_cloud = self.reconstruct_branch(uid)
+                # As apply_analysis method works on DataNode instances, a new temporary DataNode instance is created
+                reconstructed_data_node = DataNode(name=data_node.name, data=point_cloud, data_type="point_cloud")
+                reconstructed_data_node.uid = data_node.uid
+                data_node = reconstructed_data_node
 
-        # Create and execute the dialog
-        dialog_class = dialog_classes[analysis_type]
-        dialog = dialog_class(parent=self.parent())
-        if dialog.exec_() == QDialog.Accepted:
-            params = dialog.get_parameters()
-            for uid in self.selected_branches:
-                data_node = self.data_nodes.get_node(uuid.UUID(uid))
-                # If the data node is a derived type (eg. Masks or ClusterLabels) not a PointCloud, reconstruct
-                # the branch first as a PointCloud before applying the analysis. Then apply the analysis to the
-                # reconstructed PointCloud.
-                if data_node.data_type != "point_cloud":
-                    point_cloud = self.reconstruct_branch(uid)
-                    # As apply_analysis method works on DataNode instances, a new temporary DataNode instance is created
-                    reconstructed_data_node = DataNode(name=data_node.name, data=point_cloud, data_type="point_cloud")
-                    reconstructed_data_node.uid = data_node.uid
-                    data_node = reconstructed_data_node
-
-                self.analysis_manager.apply_analysis(data_node, analysis_type, params)
+            self.analysis_manager.apply_analysis(data_node, analysis_type, params)
 
     # TODO: Docstrings
     # TODO: Validations

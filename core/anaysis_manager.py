@@ -14,7 +14,7 @@ from typing import Dict, Any
 from PyQt5.QtCore import pyqtSignal, QObject
 
 from tasks.subsampling import Subsampling
-from tasks.clustering import Clustering
+from tasks.dbscan import Dbscan
 from tasks.filtering import Filtering
 
 from core.data_node import DataNode
@@ -36,8 +36,10 @@ class AnalysisManager(QObject):
 
         super().__init__()
         self.tasks_registry = {"subsampling": Subsampling,
-                               "clustering": Clustering,
-                               "filtering": Filtering
+                               "dbscan": Dbscan,
+                               "filtering": Filtering,
+                               "separate_selected_clusters": Filtering,
+                               "separate_selected_points": Filtering,
                                }
 
     def apply_analysis(self, data: DataNode, analysis_type: str, params: Dict[str, Any]) -> None:

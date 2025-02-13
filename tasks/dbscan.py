@@ -3,7 +3,7 @@ from core.point_cloud import PointCloud
 from core.clusters import Clusters
 
 
-class Clustering:
+class Dbscan:
     """
     Clusters data in the given DataNode
 
@@ -23,9 +23,9 @@ class Clustering:
         cluster_labels = point_cloud.dbscan(eps=self.params["eps"], min_points=self.params["min_samples"])
         # Create a new Clusters object
         cluster = Clusters(cluster_labels)
-        # Set random colors for the clusters
+        # Set random colors for the cluster_labels
         cluster.set_random_color()
 
         self.dependencies.append(data_node.uid)
 
-        return cluster, "clusters", self.dependencies
+        return cluster, "cluster_labels", self.dependencies

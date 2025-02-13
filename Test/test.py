@@ -1,21 +1,22 @@
+import sys
+from PyQt5.QtWidgets import QApplication
+from gui.dialog_boxes.logical_operations_dialog import LogicalOperationsDialog
 
-filepath = "C:\\Users\\Sepeh\\OneDrive\\AI\\SPCToolkit\\L001-3M.ply"
-import core.point_cloud as pc
-import open3d as o3d
-import numpy as np
+def test_combo_box_dialog():
+    app = QApplication(sys.argv)
 
-# Load the point cloud from a PLY file
-pcd = o3d.io.read_point_cloud(filepath)
+    # Define options for the combo box
+    options = ["Option 1", "Option 2", "Option 3", "Option 4"]
 
-# Extract the points as a NumPy array
-points = np.asarray(pcd.points)
+    # Create and display the dialog
+    dialog = LogicalOperationsDialog("Select an Option", options)
+    if dialog.exec_() == dialog.Accepted:
+        selected_params = dialog.get_parameters()
+        print("Selected Option:", selected_params["selected_option"])
+    else:
+        print("Dialog was cancelled.")
 
-# Extract the colors as a NumPy array (if available)
-colors = np.asarray(pcd.colors) if pcd.has_colors() else None
+    sys.exit(app.exec_())
 
-# Create a PointCloud instance
-point_cloud = pc.PointCloud(points, colors)
-point_cloud.show()
-
-
-
+if __name__ == "__main__":
+    test_combo_box_dialog()

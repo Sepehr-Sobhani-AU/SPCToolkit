@@ -1,4 +1,4 @@
-# TODO: Double check the filtering logic
+# TODO: Docstring
 """
 Filter the data in the given DataNode.
 """
@@ -9,7 +9,7 @@ from core.point_cloud import PointCloud
 from core.masks import Masks
 
 
-class Filtering:
+class SubtractPointClouds:
     """
     Filter data in the given DataNode.
     """

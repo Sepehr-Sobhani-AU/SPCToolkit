@@ -158,16 +158,16 @@ class PointCloud:
             labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=False))
 
         # Store the DBSCAN labels
-        self.clusters = labels
-
+        self.cluster_labels = labels
+        #TODO: Add inplace option
         if return_clusters_object:
             # Create and return Clusters object
-            # clusters = Clusters()
-            # clusters.points = self.points
-            # clusters.labels = labels
-            # clusters.colors = self.colors
-            # clusters.normals = self.normal
-            # return clusters
+            # cluster_labels = Clusters()
+            # cluster_labels.points = self.points
+            # cluster_labels.labels = labels
+            # cluster_labels.colors = self.colors
+            # cluster_labels.normals = self.normal
+            # return cluster_labels
             pass
         else:
             return labels
@@ -200,40 +200,40 @@ class PointCloud:
 
     # def get_clusters(self, min_points=200):
     #     """
-    #     Generate a Clusters object containing individual clusters from DBSCAN labels,
-    #     excluding clusters with fewer than min_points.
+    #     Generate a Clusters object containing individual cluster_labels from DBSCAN labels,
+    #     excluding cluster_labels with fewer than min_points.
     #
     #     Args:
     #         min_points (int, optional): Minimum number of points for a cluster to be included. Default is 200.
     #
     #     Returns:
-    #         Clusters: An object containing all the valid clusters (excluding noise and smaller clusters).
+    #         Clusters: An object containing all the valid cluster_labels (excluding noise and smaller cluster_labels).
     #     """
     #
-    #     if not hasattr(self, 'clusters'):
+    #     if not hasattr(self, 'cluster_labels'):
     #         raise ValueError("DBSCAN must be applied before generating 'Clusters' object.")
     #
     #     # Filter out noise points (usually labeled as -1)
-    #     unique_labels = set(self.clusters)
+    #     unique_labels = set(self.cluster_labels)
     #     unique_labels.discard(-1)
     #
-    #     # Create a Clusters object to hold the clusters
-    #     clusters = Clusters()
+    #     # Create a Clusters object to hold the cluster_labels
+    #     cluster_labels = Clusters()
     #
     #     # Filter labels to include only those with enough points
-    #     valid_labels = [labels for labels in unique_labels if np.sum(self.clusters == labels) >= min_points]
+    #     valid_labels = [labels for labels in unique_labels if np.sum(self.cluster_labels == labels) >= min_points]
     #
     #     for labels in valid_labels:
     #         # Create mask for points belonging to the current labels
-    #         mask = self.clusters == labels
+    #         mask = self.cluster_labels == labels
     #
     #         # Create a copy of cluster
     #         child_cluster = copy.deepcopy(self)
     #         child_cluster.points = self.points[mask]
-    #         # Add the new cluster to clusters instance
-    #         clusters.add(child_cluster)
+    #         # Add the new cluster to cluster_labels instance
+    #         cluster_labels.add(child_cluster)
     #
-    #     return clusters
+    #     return cluster_labels
 
     def get_eigenvalues(self, k, smooth=True):
         """
@@ -362,13 +362,19 @@ class PointCloud:
                 # Apply the mask to attributes of the cluster
                 subset.points = subset.points[mask]
                 subset._update_obb_dim()
-                # TODO: Add normals to the subset
-                if hasattr(subset, 'colors') and subset.colors.shape[0] > 0:
-                    subset.colors = subset.colors[mask]
-                if hasattr(subset, 'intensity') and subset.intensity.shape[0] > 0:
-                    subset.intensity = subset.intensity[mask]
-                if hasattr(subset, 'distToGround') and subset.distToGround.shape[0] > 0:
-                    subset.distToGround = subset.distToGround[mask]
+
+                if subset.colors is not None:
+                    if subset.colors.shape[0] > 0:
+                        subset.colors = subset.colors[mask]
+                if subset.normals is not None:
+                    if subset.normals.shape[0] > 0:
+                        subset.normals = subset.normals[mask]
+                if hasattr(subset, 'intensity'):
+                    if subset.intensity.shape[0] > 0:
+                        subset.intensity = subset.intensity[mask]
+                if hasattr(subset, 'distToGround'):
+                    if subset.distToGround.shape[0] > 0:
+                        subset.distToGround = subset.distToGround[mask]
 
                 return subset
 
@@ -789,7 +795,7 @@ class PointCloud:
         Returns:
         - np.ndarray: An array containing the dimensions [length, width, height] of the cluster.
 
-        CAUTION: This method is accurate for clusters with OBB height almost parallel to the Z-axis.
+        CAUTION: This method is accurate for cluster_labels with OBB height almost parallel to the Z-axis.
         """
         # Compute the OBB of the cluster
         pcd = o3d.geometry.PointCloud()

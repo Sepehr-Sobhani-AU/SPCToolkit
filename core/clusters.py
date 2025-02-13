@@ -10,7 +10,7 @@ class Clusters:
         self.labels = labels
         self.colors = colors
 
-    # A method to generate random colors for the clusters.
+    # A method to generate random colors for the cluster_labels.
     def set_random_color(self, noise_color: np.ndarray = [0.2, 0.2, 0.2]):
         """
         Sets a random color for each point based on its cluster labels'

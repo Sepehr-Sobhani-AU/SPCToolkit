@@ -973,7 +973,7 @@ def get_prediction(clusterPoints, model, NUM_POINTS, MIN_NUM_POINTS):
 
 def get_predictions(clustersPoints, clusterLabels, model, NUM_POINTS, MIN_NUM_POINTS):
     """
-    This function predicts the labels for clusters of points using a specified model.
+    This function predicts the labels for cluster_labels of points using a specified model.
 
     Args:
     clustersPoints (ndarray): The points in each cluster.
@@ -1003,7 +1003,7 @@ def get_predictions(clustersPoints, clusterLabels, model, NUM_POINTS, MIN_NUM_PO
         clusterPoints = clustersPoints[(clusterLabels == clusterLabel)]
 
         # Predict the labels for the current cluster of points.
-        # Invalid clusters return 'None' for prediction and probability
+        # Invalid cluster_labels return 'None' for prediction and probability
         prediction, probability = get_prediction(clusterPoints, model, NUM_POINTS, MIN_NUM_POINTS)
 
         # Proceed only if a valid prediction is returned.
@@ -1023,7 +1023,7 @@ def get_predictions(clustersPoints, clusterLabels, model, NUM_POINTS, MIN_NUM_PO
 
             # Append the prediction data to the list of predictions.
             dicClustersPrediction[clusterLabel] = prediction_data
-    # Return the list of predictions for all clusters.
+    # Return the list of predictions for all cluster_labels.
     return dicClustersPrediction
 
 
@@ -1087,8 +1087,8 @@ def get_slice(clustersPoints, z_diffs, bottomDistanceToGround, topDistanceToGrou
     This function filters points in a cluster based on their Z-axis differences (heights).
 
     Args:
-    clustersPoints (array-like): The points in the clusters, presumably in a 3D space.
-    z_diffs (array-like): The distance to the ground for each point in the clusters.
+    clustersPoints (array-like): The points in the cluster_labels, presumably in a 3D space.
+    z_diffs (array-like): The distance to the ground for each point in the cluster_labels.
     bottomDistanceToGround (float): The minimum distance from the ground to include a point.
     topDistanceToGround (float): The maximum distance from the ground to include a point.
 
@@ -1101,7 +1101,7 @@ def get_slice(clustersPoints, z_diffs, bottomDistanceToGround, topDistanceToGrou
     # with 'bottomDistanceToGround' and 'topDistanceToGround'.
     z_diffs_mask = (z_diffs >= bottomDistanceToGround) & (z_diffs <= topDistanceToGround)
 
-    # Return the points in the clusters that meet the criteria, using the boolean mask to filter them.
+    # Return the points in the cluster_labels that meet the criteria, using the boolean mask to filter them.
     return clustersPoints[z_diffs_mask]
 
 
@@ -1847,24 +1847,24 @@ class Clusters:
 
     def get_clusters(self, min_points=200):
         """
-        Generate a Clusters object containing individual clusters from DBSCAN labels,
-        excluding clusters with fewer than min_points.
+        Generate a Clusters object containing individual cluster_labels from DBSCAN labels,
+        excluding cluster_labels with fewer than min_points.
 
         Args:
             min_points (int, optional): Minimum number of points for a cluster to be included. Default is 200.
 
         Returns:
-            Clusters: An object containing all the valid clusters (excluding noise and smaller clusters).
+            Clusters: An object containing all the valid cluster_labels (excluding noise and smaller cluster_labels).
         """
 
-        if not hasattr(self, 'clusters'):
+        if not hasattr(self, 'cluster_labels'):
             raise ValueError("DBSCAN must be applied before generating 'Clusters' object.")
 
         # Filter out noise points (usually labeled as -1)
         unique_labels = set(self.clusters)
         unique_labels.discard(-1)
 
-        # Create a Clusters object to hold the clusters
+        # Create a Clusters object to hold the cluster_labels
         clusters = Clusters()
 
         # Filter labels to include only those with enough points
@@ -1877,7 +1877,7 @@ class Clusters:
             # Create a copy of cluster
             child_cluster = copy.deepcopy(self)
             child_cluster.points = self.points[mask]
-            # Add the new cluster to clusters instance
+            # Add the new cluster to cluster_labels instance
             clusters.add(child_cluster)
 
         return clusters
@@ -2530,7 +2530,7 @@ class Clusters:
         Returns:
         - np.ndarray: An array containing the dimensions [length, width, height] of the cluster.
 
-        CAUTION: This method is accurate for clusters with OBB height almost parallel to the Z-axis.
+        CAUTION: This method is accurate for cluster_labels with OBB height almost parallel to the Z-axis.
         """
         # Compute the OBB of the cluster
         pcd = o3d.geometry.PointCloud()
@@ -2592,7 +2592,7 @@ class Clusters1:
         Initialize a Clusters container.
 
         Attributes:
-        - clusters (list): A list to store Clusters instances.
+        - cluster_labels (list): A list to store Clusters instances.
         """
         self.clusters = []
         self.labels = []
@@ -2734,11 +2734,11 @@ class Clusters1:
 
     def merge(self, labels_to_merge):
         """
-        Merges multiple clusters into a single cluster.
+        Merges multiple cluster_labels into a single cluster.
 
         Parameters:
-        - labels_to_merge (list): A list of labels indicating which clusters to merge.
-        - remove_originals (bool): If True, removes the original clusters from the container
+        - labels_to_merge (list): A list of labels indicating which cluster_labels to merge.
+        - remove_originals (bool): If True, removes the original cluster_labels from the container
                                    after merging. Default is True.
 
         Returns:
@@ -2794,13 +2794,13 @@ class Clusters1:
 
     def predict(self, model, class_map, weight_path, selected_labels=None):
         """
-        Predicts the features for selected or all clusters in the container using the provided PointNet model.
+        Predicts the features for selected or all cluster_labels in the container using the provided PointNet model.
 
         Parameters:
         - model (tf.keras.Model): The trained PointNet model used for prediction.
         - class_map (dict): A dictionary mapping model output indices to class labels.
         - weight_path (str): The path to the model's weights.
-        - selected_labels (list, optional): A list of cluster labels to predict. If None, predicts for all clusters.
+        - selected_labels (list, optional): A list of cluster labels to predict. If None, predicts for all cluster_labels.
         """
         for cluster in self.clusters:
             if selected_labels is None or cluster.labels in selected_labels:
@@ -2811,14 +2811,14 @@ class Clusters1:
 
     def pick_clusters(self):
         """
-        Interactively select clusters using Open3D visualization. This method allows
-        the user to visually pick clusters and returns the labels of the selected clusters.
+        Interactively select cluster_labels using Open3D visualization. This method allows
+        the user to visually pick cluster_labels and returns the labels of the selected cluster_labels.
 
         Returns:
-            list: A list of labels of the selected clusters.
+            list: A list of labels of the selected cluster_labels.
         """
 
-        # Create an empty point cloud to merge all clusters
+        # Create an empty point cloud to merge all cluster_labels
         merged_pcd = o3d.geometry.PointCloud()
 
         # Dictionary to map the color to cluster labels
@@ -2846,7 +2846,7 @@ class Clusters1:
         picked_point_indices = vis.get_picked_points()
         vis.destroy_window()
 
-        # Identify the clusters corresponding to picked points
+        # Identify the cluster_labels corresponding to picked points
         picked_labels = []
         for index in picked_point_indices:
             color = merged_pcd.colors[index]
@@ -2858,17 +2858,17 @@ class Clusters1:
 
     def show(self, selected_labels=None, random_color=True):
         """
-        Visualize the clusters using Open3D.
+        Visualize the cluster_labels using Open3D.
 
         Parameters:
         - selected_labels (list, optional): A list of cluster labels to be visualized.
-                                            If None or empty, all clusters are visualized.
+                                            If None or empty, all cluster_labels are visualized.
         """
         # Setting up Open3D visualization
         vis = o3d.visualization.Visualizer()
         vis.create_window()
 
-        # Add clusters to the visualization
+        # Add cluster_labels to the visualization
         for cluster in self.clusters:
             if selected_labels is None or cluster.labels in selected_labels:
                 # Prepare the points for visualization
@@ -2891,16 +2891,16 @@ class Clusters1:
 
     def save(self, filepath):
         """
-        Save the clusters' points and labels to .npy files.
+        Save the cluster_labels' points and labels to .npy files.
 
         Parameters:
         - filepath (str): The base filepath without extension where the points and labels will be saved.
                           Two files will be generated: filepath_points.npy and filepath_labels.npy
         """
-        # Concatenate all points from all clusters into a single array
+        # Concatenate all points from all cluster_labels into a single array
         all_points = np.concatenate([cluster.points for cluster in self.clusters], axis=0)
         print(all_points.shape)
-        # Concatenate all points from all clusters into a single array
+        # Concatenate all points from all cluster_labels into a single array
         all_dists = np.concatenate([cluster.distToGround if hasattr(cluster,
                                                                     'distToGround') and cluster.distToGround.size > 0 else np.full(
             cluster.points.shape[0], np.nan) for cluster in self.clusters])
@@ -2945,7 +2945,7 @@ class Clusters:
         Initialize the Clusters1 container.
 
         Attributes:
-            points (np.ndarray): Stores points for all clusters.
+            points (np.ndarray): Stores points for all cluster_labels.
             labels (np.ndarray): Stores the labels for each point.
             colors (np.ndarray): Stores colors for each point, NaN if absent.
             normals (np.ndarray): Stores normals for each point, NaN if absent.
@@ -3013,7 +3013,7 @@ class Clusters:
     def add_clusters_from_points(self, points, labels, noise=False, distToGround=None, color=None, intensity=None,
                                  normal=None, eigenvalues=None):
         """
-        Add clusters from points and associated attributes to the Clusters object using parallel arrays.
+        Add cluster_labels from points and associated attributes to the Clusters object using parallel arrays.
 
         Parameters:
         - points (np.ndarray): A numpy array of points.
@@ -3093,7 +3093,7 @@ class Clusters:
 
         Example:
         --------
-        >>> cluster = clusters.get(1)
+        >>> cluster = cluster_labels.get(1)
         """
         if not isinstance(label, int):
             raise ValueError("Label must be an integer")
@@ -3131,8 +3131,8 @@ class Clusters:
 
         Example:
         --------
-        # Filter to include only clusters with labels greater than 10
-        filtered_clusters = clusters.filter(lambda cls: cls.labels > 10)
+        # Filter to include only cluster_labels with labels greater than 10
+        filtered_clusters = cluster_labels.filter(lambda cls: cls.labels > 10)
         """
         mask = condition(self)  # Pass the entire Clusters instance to the condition
         new_clusters = Clusters()
@@ -3147,16 +3147,16 @@ class Clusters:
 
     def pick_clusters(self, selected_labels=None, random_color=True):
         """
-        Interactively select clusters using Open3D visualization and return the selected cluster labels.
+        Interactively select cluster_labels using Open3D visualization and return the selected cluster labels.
 
         Parameters:
-        - selected_labels (list of int, optional): Labels of the clusters to allow picking from.
-                                                  If None, all clusters are available for picking.
+        - selected_labels (list of int, optional): Labels of the cluster_labels to allow picking from.
+                                                  If None, all cluster_labels are available for picking.
         - random_color (bool, optional): If True, assign random colors to each cluster.
                                          If False, use stored colors if available.
 
         Returns:
-        - list of int: List of labels of the picked clusters.
+        - list of int: List of labels of the picked cluster_labels.
         """
         # Initialize Open3D Visualizer
         vis = o3d.visualization.VisualizerWithEditing()
@@ -3199,12 +3199,12 @@ class Clusters:
 
     def show(self, selected_labels=None, random_color=False, downsample=1):
         """
-        Visualize the clusters using Open3D. This method supports optional filtering by labels,
+        Visualize the cluster_labels using Open3D. This method supports optional filtering by labels,
         optional random coloring, and downsampling.
 
         Parameters:
-        - selected_labels (list of int, optional): A list of labels specifying which clusters to visualize.
-                                                   If None, all clusters are visualized.
+        - selected_labels (list of int, optional): A list of labels specifying which cluster_labels to visualize.
+                                                   If None, all cluster_labels are visualized.
         - random_color (bool, optional): If True, assigns random colors to each cluster.
                                          If False, uses stored colors if available.
         - downsample (float, optional): A fraction (0 < downsample <= 1) specifying the downsampling ratio.
@@ -3267,4 +3267,4 @@ class Clusters:
         vis.destroy_window()
 
     def __repr__(self):
-        return f"Clusters1({len(np.unique(self.labels))} unique clusters, {len(self.points)} total points)"
+        return f"Clusters1({len(np.unique(self.labels))} unique cluster_labels, {len(self.points)} total points)"

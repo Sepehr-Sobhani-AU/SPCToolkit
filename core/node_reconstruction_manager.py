@@ -23,7 +23,7 @@ class NodeReconstructionManager:
 
         super().__init__()
         self.tasks_registry = {"masks": ApplyMasks,
-                               "clusters": ApplyClusters,
+                               "cluster_labels": ApplyClusters,
                                }
 
     def reconstruct_node(self, point_cloud: PointCloud, data_node: DataNode) -> PointCloud:

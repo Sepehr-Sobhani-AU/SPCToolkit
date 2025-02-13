@@ -11,7 +11,7 @@ class AnalysisResult:
         uuid (UUID): A unique identifier for the analysis result.
         name (str): The name or description of the analysis result.
         params (dict): Parameters used for the analysis.
-        data (object): The resulting data from the analysis (e.g., clusters, subsamples).
+        data (object): The resulting data from the analysis (e.g., cluster_labels, subsamples).
         depends_on (list[UUID]): The UUIDs of DataNodes that this result depends on.
     """
 

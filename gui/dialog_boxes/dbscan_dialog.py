@@ -3,9 +3,9 @@ from PyQt5.QtWidgets import QLineEdit, QLabel
 from gui.dialog_boxes.base_dialog import BaseDialog
 
 
-class ClusteringDialog(BaseDialog):
+class DbscanDialog(BaseDialog):
     def __init__(self, parent=None):
-        super().__init__(title="Clustering Parameters", parent=parent)
+        super().__init__(title="Dbscan Parameters", parent=parent)
 
     def setup_ui(self):
         super().setup_ui()
