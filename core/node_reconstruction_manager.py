@@ -20,6 +20,9 @@ from tasks.apply_masks import ApplyMasks
 class NodeReconstructionManager:
 
     def __init__(self):
+        """
+        Initializes the AnalysisManager with an empty analyses dictionary.
+        """
 
         super().__init__()
         self.tasks_registry = {"masks": ApplyMasks,
@@ -27,6 +30,13 @@ class NodeReconstructionManager:
                                }
 
     def reconstruct_node(self, point_cloud: PointCloud, data_node: DataNode) -> PointCloud:
+        """
+        Reconstructs a DataNode using the appropriate task based on the data type.
+
+        Args:
+            point_cloud (PointCloud): The root PointCloud instance to reconstruct data node from.
+            data_node (DataNode): The DataNode instance to reconstruct.
+        """
 
         analysis_type = data_node.data_type
         if analysis_type not in self.tasks_registry:

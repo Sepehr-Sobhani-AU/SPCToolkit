@@ -1,66 +1,71 @@
 """
-    This module implements a Dynamic Task Execution Framework that allows for the execution of different types of
-    tasks based on the task type. The Task class is an abstract base class that defines the interface for all tasks.
-    For example the SubsampleTask and ClusterTask classes are concrete implementations of the task classes that
-    perform subsampling and clustering tasks, respectively. The task_registry dictionary is a registry that maps task
-    types to task classes.
-
-    The "execute" method in each task class is responsible for executing the task.
-    The main function demonstrates how to use the different task classes and execute them.
+    This module implements a Dynamic Task Execution Framework that leverages plugins
+    for analysis tasks.
 """
 import uuid
 from typing import Dict, Any
 
 from PyQt5.QtCore import pyqtSignal, QObject
 
-from tasks.subsampling import Subsampling
-from tasks.dbscan import Dbscan
-from tasks.filtering import Filtering
-
 from core.data_node import DataNode
+from plugins.plugin_manager import PluginManager
 
 
 class AnalysisManager(QObject):
     """
-    Manages and executes analyses on DataNodes and tracks the results.
+    Manages and executes analyses on DataNodes using a plugin-based architecture.
+
+    Instead of a hardcoded task registry, this version uses plugins discovered
+    by the PluginManager to execute different types of analysis.
 
     Attributes:
-        analyses (dict): Dictionary mapping UUIDs to their corresponding AnalysisResult instances.
+        plugin_manager (PluginManager): Manager that discovers and provides access to plugins
+        analysis_completed (pyqtSignal): Signal emitted when an analysis is completed
     """
     analysis_completed = pyqtSignal(object, str, list, object, str, dict)
 
-    def __init__(self):
+    def __init__(self, plugin_manager: PluginManager):
         """
-        Initializes the AnalysisManager with an empty analyses dictionary.
-        """
+        Initializes the AnalysisManager with a plugin manager.
 
+        Args:
+            plugin_manager (PluginManager): The plugin manager that provides access to analysis plugins
+        """
         super().__init__()
-        self.tasks_registry = {"subsampling": Subsampling,
-                               "dbscan": Dbscan,
-                               "filtering": Filtering,
-                               "separate_selected_clusters": Filtering,
-                               "separate_selected_points": Filtering,
-                               }
+        self.plugin_manager = plugin_manager
+
+        # Log available plugins for debugging
+        plugins = self.plugin_manager.get_analysis_plugins()
+        print(f"AnalysisManager initialized with {len(plugins)} available analysis plugins")
+        for plugin_name in plugins.keys():
+            print(f"  - {plugin_name}")
 
     def apply_analysis(self, data: DataNode, analysis_type: str, params: Dict[str, Any]) -> None:
         """
-        Applies an analysis task to the given DataNode.
+        Applies an analysis task to the given DataNode using the appropriate plugin.
 
         Args:
-            data (DataNode): The DataNode to analyze.
-            analysis_type (str): The type of analysis to perform.
-            params (Dict[str, Any]): Parameters for the analysis task.
+            data (DataNode): The DataNode to analyze
+            analysis_type (str): The type of analysis to perform (must match a plugin name)
+            params (Dict[str, Any]): Parameters for the analysis task
 
-        Returns:
-            AnalysisResult: The result of the analysis.
+        Raises:
+            ValueError: If no plugin is found for the specified analysis_type
         """
+        # Get available analysis plugins
+        analysis_plugins = self.plugin_manager.get_analysis_plugins()
 
-        if analysis_type not in self.tasks_registry:
-            raise ValueError(f"Analysis type '{analysis_type}' not found in the task registry.")
+        if analysis_type not in analysis_plugins:
+            raise ValueError(f"Analysis type '{analysis_type}' not found in available plugins.")
 
-        task = self.tasks_registry[analysis_type]
-        task_instance = task(params)
-        result, result_type, dependencies = task_instance.execute(data)
+        # Create an instance of the plugin class
+        plugin_class = analysis_plugins[analysis_type]
+        plugin_instance = plugin_class()
+
+        print(f"Executing analysis '{analysis_type}' with plugin {plugin_instance.__class__.__name__}")
+
+        # Execute the analysis using the plugin
+        result, result_type, dependencies = plugin_instance.execute(data, params)
 
         # Emit signal to add the result to the DataNode
         self.analysis_completed.emit(result, result_type, dependencies, data, analysis_type, params)
@@ -70,6 +75,7 @@ class AnalysisManager(QObject):
         Provides a string representation of the AnalysisManager instance.
 
         Returns:
-            str: A string describing the AnalysisManager and its managed analyses.
+            str: A string describing the AnalysisManager and available plugins
         """
-        return f"AnalysisManager(analyses={len(self.analyses)} results)"
+        plugins = self.plugin_manager.get_analysis_plugins()
+        return f"AnalysisManager({len(plugins)} available plugins)"

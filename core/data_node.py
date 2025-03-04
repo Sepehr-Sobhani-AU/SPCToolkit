@@ -10,7 +10,7 @@ class DataNode:
 
     Attributes:
         uid (UUID): Unique identifier for the data node.
-        name (str): A descriptive name for the data node.
+        params (str): A descriptive params for the data node.
         data (Any): The actual data object stored in this node (e.g., point cloud, results).
         parent_uid (UUID): The UUID of the parent node, if applicable.
         depends_on (List[UUID]): A list of UUIDs that this node depends on.
@@ -19,7 +19,8 @@ class DataNode:
 
     def __init__(
         self,
-        name: str = "",
+        params: str = "",
+        alias: str = "",
         data: Any = None,
         data_type: str = "",
         parent_uid: uuid.UUID = None,
@@ -30,7 +31,7 @@ class DataNode:
         Initializes a new DataNode instance.
 
         Args:
-            name (str): A descriptive name for the node.
+            params (str): A descriptive params for the node.
             data (Any): The data stored in the node.
             parent_uid (UUID, optional): The parent node's UUID, if any. Defaults to None.
             depends_on (List[UUID], optional): List of dependent nodes. Defaults to None.
@@ -38,7 +39,8 @@ class DataNode:
             data_type (str): The type of data stored in the node.
         """
         self.uid: uuid.UUID = uuid.uuid4()
-        self.name: str = name
+        self.params: str = params
+        self.alias: str = alias
         self.data: Any = data
         self.data_type: str = self.data.__class__.__name__ if data_type == "" else data_type
         self.parent_uid: uuid.UUID = parent_uid
@@ -50,6 +52,6 @@ class DataNode:
         Provides a string representation of the DataNode.
 
         Returns:
-            str: String representation including the UUID and name.
+            str: String representation including the UUID and params.
         """
-        return f"DataNode(uid={self.uid}, name='{self.name}')"
+        return f"DataNode(uid={self.uid}, params='{self.params}')"

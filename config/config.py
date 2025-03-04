@@ -1,6 +1,7 @@
 # TODO: Docstrings
 # TODO: Define types
-import core.data_nodes
+
+
 
 # Global variables
 class GlobalVariables:
@@ -8,6 +9,7 @@ class GlobalVariables:
         self.global_pcd_viewer_widget = None
         self.global_tree_structure_widget = None
         self.global_data_nodes: core.data_nodes = None
+        self.global_data_manager: core.data_manager = None
 
 
 # Singleton instance

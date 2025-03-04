@@ -9,7 +9,7 @@ class AnalysisResult:
 
     Attributes:
         uuid (UUID): A unique identifier for the analysis result.
-        name (str): The name or description of the analysis result.
+        name (str): The params or description of the analysis result.
         params (dict): Parameters used for the analysis.
         data (object): The resulting data from the analysis (e.g., cluster_labels, subsamples).
         depends_on (list[UUID]): The UUIDs of DataNodes that this result depends on.
@@ -26,7 +26,7 @@ class AnalysisResult:
         Initializes an AnalysisResult instance.
 
         Args:
-            name (str): The name or description of the analysis result.
+            name (str): The params or description of the analysis result.
             data (Any): The resulting data from the analysis.
             params (dict): Parameters used for the analysis.
             depends_on (List[UUID]): UUIDs of DataNodes that this result depends on.
@@ -42,11 +42,11 @@ class AnalysisResult:
         Retrieves metadata for the analysis result.
 
         Returns:
-            dict: A dictionary containing metadata such as the name, parameters, and dependencies.
+            dict: A dictionary containing metadata such as the params, parameters, and dependencies.
         """
         return {
             "uid": str(self.uuid),
-            "name": self.name,
+            "params": self.name,
             "params": self.params,
             "depends_on": [str(dep) for dep in self.depends_on]
         }
@@ -58,7 +58,7 @@ class AnalysisResult:
         Args:
             metadata (dict): A dictionary containing metadata to update.
         """
-        self.name = metadata.get("name", self.name)
+        self.name = metadata.get("params", self.name)
         self.params = metadata.get("params", self.params)
         if "depends_on" in metadata:
             self.depends_on = metadata["depends_on"]
@@ -70,4 +70,4 @@ class AnalysisResult:
         Returns:
             str: A string describing the analysis result.
         """
-        return f"AnalysisResult(name={self.name}, uid={self.uuid})"
+        return f"AnalysisResult(params={self.name}, uid={self.uuid})"

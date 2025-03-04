@@ -434,7 +434,7 @@ def add_block_ref_from_obb_to_DXF(doc, obb, block_name, layer, color, offset=(0,
     Args:
     - doc:       The DXF document.
     - obb:       The oriented bounding box.
-    - block_name: The name of the block to insert.
+    - block_name: The params of the block to insert.
     - layer:     The layer.
     - color:     The color to assign to the layer.
     - offset:    An optional XYZ offset for the block insertion.
@@ -520,15 +520,15 @@ def add_xdata_to_entity(entity, app_name, data_dict):
 
     Args:
     - entity: The DXF entity to which XData will be added.
-    - app_name: The application name registering the XData (must be unique).
+    - app_name: The application params registering the XData (must be unique).
     - data_dict: A dictionary containing key-value pairs of data.
     """
-    # Ensure the application name is registered in the DXF document
+    # Ensure the application params is registered in the DXF document
     doc = entity.doc  # Get the document to which the entity belongs
     if app_name not in doc.appids:
         doc.appids.new(app_name)
 
-    # Start adding XData with the application name
+    # Start adding XData with the application params
     xdata = [(1001, app_name)]
 
     # Add key-value pairs from the data dictionary
@@ -635,8 +635,8 @@ def normalize_point_cloud(point_cloud, scale=True, random_rotation=False):
 def read_excel_to_nested_dict(file_path):
     """
     Read an Excel file and convert each sheet to a nested dictionary.
-    - Main Key: Feature name.
-    - Sub Key: Worksheet name, pointing to a dictionary of properties for that feature.
+    - Main Key: Feature params.
+    - Sub Key: Worksheet params, pointing to a dictionary of properties for that feature.
     """
     # Create an ExcelFile object to read multiple sheets
     xls = pd.ExcelFile(file_path)
@@ -655,7 +655,7 @@ def read_excel_to_nested_dict(file_path):
             if index in main_dict:
                 main_dict[index][sheet_name] = row.to_dict()
             else:
-                # Otherwise, create a new sub-dictionary with the worksheet name as the key
+                # Otherwise, create a new sub-dictionary with the worksheet params as the key
                 main_dict[index] = {sheet_name: row.to_dict()}
 
     return main_dict
@@ -1615,7 +1615,7 @@ def check_and_install_package(package, required_version):
     Checks if a package with a specific version is installed, and if not, attempts to install it.
 
     Args:
-    package (str): The name of the package to check.
+    package (str): The params of the package to check.
     required_version (str): The version of the package to ensure is installed.
 
     Example:
@@ -2242,7 +2242,7 @@ class Clusters:
         Saves the Clusters instance to a file. The format is determined by the file extension.
 
         Parameters:
-        file_name (str): The name of the file to save the instance to.
+        file_name (str): The params of the file to save the instance to.
 
         Supported Formats:
         .ply - Saves the instance as a PLY file.
@@ -2262,8 +2262,8 @@ class Clusters:
         Saves a specified property of the Clusters to a .npy file.
 
         Parameters:
-        property_name (str): The name of the property to save.
-        file_name (str): The name of the .npy file to save the property to.
+        property_name (str): The params of the property to save.
+        file_name (str): The params of the .npy file to save the property to.
 
         Raises:
         AttributeError: If the specified property does not exist.
@@ -2568,7 +2568,7 @@ class Clusters:
         Saves the Clusters instance as a PLY file.
 
         Parameters:
-        file_name (str): The name of the PLY file to save the instance to.
+        file_name (str): The params of the PLY file to save the instance to.
         """
         # Assuming the Clusters instance has a point cloud attribute named 'points'
         if hasattr(self, 'points'):

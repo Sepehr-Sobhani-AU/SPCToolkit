@@ -1,14 +1,15 @@
-# TODO: Double check the filtering logic
+# TODO: Docstring
 """
 Filter the data in the given DataNode.
 """
+import numpy as np
 
 from core.data_node import DataNode
 from core.point_cloud import PointCloud
 from core.masks import Masks
 
 
-class SelectClusters:
+class Subtracting:
     """
     Filter data in the given DataNode.
     """
@@ -24,7 +25,7 @@ class SelectClusters:
         point_cloud: PointCloud = data_node.data  # Type hinting for static analysis
 
         # Dynamically construct the condition and apply it using eval
-        filter_mask = eval(f"point_cloud.{filter_condition}")
+        filter_mask = exec(f"{filter_condition}")
 
         self.dependencies.append(data_node.uid)
 

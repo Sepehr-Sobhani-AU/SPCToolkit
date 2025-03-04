@@ -59,7 +59,7 @@ class PointCloud:
         self.colors = colors
         self.normals = normals
         self.translation = np.array([0, 0, 0])
-        self.name = kwargs.get('name', None)
+        self.name = kwargs.get('params', None)
         self.uuid = kwargs.get('uid', None)
         self.parent_uuid = kwargs.get('parent_uuid', None)
         self.child_uuid = kwargs.get('child_uuid', None)
@@ -556,7 +556,7 @@ class PointCloud:
         Saves the Clusters instance to a file. The format is determined by the file extension.
 
         Parameters:
-        file_name (str): The name of the file to save the instance to.
+        file_name (str): The params of the file to save the instance to.
 
         Supported Formats:
         .ply - Saves the instance as a PLY file.
@@ -576,8 +576,8 @@ class PointCloud:
         Saves a specified property of the Clusters to a .npy file.
 
         Parameters:
-        property_name (str): The name of the property to save.
-        file_name (str): The name of the .npy file to save the property to.
+        property_name (str): The params of the property to save.
+        file_name (str): The params of the .npy file to save the property to.
 
         Raises:
         AttributeError: If the specified property does not exist.
@@ -833,7 +833,7 @@ class PointCloud:
         Saves the Clusters instance as a PLY file.
 
         Parameters:
-        file_name (str): The name of the PLY file to save the instance to.
+        file_name (str): The params of the PLY file to save the instance to.
         """
         # Assuming the Clusters instance has a point cloud attribute named 'points'
         if hasattr(self, 'points'):

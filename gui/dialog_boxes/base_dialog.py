@@ -1,5 +1,7 @@
+# TODO: Docstrings
+
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox
+    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QMessageBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -13,6 +15,11 @@ class BaseDialog(QDialog):
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
+        self.cancel_button = None
+        self.ok_button = None
+        self.button_layout = None
+        self.content_layout = None
+        self.layout = None
         self.setWindowTitle(title)
         self.setWindowFlags(self.windowFlags() | Qt.MSWindowsFixedSizeDialogHint)
         self.params = {}

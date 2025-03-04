@@ -1,5 +1,6 @@
+# gui/main_window.py
 """
-  Create main window for the PCD Toolkit application with a tree structure widget and PCD viewer widget.
+  Create main window for the PCD Toolkit application with dynamic menus from plugins.
 """
 # define the global variables
 from config.config import global_variables
@@ -9,146 +10,140 @@ from gui.widgets import PCDViewerWidget, TreeStructureWidget
 from core.data_manager import DataManager
 from services.file_manager import FileManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
+from plugins.plugin_manager import PluginManager
 
 
 class MainWindow(QtWidgets.QMainWindow):
     """
     Main application window for the PCD Toolkit, with a tree structure widget as a left pane.
+    
+    This version uses plugins to dynamically build its menu structure.
     """
 
-
-    def __init__(self):
+    def __init__(self, plugin_manager: PluginManager):
         super().__init__()
+        self.plugin_manager = plugin_manager
 
         # Set up the main window components
-        self.actionSeparateSelectedClusters = None
-        self.actionSeparateSelectedPoints = None
-        self.menuCluster = None
-        self.menuFile = None
-        self.menuSelection = None
-        self.menuAction = None
-        self.menuHelp = None
-        self.menubar = None
-        self.pcd_viewer_widget = None
-        self.tree_widget = None
-        self.splitter = None
-        self.actionOpen = None
-        self.actionSelectClusters = None
-        self.actionSubsample = None
-        self.actionCluster = None
-        self.actionFilter = None
-        self.actionRegionGrowing = None
-        self.actionDBSCAN = None
-        self.actionKMeans = None
-        self.statusbar = None
+        self.menus = {}  # Dictionary to store menu/submenu references
+        self.actions = {}  # Dictionary to store action references
+        
+        # Standard components as before
         self.setWindowTitle("PCD Toolkit")
         self.resize(1600, 1200)
 
         # Create an instance of FileManager
         self.file_manager = FileManager()
+
+        # Create global instances of the tree structure widget, PCD viewer widget, dialog boxes manager, and data manager
         self.tree_widget = TreeStructureWidget()
-        # Set the global_tree_structure_widget as a global variable for easy access from other modules
         global_variables.global_tree_structure_widget = self.tree_widget
-        global_tree_widget = global_variables.global_tree_structure_widget
 
         self.pcd_viewer_widget = PCDViewerWidget()
-        # Set the global_pcd_viewer_widget as a global variable for easy access from other modules
         global_variables.global_pcd_viewer_widget = self.pcd_viewer_widget
-        global_pcd_viewer_widget = global_variables.global_pcd_viewer_widget
 
-        self.dialog_boxes_manager = DialogBoxesManager()
-        self.data_manager = DataManager(self.file_manager, self.tree_widget, self.pcd_viewer_widget, self.dialog_boxes_manager)
+        self.dialog_boxes_manager = DialogBoxesManager(plugin_manager)
+        self.data_manager = DataManager(
+            self.file_manager, 
+            self.tree_widget, 
+            self.pcd_viewer_widget, 
+            self.dialog_boxes_manager,
+            self.plugin_manager
+        )
+        global_variables.global_data_manager = self.data_manager
 
         # Set up the UI components
         self.setup_ui()
 
     def setup_ui(self):
-        """Sets up the main window UI components, including the left tree structure pane and right PCD viewer pane."""
+        """Sets up the main window UI components with dynamically built menus."""
 
         # Create the QSplitter for the main layout with left and right panes
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.setCentralWidget(self.splitter)
 
-        # Left side: TreeStructureWidget for tree structure display
+        # Left side: TreeStructureWidget
         self.splitter.addWidget(self.tree_widget)
 
-        # Right side: PCDViewerWidget for visualisation
+        # Right side: PCDViewerWidget
         self.splitter.addWidget(self.pcd_viewer_widget)
 
         # Initial sizes for the left and right panes
         self.splitter.setSizes([200, 600])
 
-        # Menu bar
-        self.menubar = self.menuBar()
-        self.menuFile = self.menubar.addMenu("File")
-        self.menuSelection = self.menubar.addMenu("Selection")
-        self.menuAction = self.menubar.addMenu("Action")
-        self.menuHelp = self.menubar.addMenu("Help")
-
-        # "Open" action
-        self.actionOpen = QtWidgets.QAction("Open", self)
-        self.menuFile.addAction(self.actionOpen)
-        # Connect the Open action
-        self.actionOpen.triggered.connect(self.open_file_dialog)
-
-        # "Separate Selected Points" action
-        self.actionSeparateSelectedPoints = QtWidgets.QAction("Separate Selected Points", self)
-        self.menuSelection.addAction(self.actionSeparateSelectedPoints)
-        # Connect the Select Clusters action
-        self.actionSeparateSelectedPoints.triggered.connect(lambda: self.open_dialog_box('separate_selected_points'))
-
-        # "Separate Selected Clusters" action
-        self.actionSeparateSelectedClusters = QtWidgets.QAction("Separate Selected Clusters", self)
-        self.menuSelection.addAction(self.actionSeparateSelectedClusters)
-        # Connect the Select Clusters action
-        self.actionSeparateSelectedClusters.triggered.connect(lambda: self.open_dialog_box('separate_selected_clusters'))
-
-        # "Subsample" action
-        self.actionSubsample = QtWidgets.QAction("Subsampling", self)
-        self.menuAction.addAction(self.actionSubsample)
-        # Connect the Subsample action
-        self.actionSubsample.triggered.connect(lambda: self.open_dialog_box('subsampling'))
-
-        # "Filter" action
-        self.actionFilter = QtWidgets.QAction("Filtering", self)
-        self.menuAction.addAction(self.actionFilter)
-        # Connect the Filter action
-        self.actionFilter.triggered.connect(lambda: self.open_dialog_box('filtering'))
-
-        # Create a "Dbscan" submenu under "Action"
-        self.menuCluster = QtWidgets.QMenu("Clustering", self)
-        self.menuAction.addMenu(self.menuCluster)  # Add clustering submenu under Action
-
-        # Add specific clustering methods to the submenu
-        self.actionKMeans = QtWidgets.QAction("K-Means", self)
-        self.actionDBSCAN = QtWidgets.QAction("DBSCAN", self)
-        self.actionRegionGrowing = QtWidgets.QAction("Region Growing", self)
-
-        self.menuCluster.addAction(self.actionKMeans)
-        self.menuCluster.addAction(self.actionDBSCAN)
-        self.menuCluster.addAction(self.actionRegionGrowing)
-
-        # Connect clustering actions
-        self.actionKMeans.triggered.connect(lambda: self.open_dialog_box('kmeans'))
-        self.actionDBSCAN.triggered.connect(lambda: self.open_dialog_box('dbscan'))
-        self.actionRegionGrowing.triggered.connect(lambda: self.open_dialog_box('region_growing'))
-
-        # "Logical Operations" action
-        self.actionLogicalOperations = QtWidgets.QAction("Logical Operations", self)
-        self.menuAction.addAction(self.actionLogicalOperations)
-        # Connect the Filter action
-        self.actionLogicalOperations.triggered.connect(lambda: self.open_dialog_box('logical_operations'))
-
+        # Create basic menu structure
+        self.setup_base_menus()
+        
+        # Populate menus from plugins
+        self.populate_menus_from_plugins()
+        
         # Status bar
         self.statusbar = QtWidgets.QStatusBar(self)
         self.setStatusBar(self.statusbar)
 
+    def setup_base_menus(self):
+        """Set up the base menu structure for the application."""
+        self.menubar = self.menuBar()
+        
+        # Create base menus
+        base_menus = ["File", "Selection", "Action", "Help"]
+        for menu_name in base_menus:
+            self.menus[menu_name] = self.menubar.addMenu(menu_name)
+            
+        # Add basic "Open" action to File menu
+        open_action = QtWidgets.QAction("Open", self)
+        open_action.triggered.connect(self.open_file_dialog)
+        self.menus["File"].addAction(open_action)
+        self.actions["open"] = open_action
+
+    def populate_menus_from_plugins(self):
+        """Populate menus from available menu plugins."""
+        for plugin in self.plugin_manager.get_menu_plugins():
+            menu_location = plugin.get_menu_location()
+            
+            # Create submenu if needed
+            if "/" in menu_location:
+                parent_menu, submenu_name = menu_location.split("/", 1)
+                
+                # Verify parent menu exists
+                if parent_menu not in self.menus:
+                    print(f"Warning: Parent menu '{parent_menu}' does not exist. Creating it.")
+                    self.menus[parent_menu] = self.menubar.addMenu(parent_menu)
+                
+                # Create submenu if it doesn't exist
+                if menu_location not in self.menus:
+                    submenu = QtWidgets.QMenu(submenu_name, self)
+                    self.menus[parent_menu].addMenu(submenu)
+                    self.menus[menu_location] = submenu
+            
+            # Add menu items
+            for item in plugin.get_menu_items():
+                action = QtWidgets.QAction(item["name"], self)
+                
+                # Set tooltip if provided
+                if "tooltip" in item:
+                    action.setToolTip(item["tooltip"])
+                    action.setStatusTip(item["tooltip"])
+                
+                # Connect action to handle_action method of the plugin
+                action.triggered.connect(
+                    lambda checked, p=plugin, a=item["action"]: p.handle_action(a, self)
+                )
+                
+                # Add action to the menu
+                target_menu = self.menus[menu_location]
+                target_menu.addAction(action)
+                
+                # Store reference to the action
+                action_id = f"{menu_location}/{item['action']}"
+                self.actions[action_id] = action
+                
+            print(f"Added menu items from plugin {plugin.__class__.__name__} to {menu_location}")
+
     def open_file_dialog(self):
         """Handler for 'Open' action to open and display a point cloud file."""
-
         self.file_manager.open_point_cloud_file(self)
 
-    # TODO: Docstrings
-    # TODO: Validate the parameters
     def open_dialog_box(self, analysis_type):
+        """Open a dialog box for parameter input for an analysis type."""
         self.dialog_boxes_manager.open_dialog_box(analysis_type)

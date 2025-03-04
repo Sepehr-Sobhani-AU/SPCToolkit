@@ -1,6 +1,6 @@
 import sys
 from PyQt5.QtWidgets import QApplication
-from gui.dialog_boxes.logical_operations_dialog import LogicalOperationsDialog
+from gui.dialog_boxes.subtract_dialog import LogicalOperationsDialog
 
 def test_combo_box_dialog():
     app = QApplication(sys.argv)

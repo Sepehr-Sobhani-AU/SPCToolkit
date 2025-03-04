@@ -13,22 +13,25 @@ class Filtering:
     """
     Filter data in the given DataNode.
     """
+
     def __init__(self, params: dict):
         self.params = params
         self.dependencies = []
 
     def execute(self, data_node: DataNode):
-
         filter_condition = self.params["condition"]
-
-        # set point_cloud as a PointCloud instance
         point_cloud: PointCloud = data_node.data  # Type hinting for static analysis
 
-        # Dynamically construct the condition and apply it using eval
-        filter_mask = eval(f"{filter_condition}")
+        # Use a dictionary to capture the result of the exec statement
+        local_vars = {"point_cloud": point_cloud}
+
+        # Execute the condition in the provided namespace
+        exec(f"filter_mask = {filter_condition}", globals(), local_vars)
+
+        # Extract the filter_mask from the namespace
+        filter_mask = local_vars.get("filter_mask")
 
         self.dependencies.append(data_node.uid)
-
         mask = Masks(filter_mask)
 
         return mask, "masks", self.dependencies

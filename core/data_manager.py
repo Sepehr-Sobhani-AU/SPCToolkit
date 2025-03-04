@@ -1,3 +1,4 @@
+# core/data_manager.py
 """Centralised manager for handling data operations, analysis, and interactions"""
 from config.config import global_variables
 import uuid
@@ -6,13 +7,12 @@ import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from core.node_reconstruction_manager import NodeReconstructionManager
-
 from services.file_manager import FileManager
-
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
 from core.data_nodes import DataNodes
 from core.anaysis_manager import AnalysisManager
+from plugins.plugin_manager import PluginManager
 
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from gui.widgets.tree_structure_widget import TreeStructureWidget
@@ -24,30 +24,31 @@ class DataManager(QObject):
     Centralised manager for handling data operations, analysis, and interactions
     between widgets and data nodes.
 
-    Responsibilities:
-    - Manage data nodes (add, remove, update, validate dependencies).
-    - Coordinate rendering in PCDViewerWidget.
-    - Synchronise tree structure and handle user interactions.
-    - Manage analysis workflows and derived data.
+    This version has been updated to use the plugin-based AnalysisManager.
     """
 
     # Signals for UI updates
     visibility_changed = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, file_manager: FileManager, tree_widget: TreeStructureWidget, viewer_widget: PCDViewerWidget, dialog_boxes_manager: DialogBoxesManager):
+    def __init__(self,
+                 file_manager: FileManager,
+                 tree_widget: TreeStructureWidget,
+                 viewer_widget: PCDViewerWidget,
+                 dialog_boxes_manager: DialogBoxesManager,
+                 plugin_manager: PluginManager):
         super().__init__()
         self.file_manager = file_manager
         self.tree_widget = tree_widget
         self.viewer_widget = viewer_widget
         self.dialog_boxes_manager = dialog_boxes_manager
         self.data_nodes = DataNodes()
-        # Set the data nodes instance in the global variables for easy access from other modules
-        global global_data_nodes
-        global_variables.global_data_nodes = self.data_nodes
-        global_data_nodes = global_variables.global_data_nodes
 
-        self.analysis_manager = AnalysisManager()
+        # Set the data nodes instance in the global variables for easy access
+        global_variables.global_data_nodes = self.data_nodes
+
+        # Create the analysis manager with the plugin manager
+        self.analysis_manager = AnalysisManager(plugin_manager)
         self.node_reconstruction_manager = NodeReconstructionManager()
         self.selected_branches = []
 
@@ -71,7 +72,7 @@ class DataManager(QObject):
         """
         try:
             # Create a DataNode from the loaded PointCloud
-            data_node = DataNode(name=point_cloud.name, data=point_cloud, data_type="point_cloud", parent_uid=None,
+            data_node = DataNode(params=point_cloud.name, data=point_cloud, data_type="point_cloud", parent_uid=None,
                                  depends_on=None, tags=[])
             # Add the DataNode to the DataNodes manager
             uid = self.data_nodes.add_node(data_node)
@@ -93,7 +94,7 @@ class DataManager(QObject):
             uid = self.data_nodes.add_node(data_node)
 
             # Update the TreeStructureWidget
-            self.tree_widget.add_branch(str(uid), str(parent.uid), data_node.name)
+            self.tree_widget.add_branch(str(uid), str(parent.uid), data_node.params)
 
         except Exception as e:
             self.error_occurred.emit(f"Failed to apply analysis: {analysis_type}. Error: {str(e)}")
@@ -162,7 +163,7 @@ class DataManager(QObject):
             if data_node.data_type != "point_cloud":
                 point_cloud = self.reconstruct_branch(uid)
                 # As apply_analysis method works on DataNode instances, a new temporary DataNode instance is created
-                reconstructed_data_node = DataNode(name=data_node.name, data=point_cloud, data_type="point_cloud")
+                reconstructed_data_node = DataNode(params=data_node.params, data=point_cloud, data_type="point_cloud")
                 reconstructed_data_node.uid = data_node.uid
                 data_node = reconstructed_data_node
 
@@ -175,7 +176,9 @@ class DataManager(QObject):
         # in the hierarchy.
         # TODO: There is inconsistancy in type of uid, it is str in some places and uuid.UUID in others.
         self.data_node_uids = []
-        data_node = self.data_nodes.get_node(uuid.UUID(uid))
+        if isinstance(uid, str):
+            uid = uuid.UUID(uid)
+        data_node = self.data_nodes.get_node(uid)
         while data_node.parent_uid is not None:
             self.data_node_uids.append(data_node.uid)
             parent_uid = data_node.parent_uid

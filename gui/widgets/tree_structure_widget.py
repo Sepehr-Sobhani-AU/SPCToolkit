@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
+from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QApplication
 from PyQt5.QtCore import pyqtSignal, Qt
 
 
@@ -53,6 +53,7 @@ class TreeStructureWidget(QTreeWidget):
         if parent_uuid and parent_uuid in self.branches_dict:
             parent_item = self.branches_dict[parent_uuid]
             parent_item.addChild(item)
+            parent_item.setExpanded(True)
         else:
             self.addTopLevelItem(item)
 
@@ -138,13 +139,51 @@ class TreeStructureWidget(QTreeWidget):
             self.visibility_status[uid] = item.checkState(0) == Qt.Checked
             self.branch_visibility_changed.emit(self.visibility_status)
 
+    # TODO: Fix selecting multiple items using Ctrl key
     def on_selection_changed(self):
         """
         Handles item selection changes and emits the selected branches.
         """
         selected_items = self.selectedItems()
+        last_selected_item = selected_items[-1] if selected_items else None
+
+        if last_selected_item:
+            # Check if Ctrl is pressed
+            if not (QApplication.keyboardModifiers() & Qt.ControlModifier):
+                # Block signals to prevent recursive calls
+                self.blockSignals(True)
+                self.clearSelection()
+                last_selected_item.setSelected(True)
+                self.blockSignals(False)
+
+                # Update selected_items to reflect the new selection
+                selected_items = self.selectedItems()  # <-- Fix here
+
         selected_uids = [item.data(0, Qt.UserRole) for item in selected_items if item.data(0, Qt.UserRole)]
         self.branch_selection_changed.emit(selected_uids)
+
+    def get_all_items(self):
+        """
+        Retrieves all items (branches) in the tree structure, including children.
+
+        Returns:
+            dict: Dictionary mapping branch UUIDs to their corresponding QTreeWidgetItem instances.
+        """
+
+        return self.branches_dict
+
+    def _get_all_children(self, parent_item, all_items):
+        """
+        Recursively retrieves all children of a given parent item.
+
+        Args:
+            parent_item (QTreeWidgetItem): The parent tree item.
+            all_items (list): The list to store all tree items.
+        """
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            all_items.append(child)
+            self._get_all_children(child, all_items)  # Recursive call
 
     def _get_hierarchy(self):
         """
