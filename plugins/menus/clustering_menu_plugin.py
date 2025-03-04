@@ -1,4 +1,4 @@
-
+# plugins/menus/clustering_menu_plugin.py
 from typing import Dict, Any, List
 
 from plugins.interfaces import MenuPlugin
@@ -33,6 +33,11 @@ class ClusteringMenuPlugin(MenuPlugin):
                 "name": "DBSCAN",
                 "action": "dbscan",
                 "tooltip": "Density-Based Spatial Clustering of Applications with Noise"
+            },
+            {
+                "name": "HDBSCAN",
+                "action": "hdbscan",
+                "tooltip": "Hierarchical Density-Based Spatial Clustering of Applications with Noise"
             },
             {
                 "name": "K-Means",

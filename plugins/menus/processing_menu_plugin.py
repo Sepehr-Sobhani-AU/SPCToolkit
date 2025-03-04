@@ -8,7 +8,7 @@ class ProcessingMenuPlugin(MenuPlugin):
     """
     Menu plugin that adds data processing menu items.
 
-    This plugin adds items for subsampling and filtering operations to the "Action" menu.
+    This plugin adds items for processing operations to the "Action" menu.
     """
 
     def get_menu_location(self) -> str:
@@ -30,8 +30,19 @@ class ProcessingMenuPlugin(MenuPlugin):
         return [
             {
                 "name": "Subsampling",
-                "action": "subsampling",
-                "tooltip": "Reduce the number of points in the point cloud"
+                "action": "_submenu_",  # Special marker for a submenu
+                "submenu": [
+                    {
+                        "name": "Random Subsampling",
+                        "action": "subsampling",
+                        "tooltip": "Reduce the number of points by random selection"
+                    },
+                    {
+                        "name": "Density-Based Subsampling",
+                        "action": "density_subsampling",
+                        "tooltip": "Reduce the number of points based on spatial density (voxel-based)"
+                    }
+                ]
             },
             {
                 "name": "Filtering",

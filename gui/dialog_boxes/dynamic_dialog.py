@@ -1,6 +1,7 @@
 # gui/dialog_boxes/dynamic_dialog.py
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
-                             QDialogButtonBox, QLabel, QSpinBox, QDoubleSpinBox)
+                             QDialogButtonBox, QLabel, QSpinBox, QDoubleSpinBox,
+                             QComboBox)
 from typing import Dict, Any
 
 
@@ -55,6 +56,17 @@ class DynamicDialog(QDialog):
                 if "max" in param_info:
                     widget.setMaximum(param_info["max"])
                 widget.setDecimals(4)  # Increased precision for floating-point values
+            elif param_type == "dropdown":
+                widget = QComboBox()
+                options = param_info.get("options", {})
+                for value, display_text in options.items():
+                    widget.addItem(display_text, value)
+
+                # Set the default value if provided
+                if default_value and isinstance(default_value, str):
+                    index = widget.findData(default_value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
             else:  # Default to string
                 widget = QLineEdit()
                 widget.setText(str(default_value))
@@ -90,6 +102,8 @@ class DynamicDialog(QDialog):
                 self.params[param_name] = widget.value()
             elif param_type == "float":
                 self.params[param_name] = widget.value()
+            elif param_type == "dropdown":
+                self.params[param_name] = widget.currentData()  # Get the data value, not the display text
             else:  # String
                 self.params[param_name] = widget.text()
 

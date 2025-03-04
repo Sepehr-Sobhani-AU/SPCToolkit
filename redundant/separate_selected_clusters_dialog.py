@@ -1,6 +1,6 @@
 # TODO: docstring
 
-from gui.dialog_boxes.base_dialog import BaseDialog
+from redundant.base_dialog import BaseDialog
 from config.config import global_variables
 
 

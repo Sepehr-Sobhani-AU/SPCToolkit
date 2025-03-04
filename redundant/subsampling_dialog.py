@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QLineEdit, QLabel
 
-from gui.dialog_boxes.base_dialog import BaseDialog
+from redundant.base_dialog import BaseDialog
 
 class SubsamplingDialog(BaseDialog):
     def __init__(self, parent=None):

@@ -1,6 +1,6 @@
 # TODO: convert all uids as strings to uuid.UUID objects
 from PyQt5.QtWidgets import QComboBox, QLabel
-from gui.dialog_boxes.base_dialog import BaseDialog
+from redundant.base_dialog import BaseDialog
 from config.config import global_variables
 import uuid
 
