@@ -13,6 +13,7 @@
 
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
+from tasks.apply_values import ApplyValues
 from tasks.apply_clusters import ApplyClusters
 from tasks.apply_masks import ApplyMasks
 
@@ -27,6 +28,7 @@ class NodeReconstructionManager:
         super().__init__()
         self.tasks_registry = {"masks": ApplyMasks,
                                "cluster_labels": ApplyClusters,
+                               "values": ApplyValues,
                                }
 
     def reconstruct_node(self, point_cloud: PointCloud, data_node: DataNode) -> PointCloud:

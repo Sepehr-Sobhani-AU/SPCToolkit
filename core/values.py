@@ -14,7 +14,7 @@ class Values:
     """
 
     def __init__(self, values: np.ndarray):
-        self.values = values.dtype(np.float32)
+        self.values = values.astype(np.float32)
 
         # Validate input data
         if not isinstance(self.values, np.ndarray):

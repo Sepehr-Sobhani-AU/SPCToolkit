@@ -87,6 +87,25 @@ class PointCloud:
         self.feature = kwargs.get('feature', [])
         self.metadata = kwargs.get('metadata', {})
 
+        # Add a dictionary to store arbitrary attributes
+        self.attributes = {}
+
+    def add_attribute(self, name, values):
+        """Add or update a per-point attribute.
+
+        Args:
+            name (str): Name of the attribute
+            values (np.ndarray): Array of values, one per point
+        """
+        if len(values) != len(self.points):
+            raise ValueError(f"Attribute {name} must have the same length as points")
+
+        self.attributes[name] = values
+
+    def get_attribute(self, name):
+        """Get a per-point attribute by name."""
+        return self.attributes.get(name)
+
     def translate(self, translation):
         """
         Translate the cluster by a given translation vector.
@@ -752,7 +771,7 @@ class PointCloud:
         mask = np.zeros(len(self.points), dtype=bool)
         mask[np.asarray(ind)] = True
 
-        return self.get_subset(mask, inplace=False)
+        return mask
 
     def size(self):
         """
