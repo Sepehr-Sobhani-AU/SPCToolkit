@@ -203,7 +203,10 @@ class DataManager(QObject):
         point_cloud = data_node.data
         for uid in self.data_node_uids[1:]:
             data_node = self.data_nodes.get_node(uid)
-            point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, data_node)
+            if data_node.data_type == "point_cloud":
+                point_cloud = data_node.data
+            else:
+                point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, data_node)
         return point_cloud
 
     # def validate_dependency(self, uid: str) -> bool:

@@ -34,6 +34,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Create an instance of FileManager
         self.file_manager = FileManager()
+        global_variables.global_file_manager = self.file_manager
 
         # Create global instances of the tree structure widget, PCD viewer widget, dialog boxes manager, and data manager
         self.tree_widget = TreeStructureWidget()
@@ -90,11 +91,11 @@ class MainWindow(QtWidgets.QMainWindow):
         for menu_name in base_menus:
             self.menus[menu_name] = self.menubar.addMenu(menu_name)
 
-        # Add basic "Open" action to File menu
-        open_action = QtWidgets.QAction("Open", self)
-        open_action.triggered.connect(self.open_file_dialog)
-        self.menus["File"].addAction(open_action)
-        self.actions["open"] = open_action
+        # Add "Import Point Cloud" action to File menu (renamed from "Open")
+        import_action = QtWidgets.QAction("Import Point Cloud", self)
+        import_action.triggered.connect(self.open_file_dialog)
+        self.menus["File"].addAction(import_action)
+        self.actions["import_point_cloud"] = import_action
 
     def populate_menus_from_plugins(self):
         """Populate menus from available menu plugins."""

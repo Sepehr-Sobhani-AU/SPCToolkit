@@ -454,7 +454,7 @@ class PCDViewerWidget(QOpenGLWidget):
         """
         if points is not None:
             assert points.shape[1] == 3, "Points array must have shape Nx3"
-            assert points.dtype == np.float32, "Points array must be of type float32"
+            assert points.dtype == np.float32, f"Points array must be of type float32, not {points.dtype}"
         else:
             # Hide the point cloud if no points are provided
             self.points = None
@@ -643,12 +643,15 @@ class PCDViewerWidget(QOpenGLWidget):
             glColor3f(*self.picked_point_highlight_color)
 
             for index in self.picked_points_indices:
-                position = self.points[index, :3]
+                try:
+                    position = self.points[index, :3]
 
-                # Calculate the radius of the sphere based on the max extent of the point cloud
-                # / 1000 is a scaling factor to adjust a reasonable value size of the sphere
-                radius = self.max_extent * self.picked_point_highlight_size / 1000
-                self.draw_sphere(position, radius)
+                    # Calculate the radius of the sphere based on the max extent of the point cloud
+                    # / 1000 is a scaling factor to adjust a reasonable value size of the sphere
+                    radius = self.max_extent * self.picked_point_highlight_size / 1000
+                    self.draw_sphere(position, radius)
+                except IndexError:
+                    continue
 
     def resizeGL(self, w, h):
         """
