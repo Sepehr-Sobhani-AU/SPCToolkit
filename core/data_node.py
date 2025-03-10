@@ -23,6 +23,7 @@ class DataNode:
         alias: str = "",
         data: Any = None,
         data_type: str = "",
+        data_name: str = "",
         parent_uid: uuid.UUID = None,
         depends_on: List[uuid.UUID] = None,
         tags: List[str] = None
@@ -43,6 +44,7 @@ class DataNode:
         self.alias: str = alias
         self.data: Any = data
         self.data_type: str = self.data.__class__.__name__ if data_type == "" else data_type
+        self.data_name: str = data_name
         self.parent_uid: uuid.UUID = parent_uid
         self.depends_on: List[uuid.UUID] = depends_on if depends_on else []
         self.tags: List[str] = tags if tags else []

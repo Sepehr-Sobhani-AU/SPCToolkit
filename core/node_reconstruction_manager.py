@@ -1,5 +1,4 @@
-# TODO: Docstrings
-# TODO: Validations
+# core/node_reconstruction_manager.py
 """
     This module implements a Dynamic Task Execution Framework that allows for the execution of different types of
     tasks based on the task type. The Task class is an abstract base class that defines the interface for all tasks.
@@ -16,20 +15,26 @@ from core.data_node import DataNode
 from tasks.apply_values import ApplyValues
 from tasks.apply_clusters import ApplyClusters
 from tasks.apply_masks import ApplyMasks
+from tasks.apply_eigenvalues import ApplyEigenvalues
 
 
 class NodeReconstructionManager:
 
     def __init__(self):
         """
-        Initializes the AnalysisManager with an empty analyses dictionary.
+        Initializes the NodeReconstructionManager with a task registry.
+
+        The task registry maps data node types to their corresponding
+        reconstruction tasks.
         """
 
         super().__init__()
-        self.tasks_registry = {"masks": ApplyMasks,
-                               "cluster_labels": ApplyClusters,
-                               "values": ApplyValues,
-                               }
+        self.tasks_registry = {
+            "masks": ApplyMasks,
+            "cluster_labels": ApplyClusters,
+            "values": ApplyValues,
+            "eigenvalues": ApplyEigenvalues,  # Add the new eigenvalues task
+        }
 
     def reconstruct_node(self, point_cloud: PointCloud, data_node: DataNode) -> PointCloud:
         """
@@ -38,6 +43,12 @@ class NodeReconstructionManager:
         Args:
             point_cloud (PointCloud): The root PointCloud instance to reconstruct data node from.
             data_node (DataNode): The DataNode instance to reconstruct.
+
+        Returns:
+            PointCloud: The reconstructed point cloud with data node properties applied.
+
+        Raises:
+            ValueError: If the data node type is not found in the task registry.
         """
 
         analysis_type = data_node.data_type
@@ -49,5 +60,3 @@ class NodeReconstructionManager:
         derived_point_cloud = task_instance.execute()
 
         return derived_point_cloud
-
-

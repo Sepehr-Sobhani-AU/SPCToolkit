@@ -19,7 +19,7 @@ from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 
 # Local application imports
-#from core.point_clouds import PointClouds
+from services.eigenvalue_utils import EigenvalueUtils
 
 
 class PointCloud:
@@ -49,7 +49,6 @@ class PointCloud:
 
     """
     def __init__(self, points, colors=None, normals=None, **kwargs):
-
 
         # Validation points
         if not isinstance(points, np.ndarray):  # or points.ndim != 2 or points.shape[1] != 3:
@@ -90,17 +89,51 @@ class PointCloud:
         # Add a dictionary to store arbitrary attributes
         self.attributes = {}
 
+    # This code should replace the existing add_attribute method in the PointCloud class
+
     def add_attribute(self, name, values):
         """Add or update a per-point attribute.
 
         Args:
             name (str): Name of the attribute
-            values (np.ndarray): Array of values, one per point
-        """
-        if len(values) != len(self.points):
-            raise ValueError(f"Attribute {name} must have the same length as points")
+            values (np.ndarray): Array of values associated with points.
+                The first dimension must match the number of points.
+                For example:
+                - 1D array: One scalar value per point
+                - 2D array: A vector of values for each point
+                - 3D array: A matrix of values for each point
 
+        Raises:
+            ValueError: If the first dimension of values doesn't match the number of points
+            TypeError: If values is not a numpy array
+        """
+        import numpy as np
+
+        # Convert to numpy array if possible
+        if not isinstance(values, np.ndarray):
+            try:
+                values = np.array(values)
+            except:
+                raise TypeError(f"Attribute '{name}' must be a numpy array or convertible to one")
+
+        # Handle multi-dimensional arrays
+        if values.ndim == 1:
+            # 1D array case - must have length equal to number of points
+            if len(values) != len(self.points):
+                raise ValueError(
+                    f"Attribute '{name}' has length {len(values)} but point cloud has {len(self.points)} points"
+                )
+        else:
+            # Multi-dimensional case - first dimension must match number of points
+            if values.shape[0] != len(self.points):
+                raise ValueError(
+                    f"Attribute '{name}' has {values.shape[0]} elements in first dimension but point cloud has {len(self.points)} points"
+                )
+
+        # Store the attribute
         self.attributes[name] = values
+
+        print(f"Added attribute '{name}' with shape {values.shape} to point cloud")
 
     def get_attribute(self, name):
         """Get a per-point attribute by name."""
@@ -254,81 +287,32 @@ class PointCloud:
     #
     #     return cluster_labels
 
-    def get_eigenvalues(self, k, smooth=True):
+    def get_eigenvalues(self, k, smooth=True, batch_size=None):
         """
-        Calculate the eigenvalues of the covariance matrix of k-nearest neighbor points for each point in the cluster.
+        Calculate eigenvalues using the EigenvalueAnalyser.
 
-        This method leverages a k-d tree to efficiently find the k-nearest neighbors (KNN) for each point
-        in the cluster, computes the covariance matrix for these points, and then derives the eigenvalues.
-        Optionally, it can smooth the eigenvalues by averaging them across the neighbors of each point.
+        This method maintains backward compatibility while leveraging
+        the improved implementation in EigenvalueAnalyser.
 
-        Parameters:
-        - k (int): The number of nearest neighbors to consider for each point.
-        - smooth (bool, optional): If True, the eigenvalues are smoothed by averaging over each point's neighbors.
-                                   If False, the raw eigenvalues for each point's neighborhood are returned.
+        Args:
+            k (int): Number of neighbors
+            smooth (bool): Whether to smooth eigenvalues
+            batch_size (int, optional): Batch size for processing large clouds
 
         Returns:
-        - np.ndarray: An array of eigenvalues.
-
-        Raises:
-        - ValueError: If 'k' is less than or equal to the number of points in the cluster or if 'k' is non-positive.
-
-        Examples:
-        --------
-        # Assuming 'points' is a numpy array representing points in the cluster
-        cluster_instance = Clusters(points=np.random.rand(100, 3))
-        eigenvalues = cluster_instance.get_eigenvalues(k=5, smooth=True)
-        print("Averaged Eigenvalues:", eigenvalues)
-
-        Notes:
-        -----
-        - The method uses TensorFlow to perform batch operations for computing eigenvalues, which requires
-          the installation of TensorFlow alongside NumPy and SciPy.
-        - This function is computationally intensive for large 'k' or very large point sets due to the
-          computation of eigenvalues for each point's KNN.
+            np.ndarray: Eigenvalues for each point
         """
-        point_cloud = self.points
 
-        # Create a k-d tree
-        tree = KDTree(point_cloud)
+        # Create analyser instance (using CPU to avoid memory issues)
+        analyser = EigenvalueUtils(use_cpu=True)
 
-        # Query the k-d tree for KNN
-        distances, indices = tree.query(point_cloud,
-                                        k=k)  # 'indices' now contains the indices of the k-nearest neighbors for each point
-
-        # Gather KNN points
-        knn_points = point_cloud[indices]  # Shape: [num_points, k, 3]
-
-        # Compute means and center the points
-        mean_knn_points = np.mean(knn_points, axis=1, keepdims=True)
-        centered_knn_points = knn_points - mean_knn_points
-
-        # Reshape for batch matrix multiplication
-        centered_knn_points_reshaped = centered_knn_points.transpose(0, 2, 1)
-
-        # Batch covariance matrix computation
-        cov_matrices = np.matmul(centered_knn_points_reshaped, centered_knn_points) / (
-                k - 1)  # cov_matrices.shape is [num_points, 3, 3]
-
-        # Convert the NumPy array to a TensorFlow tensor
-        cov_matrices_tf = tf.convert_to_tensor(cov_matrices, dtype=tf.float32)
-
-        # Compute the eigenvalues and eigenvectors in batch
-        eigenvalues_tf, eigenvectors_tf = tf.linalg.eigh(cov_matrices_tf)
-
-        # Convert the eigenvalues back to a NumPy array if needed
-        eigenvalues = eigenvalues_tf.numpy()
-
-        if smooth:
-            # Use advanced indexing to compute the mean eigenvalues across neighbors
-            neighbor_eigenvalues = eigenvalues[indices]  # Use indices to gather neighbor eigenvalues
-            avg_eigenvalues = np.mean(neighbor_eigenvalues, axis=1)  # Average over the neighbor axis
-
-            self.eigenvalues = avg_eigenvalues
-            return avg_eigenvalues
-        else:
-            self.eigenvalues = eigenvalues
-            return eigenvalues
+        # Use the analyser to compute eigenvalues
+        return analyser.compute_eigenvalues(
+            self.points,
+            k=k,
+            smooth=smooth,
+            batch_size=batch_size
+        )
 
     def get_subset(self, mask, inplace=False):
         """
