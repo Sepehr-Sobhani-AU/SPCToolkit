@@ -16,6 +16,7 @@ from tasks.apply_values import ApplyValues
 from tasks.apply_clusters import ApplyClusters
 from tasks.apply_masks import ApplyMasks
 from tasks.apply_eigenvalues import ApplyEigenvalues
+from tasks.apply_colors import ApplyColors
 
 
 class NodeReconstructionManager:
@@ -33,7 +34,8 @@ class NodeReconstructionManager:
             "masks": ApplyMasks,
             "cluster_labels": ApplyClusters,
             "values": ApplyValues,
-            "eigenvalues": ApplyEigenvalues,  # Add the new eigenvalues task
+            "eigenvalues": ApplyEigenvalues,
+            "colors": ApplyColors,  # Add the new colors task
         }
 
     def reconstruct_node(self, point_cloud: PointCloud, data_node: DataNode) -> PointCloud:

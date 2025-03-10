@@ -1,7 +1,7 @@
 # gui/dialog_boxes/dynamic_dialog.py
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                              QDialogButtonBox, QLabel, QSpinBox, QDoubleSpinBox,
-                             QComboBox)
+                             QComboBox, QCheckBox)
 from typing import Dict, Any
 
 
@@ -67,6 +67,24 @@ class DynamicDialog(QDialog):
                     index = widget.findData(default_value)
                     if index >= 0:
                         widget.setCurrentIndex(index)
+            elif param_type == "choice":
+                # Handle choice type (list of options)
+                widget = QComboBox()
+                options = param_info.get("options", [])
+
+                for option in options:
+                    # For choice, option and display value are the same
+                    widget.addItem(str(option), option)
+
+                # Set default if provided
+                if default_value:
+                    index = widget.findData(default_value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
+            elif param_type == "bool":
+                # Handle boolean type
+                widget = QCheckBox()
+                widget.setChecked(bool(default_value))
             else:  # Default to string
                 widget = QLineEdit()
                 widget.setText(str(default_value))
@@ -102,8 +120,10 @@ class DynamicDialog(QDialog):
                 self.params[param_name] = widget.value()
             elif param_type == "float":
                 self.params[param_name] = widget.value()
-            elif param_type == "dropdown":
+            elif param_type == "dropdown" or param_type == "choice":
                 self.params[param_name] = widget.currentData()  # Get the data value, not the display text
+            elif param_type == "bool":
+                self.params[param_name] = widget.isChecked()
             else:  # String
                 self.params[param_name] = widget.text()
 

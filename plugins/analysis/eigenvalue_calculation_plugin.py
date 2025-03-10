@@ -45,7 +45,7 @@ class EigenvalueCalculationPlugin(AnalysisPlugin):
             },
             "smooth": {
                 "type": "bool",
-                "default": True,
+                "default": False,
                 "label": "Smooth Results",
                 "description": "Whether to smooth eigenvalues by averaging over neighbours"
             },
@@ -59,7 +59,7 @@ class EigenvalueCalculationPlugin(AnalysisPlugin):
             },
             "force_cpu": {
                 "type": "bool",
-                "default": True,
+                "default": False,
                 "label": "Force CPU Usage",
                 "description": "Use CPU instead of GPU to avoid memory issues with large point clouds"
             }
@@ -93,15 +93,15 @@ class EigenvalueCalculationPlugin(AnalysisPlugin):
             batch_size = None
 
         # Create an instance of EigenvalueAnalyser with the specified device preference
-        analyser = EigenvalueUtils(use_cpu=force_cpu)
+        eigenvalue_utils = EigenvalueUtils(use_cpu=force_cpu)
 
         print(f"Computing eigenvalues for {point_cloud.size()} points with k={k_neighbors}...")
         start_time = time.time()
 
-        # Compute eigenvalues using the analyser
+        # Compute eigenvalues using the eigenvalue_utils
         try:
             # Get eigenvalues as a numpy array
-            eigenvalue_array = analyser.compute_eigenvalues(
+            eigenvalue_array = eigenvalue_utils.compute_eigenvalues(
                 point_cloud.points,
                 k=k_neighbors,
                 smooth=smooth,

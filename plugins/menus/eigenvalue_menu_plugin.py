@@ -9,7 +9,7 @@ class EigenvalueMenuPlugin(MenuPlugin):
     Menu plugin that adds eigenvalue analysis menu items.
 
     This plugin adds an "Eigenvalue Analysis" submenu under the "Action/Surface Analysis" menu with
-    items for calculating, visualizing, and analyzing eigenvalues.
+    items for calculating, visualizing, analyzing, and filtering eigenvalues.
     """
 
     def get_menu_location(self) -> str:
@@ -19,7 +19,7 @@ class EigenvalueMenuPlugin(MenuPlugin):
         Returns:
             str: The menu path "Action/Surface Analysis"
         """
-        return "Action/Eigenvalue Analysis"
+        return "Action/Surface Analysis"
 
     def get_menu_items(self) -> List[Dict[str, Any]]:
         """
@@ -43,6 +43,11 @@ class EigenvalueMenuPlugin(MenuPlugin):
                 "name": "Analyze Eigenvalues",
                 "action": "eigenvalue_analysis",
                 "tooltip": "Perform geometric analysis based on eigenvalues (find planes, edges, corners)"
+            },
+            {
+                "name": "Filter by Eigenvalues",
+                "action": "eigenvalue_filtering",
+                "tooltip": "Filter points based on eigenvalue thresholds or geometric properties"
             }
         ]
 
