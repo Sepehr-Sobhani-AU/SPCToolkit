@@ -51,9 +51,9 @@ class EigenvalueCalculationPlugin(AnalysisPlugin):
             },
             "batch_size": {
                 "type": "int",
-                "default": 10000,
-                "min": 100,
-                "max": 100000,
+                "default": 100000,
+                "min": 100000,
+                "max": 10000000,
                 "label": "Batch Size",
                 "description": "Number of points to process at once (lower values use less memory)"
             },
@@ -83,36 +83,36 @@ class EigenvalueCalculationPlugin(AnalysisPlugin):
         point_cloud: PointCloud = data_node.data
 
         # Extract parameters
-        k_neighbors = params["k_neighbors"]
-        smooth = params["smooth"]
-        batch_size = params["batch_size"]
-        force_cpu = params["force_cpu"]
+        k_neighbors = params.get("k_neighbors", 20)
+        smooth = params.get("smooth", False)
+        batch_size = params.get("batch_size", 10000)
+        force_cpu = params.get("force_cpu", False)
 
         # For very small point clouds, don't bother with batching
-        if point_cloud.size() < batch_size:
-            batch_size = None
+        if point_cloud.size < batch_size:
+            batch_size = point_cloud.size
+
+        # Define a progress callback
+        def progress_callback(current, total):
+            percent = (current / total) * 100
+            print(f"Computing eigenvalues: {percent:.1f}% complete ({current}/{total} batches)")
 
         # Create an instance of EigenvalueAnalyser with the specified device preference
-        eigenvalue_utils = EigenvalueUtils(use_cpu=force_cpu)
+        eigenvalue_utils = EigenvalueUtils()
 
-        print(f"Computing eigenvalues for {point_cloud.size()} points with k={k_neighbors}...")
+        print(f"Computing eigenvalues for {point_cloud.size} points with k={k_neighbors}...")
         start_time = time.time()
 
         # Compute eigenvalues using the eigenvalue_utils
         try:
             # Get eigenvalues as a numpy array
-            eigenvalue_array = eigenvalue_utils.compute_eigenvalues(
-                point_cloud.points,
-                k=k_neighbors,
-                smooth=smooth,
-                batch_size=batch_size
-            )
+            eigenvalue_array = eigenvalue_utils.get_eigenvalues(point_cloud.points, k=k_neighbors, smooth=smooth, batch_size=batch_size)
 
             # Create an Eigenvalues object
             eigenvalues = Eigenvalues(eigenvalue_array)
 
             elapsed_time = time.time() - start_time
-            print(f"Eigenvalue calculation complete for {point_cloud.size()} points in {elapsed_time:.2f} seconds")
+            print(f"Eigenvalue calculation complete for {point_cloud.size} points in {elapsed_time:.2f} seconds")
             print(f"Eigenvalue array shape: {eigenvalue_array.shape}")
 
             # Return results, type, and dependencies

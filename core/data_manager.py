@@ -274,7 +274,7 @@ class DataManager(QObject):
                     colors_to_show = np.append(colors_to_show, point_cloud.colors, axis=0)
                 else:
                     # If no colors are present, use white
-                    colors_to_show = np.append(colors_to_show, np.ones((point_cloud.size(), 3), dtype=np.float32), axis=0)
+                    colors_to_show = np.append(colors_to_show, np.ones((point_cloud.size, 3), dtype=np.float32), axis=0)
 
             self.viewer_widget.set_points(points=points_to_show, colors=colors_to_show)
         else:

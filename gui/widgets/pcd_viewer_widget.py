@@ -401,10 +401,11 @@ class PCDViewerWidget(QOpenGLWidget):
 
     def zoom_extent(self):
         """
-        Set up default view parameters without zoom extent.
+        Zoom the view to fit all visible point cloud data.
 
-        This method prepares the initial parameters such as default panning and size but
-        does not modify the current view, avoiding an automatic zoom to the extent.
+        This method calculates the bounding box of the visible point cloud,
+        centers the view on it, and adjusts the camera distance to ensure
+        all points are visible in the viewport with some padding.
         """
         if self.points is None or len(self.points) == 0:
             return
@@ -416,9 +417,9 @@ class PCDViewerWidget(QOpenGLWidget):
         self.size = max_bounds - min_bounds
         self.max_extent = self.size.max()
 
-        # Set default camera distance, pan, and near/far planes without applying them to the current view
+        # Calculate optimal camera distance based on field of view and bounding box size
         half_fov_rad = np.radians(self.fov / 2)
-        self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # Padding factor
+        self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # Add 20% padding
         self.camera_distance = self.default_camera_distance
 
         # Update panning offsets to align the center with the view
@@ -426,15 +427,35 @@ class PCDViewerWidget(QOpenGLWidget):
         self.pan_y = -self.center[1]
         self.pan_z = -self.center[2]
 
-        # Set default panning offsets, but do not apply these values yet to the actual view
-        self.default_pan_x = -self.pan_x
-        self.default_pan_y = -self.pan_y
-        self.default_pan_z = -self.pan_z
+        # Save these values as defaults for reset_view
+        self.default_pan_x = self.pan_x
+        self.default_pan_y = self.pan_y
+        self.default_pan_z = self.pan_z
 
-        # Save the initial zoom factor as a default reference
-        self.default_zoom_factor = 1.0  # Assume this is the base zoom level
+        # Reset rotation to default values
+        self.rot_x = self.default_rot_x
+        self.rot_y = self.default_rot_y
+        self.rot_z = self.default_rot_z
 
-        # self.update()
+        # Reset zoom factor
+        self.zoom_factor = 1.0
+        self.default_zoom_factor = 1.0
+
+        # Show the axis briefly after zooming to help with orientation
+        self.show_axis = True
+
+        # Update the view
+        self.update()
+
+        # Set a timer to hide the axis after a short time
+        if hasattr(self, 'axis_timer') and self.axis_timer is not None:
+            self.axis_timer.stop()
+
+        from PyQt5.QtCore import QTimer
+        self.axis_timer = QTimer(self)
+        self.axis_timer.setSingleShot(True)
+        self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
+        self.axis_timer.start(1000)  # Hide axis after 1 second
 
     def set_points(self, points: np.ndarray, colors: np.ndarray = None):
         """

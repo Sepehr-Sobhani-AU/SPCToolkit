@@ -10,7 +10,6 @@ import warnings
 
 # Third-party imports
 import numpy as np
-# import cupy as cp
 import pandas as pd
 import open3d as o3d
 import tensorflow as tf
@@ -73,7 +72,7 @@ class PointCloud:
         self.height = 0
 
         # If cluster has no point in it, ignore calculating obb
-        if self.size() > 1:
+        if self.size > 1:
             self._update_obb_dim()
 
         # Validation for color, intensity, normal and distToGround
@@ -89,8 +88,20 @@ class PointCloud:
         # Add a dictionary to store arbitrary attributes
         self.attributes = {}
 
-    # This code should replace the existing add_attribute method in the PointCloud class
+    @property
+    def size(self):
+        """
+        Returns the number of points in the point cloud.
 
+        This property provides access to the total number of points contained in the
+        point cloud, which is equivalent to the length of the points array.
+
+        Returns:
+            int: The total number of points in the point cloud.
+        """
+        return len(self.points)
+
+    # This code should replace the existing add_attribute method in the PointCloud class
     def add_attribute(self, name, values):
         """Add or update a per-point attribute.
 
@@ -184,9 +195,9 @@ class PointCloud:
             augmented_distToGround += noise[:, 2]
             self.distToGround = augmented_distToGround
 
-    def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False):
+    def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False, use_sklearn=False):
         """
-        Apply DBSCAN clustering to the points in the cluster using Open3D.
+        Apply DBSCAN clustering to the points in the cluster.
 
         Parameters:
         - eps (float): The maximum distance between two samples for one to be considered
@@ -195,6 +206,8 @@ class PointCloud:
                             as a core point. Default is 10.
         - return_clusters_object (bool): If True, returns a Clusters object containing the DBSCAN result.
                                          Default is False.
+        - use_sklearn (bool): If True, uses scikit-learn's DBSCAN implementation, which may be
+                             more efficient for large point clouds. Default is False.
 
         Returns:
         - labels (np.ndarray) or (np.ndarray, Clusters): An array of cluster labels, and optionally a Clusters object.
@@ -202,27 +215,64 @@ class PointCloud:
         if len(self.points) == 0:
             raise ValueError("The cluster has no points for DBSCAN clustering.")
 
+        if use_sklearn:
+            try:
+                from sklearn.cluster import DBSCAN
+                import sklearn
+
+                print(f"Using scikit-learn DBSCAN (version {sklearn.__version__})")
+                print(f"Processing {len(self.points)} points with eps={eps}, min_samples={min_points}")
+
+                # Create and run the DBSCAN algorithm
+                db = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1)  # n_jobs=-1 uses all available cores
+                labels = db.fit_predict(self.points)
+
+                print(f"DBSCAN completed. Found {len(set(labels)) - (1 if -1 in labels else 0)} clusters")
+            except ImportError:
+                print("scikit-learn not found. Falling back to Open3D implementation.")
+                return self._dbscan_open3d(eps, min_points, return_clusters_object)
+        else:
+            # Use the original Open3D implementation
+            labels = self._dbscan_open3d(eps, min_points, return_clusters_object)
+
+        # Store the DBSCAN labels
+        self.cluster_labels = labels
+
+        if return_clusters_object:
+            # Create and return Clusters object
+            from core.clusters import Clusters
+            clusters = Clusters(labels)
+            # Optionally set random colors for visualization
+            clusters.set_random_color()
+            return clusters
+        else:
+            return labels
+
+    def _dbscan_open3d(self, eps, min_points, return_clusters_object=False):
+        """
+        Internal method to perform DBSCAN using Open3D implementation.
+
+        Parameters:
+        - eps (float): Epsilon parameter for DBSCAN.
+        - min_points (int): Minimum points parameter for DBSCAN.
+        - return_clusters_object (bool): Not used in this method, kept for API consistency.
+
+        Returns:
+        - labels (np.ndarray): An array of cluster labels.
+        """
+        print(f"Using Open3D DBSCAN")
+        print(f"Processing {len(self.points)} points with eps={eps}, min_points={min_points}")
+
         # Convert points to Open3D point cloud and perform DBSCAN
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(self.points)
 
+        # Use VerbosityContextManager to control console output
         with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
-            labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=False))
+            labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=True))
 
-        # Store the DBSCAN labels
-        self.cluster_labels = labels
-        #TODO: Add inplace option
-        if return_clusters_object:
-            # Create and return Clusters object
-            # cluster_labels = Clusters()
-            # cluster_labels.points = self.points
-            # cluster_labels.labels = labels
-            # cluster_labels.colors = self.colors
-            # cluster_labels.normals = self.normal
-            # return cluster_labels
-            pass
-        else:
-            return labels
+        print(f"DBSCAN completed. Found {len(set(labels)) - (1 if -1 in labels else 0)} clusters")
+        return labels
 
     def density_downsample(self, voxel_size):
         """
@@ -304,28 +354,90 @@ class PointCloud:
         """
 
         # Create analyser instance (using CPU to avoid memory issues)
-        analyser = EigenvalueUtils(use_cpu=True)
+        analyser = EigenvalueUtils()
 
         # Use the analyser to compute eigenvalues
-        return analyser.compute_eigenvalues(
-            self.points,
-            k=k,
-            smooth=smooth,
-            batch_size=batch_size
-        )
+        return analyser.get_eigenvalues(self.points, k=k, smooth=smooth, batch_size=batch_size)
 
+    # def get_subset(self, mask, inplace=False):
+    #     """
+    #     Extracts a subset based on a mask, either by modifying the current cluster or returning a new one.
+    #
+    #     Parameters:
+    #     - mask (np.ndarray): A boolean array where True values indicate points to include in the subset.
+    #     - inplace (bool): If True, modifies the current cluster in-place. Default is False.
+    #
+    #     Returns:
+    #     - Clusters: A new Clusters instance containing the subset if inplace is False.
+    #     """
+    #
+    #     if not np.count_nonzero(mask) >= 4:
+    #         # Handle the case where the mask filters out all points
+    #         print("Not enough points found for subset.")
+    #         if inplace:
+    #             self.points = np.array([])
+    #             self.parent = 0
+    #             self.cluster_labels = []
+    #             self.prediction = ''
+    #             self.probability = 0
+    #             self.model_weight = ''
+    #             self.length = 0
+    #             self.width = 0
+    #             self.height = 0
+    #             self.feature = []
+    #             self.metadata = {}
+    #         else:
+    #             # Return an empty Clusters instance with (1, 3) dimension as
+    #             # Clusters constructor needs (n, 3) ndarray for points
+    #             return PointCloud(np.empty((1, 3)))
+    #     else:
+    #         if inplace:
+    #             # Modify the current cluster's points and attributes in-place
+    #             # Apply the mask to attributes of the cluster
+    #             self.points = self.points[mask]
+    #             self._update_obb_dim()
+    #
+    #             if hasattr(self, 'colors') and self.colors.shape[0] > 0:
+    #                 self.colors = self.colors[mask]
+    #             if hasattr(self, 'intensity') and self.intensity.shape[0] > 0:
+    #                 self.intensity = self.intensity[mask]
+    #             if hasattr(self, 'distToGround') and self.distToGround.shape[0] > 0:
+    #                 self.distToGround = self.distToGround[mask]
+    #         else:
+    #             # Create a deep copy of the cluster and apply the mask
+    #             subset = copy.deepcopy(self)
+    #
+    #             # Apply the mask to attributes of the cluster
+    #             subset.points = subset.points[mask]
+    #             subset._update_obb_dim()
+    #
+    #             if subset.colors is not None:
+    #                 if subset.colors.shape[0] > 0:
+    #                     subset.colors = subset.colors[mask]
+    #             if subset.normals is not None:
+    #                 if subset.normals.shape[0] > 0:
+    #                     subset.normals = subset.normals[mask]
+    #             if hasattr(subset, 'intensity'):
+    #                 if subset.intensity.shape[0] > 0:
+    #                     subset.intensity = subset.intensity[mask]
+    #             if hasattr(subset, 'distToGround'):
+    #                 if subset.distToGround.shape[0] > 0:
+    #                     subset.distToGround = subset.distToGround[mask]
+    #
+    #             return subset
     def get_subset(self, mask, inplace=False):
         """
-        Extracts a subset based on a mask, either by modifying the current cluster or returning a new one.
+        Extracts a subset based on a mask, either by modifying the current point cloud or returning a new one.
+        Uses GPU acceleration when CuPy is available for improved performance.
 
         Parameters:
         - mask (np.ndarray): A boolean array where True values indicate points to include in the subset.
-        - inplace (bool): If True, modifies the current cluster in-place. Default is False.
+        - inplace (bool): If True, modifies the current point cloud in-place. Default is False.
 
         Returns:
-        - Clusters: A new Clusters instance containing the subset if inplace is False.
+        - PointCloud: A new PointCloud instance containing the subset if inplace is False.
         """
-
+        # Check if mask selects enough points (at least 4)
         if not np.count_nonzero(mask) >= 4:
             # Handle the case where the mask filters out all points
             print("Not enough points found for subset.")
@@ -342,45 +454,160 @@ class PointCloud:
                 self.feature = []
                 self.metadata = {}
             else:
-                # Return an empty Clusters instance with (1, 3) dimension as
-                # Clusters constructor needs (n, 3) ndarray for points
+                # Return an empty PointCloud instance with (1, 3) dimension as
+                # PointCloud constructor needs (n, 3) ndarray for points
                 return PointCloud(np.empty((1, 3)))
         else:
-            if inplace:
-                # Modify the current cluster's points and attributes in-place
-                # Apply the mask to attributes of the cluster
-                self.points = self.points[mask]
-                self._update_obb_dim()
+            try:
+                # Try to use GPU acceleration with CuPy
+                import cupy as cp
 
-                if hasattr(self, 'colors') and self.colors.shape[0] > 0:
-                    self.colors = self.colors[mask]
-                if hasattr(self, 'intensity') and self.intensity.shape[0] > 0:
-                    self.intensity = self.intensity[mask]
-                if hasattr(self, 'distToGround') and self.distToGround.shape[0] > 0:
-                    self.distToGround = self.distToGround[mask]
-            else:
-                # Create a deep copy of the cluster and apply the mask
-                subset = copy.deepcopy(self)
+                if inplace:
+                    # Transfer data to GPU
+                    cp_mask = cp.asarray(mask)
 
-                # Apply the mask to attributes of the cluster
-                subset.points = subset.points[mask]
-                subset._update_obb_dim()
+                    # Apply mask on GPU
+                    if hasattr(self, 'points') and len(self.points) > 0:
+                        cp_points = cp.asarray(self.points)
+                        self.points = cp.asnumpy(cp_points[cp_mask])
 
-                if subset.colors is not None:
-                    if subset.colors.shape[0] > 0:
+                    # Update OBB dimensions after modifying points
+                    self._update_obb_dim()
+
+                    # Apply mask to other attributes if they exist
+                    if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
+                        cp_colors = cp.asarray(self.colors)
+                        self.colors = cp.asnumpy(cp_colors[cp_mask])
+
+                    if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
+                        cp_normals = cp.asarray(self.normals)
+                        self.normals = cp.asnumpy(cp_normals[cp_mask])
+
+                    if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
+                        cp_intensity = cp.asarray(self.intensity)
+                        self.intensity = cp.asnumpy(cp_intensity[cp_mask])
+
+                    if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and \
+                            self.distToGround.shape[0] > 0:
+                        cp_dist = cp.asarray(self.distToGround)
+                        self.distToGround = cp.asnumpy(cp_dist[cp_mask])
+
+                    # Process any custom attributes in the attributes dictionary
+                    for attr_name in list(self.attributes.keys()):
+                        attr_value = self.attributes[attr_name]
+                        if isinstance(attr_value, np.ndarray):
+                            if attr_value.shape[0] == len(mask):
+                                cp_attr = cp.asarray(attr_value)
+                                if cp_attr.ndim == 1:
+                                    self.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask])
+                                else:
+                                    self.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask, ...])
+                else:
+                    # Create a deep copy of the point cloud and apply the mask
+                    subset = copy.deepcopy(self)
+
+                    # Transfer data to GPU and apply mask
+                    cp_mask = cp.asarray(mask)
+
+                    if subset.points is not None and len(subset.points) > 0:
+                        cp_points = cp.asarray(subset.points)
+                        subset.points = cp.asnumpy(cp_points[cp_mask])
+
+                    # Update OBB dimensions
+                    subset._update_obb_dim()
+
+                    if subset.colors is not None and subset.colors.shape[0] > 0:
+                        cp_colors = cp.asarray(subset.colors)
+                        subset.colors = cp.asnumpy(cp_colors[cp_mask])
+
+                    if subset.normals is not None and subset.normals.shape[0] > 0:
+                        cp_normals = cp.asarray(subset.normals)
+                        subset.normals = cp.asnumpy(cp_normals[cp_mask])
+
+                    if hasattr(subset, 'intensity') and hasattr(subset.intensity, 'shape') and subset.intensity.shape[
+                        0] > 0:
+                        cp_intensity = cp.asarray(subset.intensity)
+                        subset.intensity = cp.asnumpy(cp_intensity[cp_mask])
+
+                    if hasattr(subset, 'distToGround') and hasattr(subset.distToGround, 'shape') and \
+                            subset.distToGround.shape[0] > 0:
+                        cp_dist = cp.asarray(subset.distToGround)
+                        subset.distToGround = cp.asnumpy(cp_dist[cp_mask])
+
+                    # Process any custom attributes in the attributes dictionary
+                    for attr_name in list(subset.attributes.keys()):
+                        attr_value = subset.attributes[attr_name]
+                        if isinstance(attr_value, np.ndarray):
+                            if attr_value.shape[0] == len(mask):
+                                cp_attr = cp.asarray(attr_value)
+                                if cp_attr.ndim == 1:
+                                    subset.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask])
+                                else:
+                                    subset.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask, ...])
+
+                    return subset
+
+            except (ImportError, ModuleNotFoundError):
+                # Fallback to CPU implementation if CuPy is not available
+                if inplace:
+                    # Modify the current point cloud's points and attributes in-place
+                    # Apply the mask to attributes of the point cloud
+                    self.points = self.points[mask]
+                    self._update_obb_dim()
+
+                    if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
+                        self.colors = self.colors[mask]
+
+                    if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
+                        self.normals = self.normals[mask]
+
+                    if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
+                        self.intensity = self.intensity[mask]
+
+                    if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and \
+                            self.distToGround.shape[0] > 0:
+                        self.distToGround = self.distToGround[mask]
+
+                    # Process any custom attributes in the attributes dictionary
+                    for attr_name in list(self.attributes.keys()):
+                        attr_value = self.attributes[attr_name]
+                        if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                            if attr_value.ndim == 1:
+                                self.attributes[attr_name] = attr_value[mask]
+                            else:
+                                self.attributes[attr_name] = attr_value[mask, ...]
+                else:
+                    # Create a deep copy of the point cloud and apply the mask
+                    subset = copy.deepcopy(self)
+
+                    # Apply the mask to attributes of the point cloud
+                    subset.points = subset.points[mask]
+                    subset._update_obb_dim()
+
+                    if subset.colors is not None and subset.colors.shape[0] > 0:
                         subset.colors = subset.colors[mask]
-                if subset.normals is not None:
-                    if subset.normals.shape[0] > 0:
+
+                    if subset.normals is not None and subset.normals.shape[0] > 0:
                         subset.normals = subset.normals[mask]
-                if hasattr(subset, 'intensity'):
-                    if subset.intensity.shape[0] > 0:
+
+                    if hasattr(subset, 'intensity') and hasattr(subset.intensity, 'shape') and subset.intensity.shape[
+                        0] > 0:
                         subset.intensity = subset.intensity[mask]
-                if hasattr(subset, 'distToGround'):
-                    if subset.distToGround.shape[0] > 0:
+
+                    if hasattr(subset, 'distToGround') and hasattr(subset.distToGround, 'shape') and \
+                            subset.distToGround.shape[0] > 0:
                         subset.distToGround = subset.distToGround[mask]
 
-                return subset
+                    # Process any custom attributes in the attributes dictionary
+                    for attr_name in list(subset.attributes.keys()):
+                        attr_value = subset.attributes[attr_name]
+                        if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                            if attr_value.ndim == 1:
+                                subset.attributes[attr_name] = attr_value[mask]
+                            else:
+                                subset.attributes[attr_name] = attr_value[mask, ...]
 
+                    return subset
     def get_obb(self):
         """
         Calculates the 3D Oriented Bounding Box (OBB) for the cluster, aligned with the Z-axis.
@@ -756,16 +983,6 @@ class PointCloud:
         mask[np.asarray(ind)] = True
 
         return mask
-
-    def size(self):
-        """
-        Return the number of points in the cluster.
-
-        Returns:
-        int: The total number of points in the cluster.
-        """
-        # TODO: Why not to set size as property?!
-        return len(self.points)
 
     def subsample(self, rate, boolean=False):
         """

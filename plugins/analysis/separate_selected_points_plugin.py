@@ -64,7 +64,7 @@ class SeparateSelectedPointsPlugin(AnalysisPlugin):
         # Create a mask based on the selected points
         # The size of the mask should match the number of points in the point cloud
         selected_indices = viewer_widget.picked_points_indices
-        total_points = point_cloud.size()
+        total_points = point_cloud.size
 
         # Create a boolean mask where True indicates a selected point
         import numpy as np

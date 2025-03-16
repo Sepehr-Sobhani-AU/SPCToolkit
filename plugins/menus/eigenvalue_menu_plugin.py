@@ -38,16 +38,6 @@ class EigenvalueMenuPlugin(MenuPlugin):
                 "name": "Visualize Eigenvalues",
                 "action": "eigenvalue_visualization",
                 "tooltip": "Visualize eigenvalue properties using colour mapping"
-            },
-            {
-                "name": "Analyze Eigenvalues",
-                "action": "eigenvalue_analysis",
-                "tooltip": "Perform geometric analysis based on eigenvalues (find planes, edges, corners)"
-            },
-            {
-                "name": "Filter by Eigenvalues",
-                "action": "eigenvalue_filtering",
-                "tooltip": "Filter points based on eigenvalue thresholds or geometric properties"
             }
         ]
 

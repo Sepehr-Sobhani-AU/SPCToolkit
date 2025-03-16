@@ -76,7 +76,7 @@ class SeparateSelectedClustersPlugin(AnalysisPlugin):
                 selected_cluster_ids.add(point_cloud.cluster_labels[idx])
 
         # Create a boolean mask where True indicates a point in a selected cluster
-        total_points = point_cloud.size()
+        total_points = point_cloud.size
         cluster_mask = np.zeros(total_points, dtype=bool)
 
         for i in range(total_points):

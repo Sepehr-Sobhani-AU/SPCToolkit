@@ -36,13 +36,13 @@ class ApplyEigenvalues:
             PointCloud: The point cloud with eigenvalue-based colors applied
         """
         # Create a copy of the point cloud to avoid modifying the original
-        result_point_cloud = self.point_cloud.get_subset(np.ones(self.point_cloud.size(), dtype=bool))
+        result_point_cloud = self.point_cloud.get_subset(np.ones(self.point_cloud.size, dtype=bool))
 
         # Check if we have the right number of eigenvalues_array
-        if len(self.eigenvalues.eigenvalues) != result_point_cloud.size():
+        if len(self.eigenvalues.eigenvalues) != result_point_cloud.size:
             raise ValueError(
                 f"Eigenvalue count ({len(self.eigenvalues.eigenvalues)}) "
-                f"does not match point count ({result_point_cloud.size()})"
+                f"does not match point count ({result_point_cloud.size})"
             )
 
         # Get the eigenvalue array
@@ -50,7 +50,7 @@ class ApplyEigenvalues:
 
         # Apply eigenvalues_array to colors using the eigenvalue difference method
         eigenvalues_utils = EigenvalueUtils()
-        colors = eigenvalues_utils.eigenvalues_to_colors(eigenvalues_array.data)
+        colors = eigenvalues_utils.eigenvalues_to_colors(eigenvalues_array)
 
         # Apply colors to the point cloud
         result_point_cloud.colors = colors.astype(np.float32)

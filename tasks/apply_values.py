@@ -39,7 +39,7 @@ class ApplyValues:
             PointCloud: The point cloud with values applied
         """
         # Create a copy of the point cloud to avoid modifying the original
-        result_point_cloud = self.point_cloud.get_subset(np.ones(self.point_cloud.size(), dtype=bool))
+        result_point_cloud = self.point_cloud.get_subset(np.ones(self.point_cloud.size, dtype=bool))
 
         # Check if values is a multi-dimensional array
         if len(self.values.shape) > 1:

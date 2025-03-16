@@ -87,7 +87,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menubar = self.menuBar()
 
         # Create base menus in the correct order
-        base_menus = ["File", "Points", "Selection", "Action", "Help"]
+        base_menus = ["File", "View", "Points", "Selection", "Action", "Help"]
         for menu_name in base_menus:
             self.menus[menu_name] = self.menubar.addMenu(menu_name)
 

@@ -1,6 +1,10 @@
+# TODO: This plugin is not following the pluging achitecture. It should be fixed.
+
 # plugins/menus/project_io_menu_plugin.py
 from typing import Dict, Any, List
 import pickle
+
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from plugins.interfaces import MenuPlugin
@@ -63,7 +67,7 @@ class ProjectIOMenuPlugin(MenuPlugin):
         data_manager = global_variables.global_data_manager
 
         if action_name == "open_project":
-            self._load_project(main_window, data_nodes, data_manager)
+            self._load_project(main_window, data_nodes)
         elif action_name == "save_project":
             self._save_project(main_window, data_nodes, False)
         elif action_name == "save_project_as":
@@ -103,14 +107,19 @@ class ProjectIOMenuPlugin(MenuPlugin):
             if not filename.endswith(".pcdtk"):
                 filename += ".pcdtk"
 
-        # Add version information to the saved data
+        # Get the tree widget and its visibility status
+        tree_widget = global_variables.global_tree_structure_widget
+        visibility_status = tree_widget.visibility_status.copy()
+
+        # Add version information and visibility status to the saved data
         project_data = {
             'version': '1.0.0',
-            'data_nodes': data_nodes
+            'data_nodes': data_nodes,
+            'visibility_status': visibility_status
         }
 
         try:
-            # Save the data_nodes instance using pickle
+            # Save the project data using pickle
             with open(filename, 'wb') as file:
                 pickle.dump(project_data, file)
 
@@ -124,14 +133,13 @@ class ProjectIOMenuPlugin(MenuPlugin):
         except Exception as e:
             QMessageBox.critical(main_window, "Error Saving Project", f"Failed to save project: {str(e)}")
 
-    def _load_project(self, main_window, data_nodes, data_manager):
+    def _load_project(self, main_window, data_nodes):
         """
         Load a project from a file.
 
         Args:
             main_window: The main application window
             data_nodes: The DataNodes instance to update
-            data_manager: The DataManager instance
         """
         options = QFileDialog.Options()
         filename, _ = QFileDialog.getOpenFileName(
@@ -165,23 +173,25 @@ class ProjectIOMenuPlugin(MenuPlugin):
             with open(filename, 'rb') as file:
                 project_data = pickle.load(file)
 
-            # Check version information if available
-            if isinstance(project_data, dict) and 'version' in project_data:
-                version = project_data['version']
+            # Check if this is a new format file with version information
+            is_new_format = isinstance(project_data, dict) and 'version' in project_data
+
+            if is_new_format:
                 loaded_data_nodes = project_data['data_nodes']
+                # Load visibility status if available
+                loaded_visibility_status = project_data.get('visibility_status', {})
+                has_visibility_data = 'visibility_status' in project_data
             else:
                 # Handle older project files without version info
                 loaded_data_nodes = project_data
+                loaded_visibility_status = {}
+                has_visibility_data = False
 
             # Store the path for future saves
             self.current_project_path = filename
 
             # Replace the current data_nodes with the loaded one
-            # We need to update the global reference in a way that preserves it
-            # First, clear the current data
             data_nodes.data_nodes.clear()
-
-            # Then add all nodes from the loaded data
             for uid, node in loaded_data_nodes.data_nodes.items():
                 data_nodes.data_nodes[uid] = node
 
@@ -189,13 +199,31 @@ class ProjectIOMenuPlugin(MenuPlugin):
             tree_widget = global_variables.global_tree_structure_widget
             tree_widget.clear()
 
+            # Clear existing branches dictionary and visibility status
+            tree_widget.branches_dict.clear()
+            tree_widget.visibility_status.clear()
+
+            # For older files without visibility data, set a default visibility state
+            default_visibility = False if not has_visibility_data else True
+
+            # Block signals during rebuild to prevent multiple renders
+            tree_widget.blockSignals(True)
+
             # Rebuild the tree structure
             # First add top-level nodes (nodes without parents)
             top_level_nodes = {uid: node for uid, node in data_nodes.data_nodes.items()
                                if node.parent_uid is None}
 
+            # Add top-level nodes to the tree
             for uid, node in top_level_nodes.items():
                 tree_widget.add_branch(str(uid), "", node.params)
+
+                # For older files, set all nodes to invisible by default
+                if not has_visibility_data:
+                    if str(uid) in tree_widget.branches_dict:
+                        item = tree_widget.branches_dict[str(uid)]
+                        item.setCheckState(0, Qt.Unchecked)
+                        tree_widget.visibility_status[str(uid)] = default_visibility
 
             # Then add child nodes level by level
             remaining_nodes = {uid: node for uid, node in data_nodes.data_nodes.items()
@@ -209,6 +237,14 @@ class ProjectIOMenuPlugin(MenuPlugin):
                     # If the parent is already in the tree, we can add this node
                     if str(node.parent_uid) in tree_widget.branches_dict:
                         tree_widget.add_branch(str(uid), str(node.parent_uid), node.params)
+
+                        # For older files, set all nodes to invisible by default
+                        if not has_visibility_data:
+                            if str(uid) in tree_widget.branches_dict:
+                                item = tree_widget.branches_dict[str(uid)]
+                                item.setCheckState(0, Qt.Unchecked)
+                                tree_widget.visibility_status[str(uid)] = default_visibility
+
                         added_this_round.append(uid)
 
                 # Remove the nodes we've added
@@ -220,7 +256,29 @@ class ProjectIOMenuPlugin(MenuPlugin):
                     # Add remaining nodes at the top level with a warning
                     for uid, node in remaining_nodes.items():
                         tree_widget.add_branch(str(uid), "", f"{node.params} (Orphaned)")
+
+                        # For older files, set all nodes to invisible by default
+                        if not has_visibility_data:
+                            if str(uid) in tree_widget.branches_dict:
+                                item = tree_widget.branches_dict[str(uid)]
+                                item.setCheckState(0, Qt.Unchecked)
+                                tree_widget.visibility_status[str(uid)] = default_visibility
                     break
+
+            # If we have visibility data, apply the loaded visibility status
+            if has_visibility_data:
+                # Update the tree widget's visibility status
+                for uid, visible in loaded_visibility_status.items():
+                    if uid in tree_widget.branches_dict:
+                        item = tree_widget.branches_dict[uid]
+                        item.setCheckState(0, Qt.Checked if visible else Qt.Unchecked)
+                        tree_widget.visibility_status[uid] = visible
+
+            # Unblock signals
+            tree_widget.blockSignals(False)
+
+            # Emit the visibility changed signal once with the complete visibility status
+            tree_widget.branch_visibility_changed.emit(tree_widget.visibility_status)
 
             # Extract just the filename for the success message
             base_filename = filename.split("/")[-1].split("\\")[-1]
@@ -228,3 +286,4 @@ class ProjectIOMenuPlugin(MenuPlugin):
 
         except Exception as e:
             QMessageBox.critical(main_window, "Error Loading Project", f"Failed to load project: {str(e)}")
+

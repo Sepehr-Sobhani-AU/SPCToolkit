@@ -119,11 +119,7 @@ class EigenvalueVisualizationPlugin(AnalysisPlugin):
 
         if compute_new_eigenvalues:
             # Compute eigenvalues with the specified parameters
-            eigenvalues = eigenvalue_utils.compute_eigenvalues(
-                point_cloud.points,
-                k=k_neighbors,
-                smooth=smooth_colors
-            )
+            eigenvalues = eigenvalue_utils.get_eigenvalues(point_cloud.points, k=k_neighbors, smooth=smooth_colors)
         else:
             # Use the last computed eigenvalues
             eigenvalues = eigenvalue_utils._last_computed_eigenvalues
