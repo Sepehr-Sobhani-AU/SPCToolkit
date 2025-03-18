@@ -72,8 +72,10 @@ class PointCloud:
         self.height = 0
 
         # If cluster has no point in it, ignore calculating obb
-        if self.size > 1:
+        if self.size > 3:
             self._update_obb_dim()
+        else:
+            return
 
         # Validation for color, intensity, normal and distToGround
         for attr_name in ['intensity', 'distToGround']:
