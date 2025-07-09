@@ -19,6 +19,7 @@ from tasks.apply_masks import ApplyMasks
 from tasks.apply_eigenvalues import ApplyEigenvalues
 from tasks.apply_colors import ApplyColors
 from tasks.apply_dist_to_ground import ApplyDistToGround
+from tasks.apply_feature_labels import ApplyFeatureLabels
 
 
 
@@ -40,6 +41,7 @@ class NodeReconstructionManager:
             "eigenvalues": ApplyEigenvalues,
             "colors": ApplyColors,
             "dist_to_ground": ApplyDistToGround,
+            "feature_labels": ApplyFeatureLabels,
         }
 
     def reconstruct_node(self, point_cloud: PointCloud, data_node: DataNode) -> PointCloud:
