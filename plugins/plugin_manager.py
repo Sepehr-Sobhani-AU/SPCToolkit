@@ -3,94 +3,141 @@ import os
 import importlib
 import inspect
 import sys
-from typing import Dict, List, Type, Any
+from typing import Dict, List, Type, Any, Tuple
+from collections import defaultdict
 
-from plugins.interfaces import AnalysisPlugin, MenuPlugin
+from plugins.interfaces import Plugin, AnalysisPlugin
 
 
 class PluginManager:
     """
-    Manages the discovery, loading, and access to plugins.
+    Manages the discovery, loading, and access to plugins using folder-based menu structure.
 
-    The PluginManager scans specified directories for Python modules,
-    loads those modules, and identifies classes that implement plugin
-    interfaces. These plugins are then registered and made available
-    to the rest of the application.
+    NEW ARCHITECTURE:
+    - Folder structure defines menu hierarchy automatically
+    - Plugins in subdirectories appear in menus based on their location
+    - Plugins in root directory are system plugins (not in menus)
+
+    Examples:
+        plugins/Points/cluster.py           -> Menu: Points > Cluster
+        plugins/Analysis/Advanced/pca.py    -> Menu: Analysis > Advanced > PCA
+        plugins/system_plugin.py            -> Not in menu (system plugin)
     """
 
-    def __init__(self, plugin_dirs=None):
+    def __init__(self, plugin_root=None):
         """
-        Initialize the PluginManager with directories to scan for plugins.
+        Initialize the PluginManager with root directory to scan for plugins.
 
         Args:
-            plugin_dirs (List[str], optional): List of directory paths to scan for plugins.
-                If None, defaults to ['plugins/analysis', 'plugins/menus'].
+            plugin_root (str, optional): Root directory path to scan for plugins.
+                If None, defaults to 'plugins/' directory.
         """
-        if plugin_dirs is None:
-            # Default plugin directories relative to the project root
+        if plugin_root is None:
+            # Default plugin root directory
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.plugin_dirs = [
-                os.path.join(base_dir, 'plugins', 'analysis'),
-                os.path.join(base_dir, 'plugins', 'menus')
-            ]
+            self.plugin_root = os.path.join(base_dir, 'plugins')
         else:
-            self.plugin_dirs = plugin_dirs
+            self.plugin_root = plugin_root
 
-        # Dictionaries to store discovered plugins
-        self.analysis_plugins: Dict[str, Type[AnalysisPlugin]] = {}
-        self.menu_plugins: List[MenuPlugin] = []
+        # Store all discovered plugins: {plugin_name: (plugin_class, menu_path)}
+        # menu_path is None for root-level system plugins
+        self.plugins: Dict[str, Tuple[Type[Plugin], str]] = {}
+
+        # Menu structure derived from folder hierarchy
+        # Structure: {menu_path: [plugin_names]}
+        # Example: {"Points": ["Cluster", "Subsample"], "Analysis/Advanced": ["PCA"]}
+        self.menu_structure: Dict[str, List[str]] = defaultdict(list)
+
+        # Legacy support
+        self.analysis_plugins: Dict[str, Type[Plugin]] = {}  # For backward compatibility
+        self.menu_plugins: List = []  # Empty list for backward compatibility
 
         # Load plugins on initialization
         self.load_plugins()
 
     def load_plugins(self):
         """
-        Discover and load all plugins from the specified directories.
+        Discover and load all plugins from the plugin root directory recursively.
 
-        This method scans the plugin directories for Python files, imports them,
-        and identifies classes that implement plugin interfaces. Those classes
-        are then registered as available plugins.
+        This method scans the plugin root folder and all subdirectories:
+        - Plugins in subdirectories are added to menus based on folder structure
+        - Plugins in root directory are system plugins (not in menus)
         """
-        print("Loading plugins...")
+        print(f"Loading plugins from: {self.plugin_root}")
 
-        for plugin_dir in self.plugin_dirs:
-            # Create the directory if it doesn't exist
-            if not os.path.exists(plugin_dir):
-                os.makedirs(plugin_dir, exist_ok=True)
-                continue
+        if not os.path.exists(self.plugin_root):
+            os.makedirs(self.plugin_root, exist_ok=True)
+            print("Plugin directory created.")
+            return
 
-            # Get Python files in the directory
-            for file in os.listdir(plugin_dir):
+        # Walk through all directories and subdirectories
+        for root, dirs, files in os.walk(self.plugin_root):
+            # Skip __pycache__ and hidden directories
+            dirs[:] = [d for d in dirs if not d.startswith('__') and not d.startswith('.')]
+
+            # Calculate menu path from folder structure
+            rel_path = os.path.relpath(root, self.plugin_root)
+
+            # Determine if this is root directory or subdirectory
+            if rel_path == '.':
+                menu_path = None  # Root level - system plugins
+                is_system_plugin = True
+            else:
+                # Convert path to menu structure: "Points/Advanced" -> "Points/Advanced"
+                menu_path = rel_path.replace(os.sep, '/')
+                is_system_plugin = False
+
+            # Process Python files in this directory
+            for file in files:
                 if file.endswith('.py') and not file.startswith('__'):
-                    # Construct the module import path
-                    # Convert directory path to package path (e.g., 'plugins/analysis' -> 'plugins.analysis')
-                    package_path = os.path.relpath(plugin_dir, os.path.dirname(os.path.dirname(plugin_dir)))
-                    package_path = package_path.replace(os.sep, '.')
-                    module_name = f"{package_path}.{file[:-3]}"
+                    self._load_plugin_file(root, file, menu_path, is_system_plugin)
 
-                    try:
-                        # Import the module
-                        module = importlib.import_module(module_name)
+        # Print summary
+        total_plugins = len(self.plugins)
+        menu_plugins = len([p for p, (_, path) in self.plugins.items() if path is not None])
+        system_plugins = total_plugins - menu_plugins
 
-                        # Look for plugin classes in the module
-                        for _, obj in inspect.getmembers(module, inspect.isclass):
-                            # Check if the class is a plugin (but not the interface itself)
-                            if issubclass(obj, AnalysisPlugin) and obj != AnalysisPlugin:
-                                self._register_analysis_plugin(obj)
-                            elif issubclass(obj, MenuPlugin) and obj != MenuPlugin:
-                                self._register_menu_plugin(obj)
-                    except Exception as e:
-                        print(f"Error loading plugin module {module_name}: {str(e)}")
+        print(f"Loaded {total_plugins} total plugins:")
+        print(f"  - {menu_plugins} menu plugins")
+        print(f"  - {system_plugins} system plugins")
+        print(f"  - {len(self.menu_structure)} menu categories")
 
-        # Print summary of loaded plugins
-        print(f"Loaded {len(self.analysis_plugins)} analysis plugins and {len(self.menu_plugins)} menu plugins.")
-
-    def _register_analysis_plugin(self, plugin_class):
+    def _load_plugin_file(self, directory: str, filename: str, menu_path: str, is_system_plugin: bool):
         """
-        Register an analysis plugin class.
+        Load a single plugin file and register any Plugin classes found.
 
         Args:
-            plugin_class (Type[AnalysisPlugin]): The plugin class to register
+            directory: The directory containing the plugin file
+            filename: The Python file name
+            menu_path: The menu path for this plugin (None for system plugins)
+            is_system_plugin: Whether this is a system plugin (in root directory)
+        """
+        # Construct module import path
+        rel_dir = os.path.relpath(directory, os.path.dirname(self.plugin_root))
+        package_path = rel_dir.replace(os.sep, '.')
+        module_name = f"{package_path}.{filename[:-3]}"
+
+        try:
+            # Import the module
+            module = importlib.import_module(module_name)
+
+            # Look for Plugin classes in the module
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                # Check if the class is a Plugin (but not the interface itself)
+                if issubclass(obj, Plugin) and obj not in (Plugin, AnalysisPlugin):
+                    self._register_plugin(obj, menu_path, is_system_plugin)
+
+        except Exception as e:
+            print(f"Error loading plugin module {module_name}: {str(e)}")
+
+    def _register_plugin(self, plugin_class: Type[Plugin], menu_path: str, is_system_plugin: bool):
+        """
+        Register a plugin class.
+
+        Args:
+            plugin_class: The plugin class to register
+            menu_path: The menu path for this plugin (None for system plugins)
+            is_system_plugin: Whether this is a system plugin
         """
         try:
             # Create an instance to get the name
@@ -98,44 +145,63 @@ class PluginManager:
             plugin_name = plugin_instance.get_name()
 
             # Check for duplicate plugin names
-            if plugin_name in self.analysis_plugins:
-                print(f"Warning: Analysis plugin '{plugin_name}' is already registered. Overwriting.")
+            if plugin_name in self.plugins:
+                print(f"Warning: Plugin '{plugin_name}' is already registered. Overwriting.")
 
-            # Register the plugin class (not the instance)
+            # Register the plugin with its menu path
+            self.plugins[plugin_name] = (plugin_class, menu_path)
+
+            # Add to legacy analysis_plugins dict for backward compatibility
             self.analysis_plugins[plugin_name] = plugin_class
-            print(f"Registered analysis plugin: {plugin_name}")
-        except Exception as e:
-            print(f"Error registering analysis plugin {plugin_class.__name__}: {str(e)}")
 
-    def _register_menu_plugin(self, plugin_class):
+            # Add to menu structure if not a system plugin
+            if not is_system_plugin and menu_path is not None:
+                self.menu_structure[menu_path].append(plugin_name)
+                print(f"Registered plugin: '{plugin_name}' -> Menu: {menu_path}")
+            else:
+                print(f"Registered system plugin: '{plugin_name}'")
+
+        except Exception as e:
+            print(f"Error registering plugin {plugin_class.__name__}: {str(e)}")
+
+    def get_plugin(self, plugin_name: str) -> Type[Plugin]:
         """
-        Register a menu plugin class.
+        Get a plugin class by name.
 
         Args:
-            plugin_class (Type[MenuPlugin]): The plugin class to register
-        """
-        try:
-            # Create an instance of the plugin directly
-            plugin_instance = plugin_class()
-            self.menu_plugins.append(plugin_instance)
-            print(f"Registered menu plugin: {plugin_class.__name__}")
-        except Exception as e:
-            print(f"Error registering menu plugin {plugin_class.__name__}: {str(e)}")
-
-    def get_analysis_plugins(self) -> Dict[str, Type[AnalysisPlugin]]:
-        """
-        Get all registered analysis plugins.
+            plugin_name: The name of the plugin
 
         Returns:
-            Dict[str, Type[AnalysisPlugin]]: Dictionary mapping plugin names to plugin classes
+            The plugin class, or None if not found
+        """
+        if plugin_name in self.plugins:
+            return self.plugins[plugin_name][0]
+        return None
+
+    def get_menu_structure(self) -> Dict[str, List[str]]:
+        """
+        Get the menu structure derived from folder hierarchy.
+
+        Returns:
+            Dictionary mapping menu paths to lists of plugin names
+            Example: {"Points": ["Cluster", "Subsample"], "Analysis/Advanced": ["PCA"]}
+        """
+        return dict(self.menu_structure)
+
+    def get_analysis_plugins(self) -> Dict[str, Type[Plugin]]:
+        """
+        Get all registered plugins (legacy method for backward compatibility).
+
+        Returns:
+            Dict[str, Type[Plugin]]: Dictionary mapping plugin names to plugin classes
         """
         return self.analysis_plugins
 
-    def get_menu_plugins(self) -> List[MenuPlugin]:
+    def get_menu_plugins(self) -> List:
         """
-        Get all registered menu plugins.
+        Get menu plugins (legacy method - returns empty list in new architecture).
 
         Returns:
-            List[MenuPlugin]: List of menu plugin instances
+            Empty list (menus are now built from folder structure)
         """
         return self.menu_plugins

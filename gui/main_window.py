@@ -86,93 +86,175 @@ class MainWindow(QtWidgets.QMainWindow):
         """Set up the base menu structure for the application."""
         self.menubar = self.menuBar()
 
-        # Create base menus in the correct order
-        base_menus = ["File", "View", "Points", "Selection", "Action", "Draw", "Feature Detection", "Help"]
-        for menu_name in base_menus:
-            self.menus[menu_name] = self.menubar.addMenu(menu_name)
+        # Create File menu with basic actions
+        self.menus["File"] = self.menubar.addMenu("File")
 
-        # Add "Import Point Cloud" action to File menu (renamed from "Open")
+        # Add "Import Point Cloud" action to File menu
         import_action = QtWidgets.QAction("Import Point Cloud", self)
         import_action.triggered.connect(self.open_file_dialog)
         self.menus["File"].addAction(import_action)
         self.actions["import_point_cloud"] = import_action
 
     def populate_menus_from_plugins(self):
-        """Populate menus from available menu plugins."""
-        for plugin in self.plugin_manager.get_menu_plugins():
-            menu_location = plugin.get_menu_location()
+        """
+        Populate menus from folder-based plugin structure.
 
-            # Create submenu if needed
-            if "/" in menu_location:
-                parent_menu, submenu_name = menu_location.split("/", 1)
+        The folder structure automatically defines the menu hierarchy:
+        - plugins/Points/Clustering/dbscan.py -> Menu: Points > Clustering > DBSCAN
+        - plugins/Processing/subtract.py      -> Menu: Processing > Subtract
+        """
+        print("Building menus from folder structure...")
 
-                # Verify parent menu exists
-                if parent_menu not in self.menus:
-                    print(f"Warning: Parent menu '{parent_menu}' does not exist. Creating it.")
-                    self.menus[parent_menu] = self.menubar.addMenu(parent_menu)
+        # Get the menu structure from plugin manager
+        menu_structure = self.plugin_manager.get_menu_structure()
 
-                # Create submenu if it doesn't exist
-                if menu_location not in self.menus:
-                    submenu = QtWidgets.QMenu(submenu_name, self)
-                    self.menus[parent_menu].addMenu(submenu)
-                    self.menus[menu_location] = submenu
+        if not menu_structure:
+            print("No plugins found in folder structure.")
+            return
 
-            # Add menu items
-            for item in plugin.get_menu_items():
-                # Check if this is a submenu
-                if item.get("action") == "_submenu_" and "submenu" in item:
-                    # Create a submenu
-                    submenu_name = item["name"]
-                    submenu_path = f"{menu_location}/{submenu_name}"
+        # Sort menu paths for consistent ordering
+        sorted_menu_paths = sorted(menu_structure.keys())
 
-                    # Create the submenu
-                    submenu = QtWidgets.QMenu(submenu_name, self)
-                    self.menus[menu_location].addMenu(submenu)
-                    self.menus[submenu_path] = submenu
+        for menu_path in sorted_menu_paths:
+            plugin_names = menu_structure[menu_path]
 
-                    # Add items to the submenu
-                    for subitem in item["submenu"]:
-                        subaction = QtWidgets.QAction(subitem["name"], self)
+            # Create menu hierarchy from path
+            # Example: "Points/Clustering" -> Create "Points" menu, then "Clustering" submenu
+            self._create_menu_hierarchy(menu_path)
 
-                        # Set tooltip if provided
-                        if "tooltip" in subitem:
-                            subaction.setToolTip(subitem["tooltip"])
-                            subaction.setStatusTip(subitem["tooltip"])
+            # Get the target menu for this path
+            target_menu = self._get_menu_by_path(menu_path)
 
-                        # Connect action to handle_action method
-                        subaction.triggered.connect(
-                            lambda checked, p=plugin, a=subitem["action"]: p.handle_action(a, self)
-                        )
+            # Add each plugin as a menu action
+            for plugin_name in plugin_names:
+                self._add_plugin_menu_action(target_menu, plugin_name, menu_path)
 
-                        # Add action to the submenu
-                        submenu.addAction(subaction)
+        print(f"Created {len(self.menus)} menus with {len(self.actions)} actions")
 
-                        # Store reference to the action
-                        action_id = f"{submenu_path}/{subitem['action']}"
-                        self.actions[action_id] = subaction
-                else:
-                    # Regular menu item
-                    action = QtWidgets.QAction(item["name"], self)
+    def _create_menu_hierarchy(self, menu_path: str):
+        """
+        Create menu hierarchy from a path like "Points/Clustering/Advanced".
 
-                    # Set tooltip if provided
-                    if "tooltip" in item:
-                        action.setToolTip(item["tooltip"])
-                        action.setStatusTip(item["tooltip"])
+        Args:
+            menu_path: Menu path with forward slashes (e.g., "Points/Clustering")
+        """
+        parts = menu_path.split('/')
+        current_path = ""
+        parent_menu = None
 
-                    # Connect action to handle_action method
-                    action.triggered.connect(
-                        lambda checked, p=plugin, a=item["action"]: p.handle_action(a, self)
-                    )
+        for i, part in enumerate(parts):
+            # Build the path incrementally
+            if current_path:
+                current_path += f"/{part}"
+            else:
+                current_path = part
 
-                    # Add action to the menu
-                    target_menu = self.menus[menu_location]
-                    target_menu.addAction(action)
+            # Check if menu already exists
+            if current_path in self.menus:
+                parent_menu = self.menus[current_path]
+                continue
 
-                    # Store reference to the action
-                    action_id = f"{menu_location}/{item['action']}"
-                    self.actions[action_id] = action
+            # Create the menu or submenu
+            if i == 0:
+                # Top-level menu
+                menu = self.menubar.addMenu(part)
+                self.menus[current_path] = menu
+                parent_menu = menu
+            else:
+                # Submenu
+                submenu = QtWidgets.QMenu(part, self)
+                parent_menu.addMenu(submenu)
+                self.menus[current_path] = submenu
+                parent_menu = submenu
 
-            print(f"Added menu items from plugin {plugin.__class__.__name__} to {menu_location}")
+    def _get_menu_by_path(self, menu_path: str):
+        """
+        Get a menu by its path.
+
+        Args:
+            menu_path: Menu path (e.g., "Points/Clustering")
+
+        Returns:
+            QMenu object
+        """
+        return self.menus.get(menu_path)
+
+    def _add_plugin_menu_action(self, menu, plugin_name: str, menu_path: str):
+        """
+        Add a plugin as a menu action.
+
+        Args:
+            menu: The QMenu to add the action to
+            plugin_name: The name of the plugin
+            menu_path: The menu path for this plugin
+        """
+        if not menu:
+            print(f"Warning: Could not find menu for path '{menu_path}'")
+            return
+
+        # Get plugin class
+        plugin_class = self.plugin_manager.get_plugin(plugin_name)
+        if not plugin_class:
+            print(f"Warning: Plugin '{plugin_name}' not found")
+            return
+
+        # Create an instance to get display name
+        try:
+            plugin_instance = plugin_class()
+            display_name = plugin_instance.get_name()
+
+            # Convert snake_case to Title Case for better display
+            # e.g., "dbscan_clustering" -> "DBSCAN Clustering"
+            display_name = self._format_plugin_name(display_name)
+
+        except Exception as e:
+            print(f"Error instantiating plugin '{plugin_name}': {e}")
+            display_name = plugin_name
+
+        # Create menu action
+        action = QtWidgets.QAction(display_name, self)
+
+        # Connect to plugin execution
+        action.triggered.connect(
+            lambda checked, pname=plugin_name: self.open_dialog_box(pname)
+        )
+
+        # Add to menu
+        menu.addAction(action)
+
+        # Store reference
+        action_id = f"{menu_path}/{plugin_name}"
+        self.actions[action_id] = action
+
+        print(f"  Added action: {menu_path} > {display_name}")
+
+    def _format_plugin_name(self, name: str) -> str:
+        """
+        Format plugin name for display in menu.
+
+        Converts "dbscan_clustering" to "DBSCAN Clustering"
+
+        Args:
+            name: Plugin name
+
+        Returns:
+            Formatted display name
+        """
+        # Replace underscores with spaces
+        formatted = name.replace('_', ' ')
+
+        # Title case each word
+        words = formatted.split()
+        formatted_words = []
+
+        for word in words:
+            # Keep acronyms uppercase (like DBSCAN, SOR, MLS)
+            if word.upper() in ['DBSCAN', 'HDBSCAN', 'SOR', 'MLS', 'PCA', 'ICP']:
+                formatted_words.append(word.upper())
+            else:
+                formatted_words.append(word.capitalize())
+
+        return ' '.join(formatted_words)
 
     def open_file_dialog(self):
         """Handler for 'Open' action to open and display a point cloud file."""

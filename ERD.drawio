@@ -1,0 +1,52 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36" version="25.0.1">
+  <diagram id="R2lEEEUBdFMjLlhIrx00" name="TreeStructureWidget_Extended_ERD">
+    <mxGraphModel dx="2314" dy="738" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0" extFonts="Permanent Marker^https://fonts.googleapis.com/css?family=Permanent+Marker">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-1" value="MainWindow" style="shape=swimlane;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="260" y="40" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-2" value="MainWindowID" style="text;whiteSpace=wrap;html=1;" vertex="1" parent="E83SNIgoKZ-mVV9__kyJ-1">
+          <mxGeometry x="10" y="40" width="180" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-3" value="PointClouds" style="shape=swimlane;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="310" width="200" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-4" value="ContainerID, UUID" style="text;whiteSpace=wrap;html=1;" vertex="1" parent="E83SNIgoKZ-mVV9__kyJ-3">
+          <mxGeometry x="10" y="40" width="180" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-5" value="PointCloud" style="shape=swimlane;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="520" width="200" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-6" value="UUID, points, colors, normals, clusters, ..." style="text;whiteSpace=wrap;html=1;" vertex="1" parent="E83SNIgoKZ-mVV9__kyJ-5">
+          <mxGeometry x="10" y="40" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-7" value="TreeStructureWidget" style="shape=swimlane;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="260" y="310" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-8" value="current_branch, point_clouds, visibility_status" style="text;whiteSpace=wrap;html=1;" vertex="1" parent="E83SNIgoKZ-mVV9__kyJ-7">
+          <mxGeometry x="10" y="40" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-9" value="PCDViewerWidget" style="shape=swimlane;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="30" y="310" width="200" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-10" value="Rendering attributes, points, camera, ..." style="text;whiteSpace=wrap;html=1;" vertex="1" parent="E83SNIgoKZ-mVV9__kyJ-9">
+          <mxGeometry x="10" y="40" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="E83SNIgoKZ-mVV9__kyJ-1" target="E83SNIgoKZ-mVV9__kyJ-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-12" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="E83SNIgoKZ-mVV9__kyJ-1" target="E83SNIgoKZ-mVV9__kyJ-7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-13" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="E83SNIgoKZ-mVV9__kyJ-1" target="E83SNIgoKZ-mVV9__kyJ-9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E83SNIgoKZ-mVV9__kyJ-14" value="contains" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="E83SNIgoKZ-mVV9__kyJ-3" target="E83SNIgoKZ-mVV9__kyJ-5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

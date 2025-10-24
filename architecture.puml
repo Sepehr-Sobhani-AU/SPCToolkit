@@ -1,0 +1,404 @@
+@startuml SPCToolkit Architecture
+
+' Main Application Entry Point
+class MainApplication {
+    + main()
+}
+
+' Main Window and GUI
+package "GUI Layer" {
+    class MainWindow {
+        - plugin_manager: PluginManager
+        - file_manager: FileManager
+        - tree_widget: TreeStructureWidget
+        - pcd_viewer_widget: PCDViewerWidget
+        - dialog_boxes_manager: DialogBoxesManager
+        - data_manager: DataManager
+        - menus: Dict
+        - actions: Dict
+        + setup_ui()
+        + setup_base_menus()
+        + populate_menus_from_plugins()
+        + open_file_dialog()
+        + open_dialog_box(analysis_type)
+    }
+
+    class TreeStructureWidget {
+        + branch_visibility_changed: Signal
+        + branch_added: Signal
+        + branch_selection_changed: Signal
+        + add_branch(uid, parent_uid, name)
+        + remove_branch(uids)
+    }
+
+    class PCDViewerWidget {
+        - points: ndarray
+        - colors: ndarray
+        - vbo: VBO
+        - camera_distance: float
+        - rot_x, rot_y, rot_z: float
+        - pan_x, pan_y, pan_z: float
+        - picked_points_indices: List
+        + set_points(points, colors)
+        + zoom_extent()
+        + render_point_cloud()
+        + render_picked_points()
+        + pick_point(mouse_pos, select)
+        + reset_view()
+    }
+
+    class DialogBoxesManager {
+        - plugin_manager: PluginManager
+        + analysis_params: Signal
+        + open_dialog_box(analysis_type)
+    }
+
+    class DynamicDialog {
+        - parameters: Dict
+        + create_dialog(plugin)
+        + get_parameters()
+    }
+}
+
+' Core Data Management
+package "Core Layer" {
+    class DataManager {
+        - file_manager: FileManager
+        - tree_widget: TreeStructureWidget
+        - viewer_widget: PCDViewerWidget
+        - dialog_boxes_manager: DialogBoxesManager
+        - data_nodes: DataNodes
+        - analysis_manager: AnalysisManager
+        - node_reconstruction_manager: NodeReconstructionManager
+        - selected_branches: List
+        + visibility_changed: Signal
+        + error_occurred: Signal
+        + apply_analysis(analysis_type, params)
+        + reconstruct_branch(uid): PointCloud
+        - _on_point_cloud_loaded()
+        - _on_analysis_completed()
+        - _render_visible_data()
+    }
+
+    class DataNode {
+        + uid: UUID
+        + params: str
+        + alias: str
+        + data: Any
+        + data_type: str
+        + parent_uid: UUID
+        + depends_on: List[UUID]
+        + tags: List[str]
+    }
+
+    class DataNodes {
+        - nodes: Dict[UUID, DataNode]
+        + add_node(node): UUID
+        + get_node(uid): DataNode
+        + remove_node(uid)
+        + update_parent(uid, new_parent_uid)
+    }
+
+    class AnalysisManager {
+        - plugin_manager: PluginManager
+        + analysis_completed: Signal
+        + apply_analysis(data, analysis_type, params)
+    }
+
+    class NodeReconstructionManager {
+        - tasks_registry: Dict
+        + reconstruct_node(point_cloud, data_node): PointCloud
+    }
+}
+
+' Data Types
+package "Data Types" {
+    class PointCloud {
+        + points: ndarray (n, 3)
+        + colors: ndarray (n, 3)
+        + normals: ndarray (n, 3)
+        + attributes: Dict
+        + name: str
+        + uuid: UUID
+        + size: int
+        + dbscan(eps, min_points): labels
+        + get_subset(mask, inplace): PointCloud
+        + get_eigenvalues(k, smooth): ndarray
+        + density_downsample(voxel_size): PointCloud
+        + SOR(nb_neighbors, std_ratio): mask
+        + add_attribute(name, values)
+        + get_attribute(name)
+        + save(file_name)
+    }
+
+    class Clusters {
+        + labels: ndarray
+        + colors: ndarray
+        + set_random_color(noise_color)
+    }
+
+    class Masks {
+        + mask: ndarray (bool)
+    }
+
+    class Eigenvalues {
+        + eigenvalues: ndarray
+    }
+
+    class Colors {
+        + colors: ndarray
+    }
+
+    class DistToGround {
+        + distances: ndarray
+    }
+
+    class FeatureLabels {
+        + labels: ndarray
+    }
+
+    class Values {
+        + values: ndarray
+    }
+}
+
+' Plugin System
+package "Plugin System" {
+    abstract class AnalysisPlugin {
+        {abstract} + get_name(): str
+        {abstract} + get_parameters(): Dict
+        {abstract} + execute(data_node, params): Tuple
+    }
+
+    abstract class MenuPlugin {
+        {abstract} + get_menu_location(): str
+        {abstract} + get_menu_items(): List[Dict]
+        {abstract} + handle_action(action_name, main_window)
+    }
+
+    class PluginManager {
+        - plugin_dirs: List[str]
+        - analysis_plugins: Dict[str, Type[AnalysisPlugin]]
+        - menu_plugins: List[MenuPlugin]
+        + load_plugins()
+        + get_analysis_plugins(): Dict
+        + get_menu_plugins(): List
+        - _register_analysis_plugin(plugin_class)
+        - _register_menu_plugin(plugin_class)
+    }
+
+    ' Example Analysis Plugins
+    class DBSCANPlugin {
+        + get_name(): "dbscan"
+        + get_parameters(): Dict
+        + execute(data_node, params): Tuple[Clusters, str, List]
+    }
+
+    class FilteringPlugin {
+        + get_name(): "filtering"
+        + get_parameters(): Dict
+        + execute(data_node, params): Tuple[Masks, str, List]
+    }
+
+    class EigenvalueCalculationPlugin {
+        + get_name(): "eigenvalue_calculation"
+        + get_parameters(): Dict
+        + execute(data_node, params): Tuple[Eigenvalues, str, List]
+    }
+
+    ' Example Menu Plugins
+    class ClusteringMenuPlugin {
+        + get_menu_location(): "Action/Clustering"
+        + get_menu_items(): List[Dict]
+        + handle_action(action_name, main_window)
+    }
+
+    class ProcessingMenuPlugin {
+        + get_menu_location(): "Action/Processing"
+        + get_menu_items(): List[Dict]
+        + handle_action(action_name, main_window)
+    }
+}
+
+' Reconstruction Tasks
+package "Reconstruction Tasks" {
+    abstract class ReconstructionTask {
+        {abstract} + execute(): PointCloud
+    }
+
+    class ApplyMasks {
+        - point_cloud: PointCloud
+        - masks: Masks
+        + execute(): PointCloud
+    }
+
+    class ApplyClusters {
+        - point_cloud: PointCloud
+        - clusters: Clusters
+        + execute(): PointCloud
+    }
+
+    class ApplyEigenvalues {
+        - point_cloud: PointCloud
+        - eigenvalues: Eigenvalues
+        + execute(): PointCloud
+    }
+
+    class ApplyColors {
+        - point_cloud: PointCloud
+        - colors: Colors
+        + execute(): PointCloud
+    }
+
+    class ApplyDistToGround {
+        - point_cloud: PointCloud
+        - dist_to_ground: DistToGround
+        + execute(): PointCloud
+    }
+
+    class ApplyValues {
+        - point_cloud: PointCloud
+        - values: Values
+        + execute(): PointCloud
+    }
+
+    class ApplyFeatureLabels {
+        - point_cloud: PointCloud
+        - feature_labels: FeatureLabels
+        + execute(): PointCloud
+    }
+}
+
+' Services
+package "Services" {
+    class FileManager {
+        + point_cloud_loaded: Signal
+        + open_point_cloud_file(parent_window)
+        - _load_point_cloud(file_path): PointCloud
+    }
+
+    class BatchProcessor {
+        - points: ndarray
+        - batch_size: int
+        - overlap_percent: float
+        + cluster_in_batches(clustering_func, ...): labels
+        - _create_spatial_grid()
+        - _process_batch()
+        - _reconcile_labels()
+    }
+
+    class EigenvalueUtils {
+        + get_eigenvalues(points, k, smooth, batch_size): ndarray
+        - _compute_covariance_matrices()
+        - _smooth_eigenvalues()
+    }
+}
+
+' Configuration
+package "Configuration" {
+    class GlobalVariables {
+        + global_file_manager: FileManager
+        + global_pcd_viewer_widget: PCDViewerWidget
+        + global_tree_structure_widget: TreeStructureWidget
+        + global_data_nodes: DataNodes
+        + global_data_manager: DataManager
+    }
+}
+
+' Relationships - Main Application
+MainApplication --> MainWindow : creates
+
+' Relationships - Main Window
+MainWindow *-- TreeStructureWidget
+MainWindow *-- PCDViewerWidget
+MainWindow *-- DialogBoxesManager
+MainWindow *-- DataManager
+MainWindow --> PluginManager : uses
+DialogBoxesManager --> DynamicDialog : creates
+DialogBoxesManager --> PluginManager : uses
+
+' Relationships - Data Manager
+DataManager *-- DataNodes
+DataManager *-- AnalysisManager
+DataManager *-- NodeReconstructionManager
+DataManager --> FileManager : uses
+DataManager --> TreeStructureWidget : uses
+DataManager --> PCDViewerWidget : uses
+DataManager --> DialogBoxesManager : uses
+
+' Relationships - Data Nodes
+DataNodes o-- DataNode : contains many
+DataNode --> PointCloud : data
+DataNode --> Clusters : data
+DataNode --> Masks : data
+DataNode --> Eigenvalues : data
+DataNode --> Colors : data
+DataNode --> DistToGround : data
+DataNode --> FeatureLabels : data
+DataNode --> Values : data
+
+' Relationships - Analysis Manager
+AnalysisManager --> PluginManager : uses
+AnalysisManager ..> AnalysisPlugin : executes
+
+' Relationships - Plugin Manager
+PluginManager o-- AnalysisPlugin : manages
+PluginManager o-- MenuPlugin : manages
+AnalysisPlugin <|-- DBSCANPlugin
+AnalysisPlugin <|-- FilteringPlugin
+AnalysisPlugin <|-- EigenvalueCalculationPlugin
+MenuPlugin <|-- ClusteringMenuPlugin
+MenuPlugin <|-- ProcessingMenuPlugin
+
+' Relationships - Node Reconstruction
+NodeReconstructionManager --> ReconstructionTask : creates
+ReconstructionTask <|-- ApplyMasks
+ReconstructionTask <|-- ApplyClusters
+ReconstructionTask <|-- ApplyEigenvalues
+ReconstructionTask <|-- ApplyColors
+ReconstructionTask <|-- ApplyDistToGround
+ReconstructionTask <|-- ApplyValues
+ReconstructionTask <|-- ApplyFeatureLabels
+
+' Relationships - Services
+FileManager ..> PointCloud : creates
+AnalysisPlugin ..> BatchProcessor : uses
+AnalysisPlugin ..> EigenvalueUtils : uses
+DBSCANPlugin ..> PointCloud : processes
+FilteringPlugin ..> PointCloud : processes
+
+' Relationships - Global Variables
+GlobalVariables --> FileManager
+GlobalVariables --> PCDViewerWidget
+GlobalVariables --> TreeStructureWidget
+GlobalVariables --> DataNodes
+GlobalVariables --> DataManager
+
+' Notes
+note right of PluginManager
+  Automatically discovers and loads
+  plugins from plugins/analysis/
+  and plugins/menus/ directories
+end note
+
+note right of DataManager
+  Central coordinator that manages
+  data flow between UI and analysis.
+  Handles branch reconstruction
+  for visualization.
+end note
+
+note right of PointCloud
+  Primary data structure.
+  Supports GPU acceleration
+  via CuPy when available.
+end note
+
+note right of NodeReconstructionManager
+  Reconstructs derived data nodes
+  (Masks, Clusters, etc.) back into
+  PointCloud instances by walking
+  up the tree to the root.
+end note
+
+@enduml
