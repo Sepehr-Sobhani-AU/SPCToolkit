@@ -47,10 +47,13 @@ class PointCloud:
                        Defaults to an empty dictionary if not provided.
 
     """
+
+    # In point_cloud.py, update the __init__ method (around line 50-90)
+
     def __init__(self, points, colors=None, normals=None, **kwargs):
 
         # Validation points
-        if not isinstance(points, np.ndarray):  # or points.ndim != 2 or points.shape[1] != 3:
+        if not isinstance(points, np.ndarray):
             raise ValueError("Points must be a numpy array with shape (n, 3)")
 
         self.points = points
@@ -73,9 +76,17 @@ class PointCloud:
 
         # If cluster has no point in it, ignore calculating obb
         if self.size > 3:
-            self._update_obb_dim()
+            # Check if points are coplanar (all have the same Z coordinate)
+            # If so, skip OBB calculation as it will fail
+            if not self._are_points_coplanar():
+                self._update_obb_dim()
+            else:
+                # For coplanar points, calculate 2D bounding box manually
+                self._update_2d_bbox()
         else:
             return
+
+        # ... rest of the __init__ code ...
 
         # Validation for color, intensity, normal and distToGround
         for attr_name in ['intensity', 'distToGround']:
@@ -1052,22 +1063,80 @@ class PointCloud:
 
     def _save_as_ply(self, file_name):
         """
-        Saves the Clusters instance as a PLY file.
+        Saves the PointCloud instance as a PLY file.
+
+        This method exports the point cloud to a PLY file format, including
+        points (required), colors (if available), and normals (if available).
 
         Parameters:
-        file_name (str): The params of the PLY file to save the instance to.
+            file_name (str): The name of the PLY file to save the instance to.
         """
-        # Assuming the Clusters instance has a point cloud attribute named 'points'
         if hasattr(self, 'points'):
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(self.points)
 
-            if hasattr(self, 'colors'):
+            # Save colors if available
+            if hasattr(self, 'colors') and self.colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(self.colors)
 
-            #            if hasattr(self, 'normal'):
-            #                pcd.normals = o3d.utility.Vector3dVector(self.normal)
+            # Save normals if available (fixed: check for 'normals' not 'normal')
+            if hasattr(self, 'normals') and self.normals is not None:
+                pcd.normals = o3d.utility.Vector3dVector(self.normals)
 
             o3d.io.write_point_cloud(file_name, pcd)
         else:
-            raise AttributeError("Clusters instance does not have 'points' attribute.")
+            raise AttributeError("PointCloud instance does not have 'points' attribute.")
+
+    def _are_points_coplanar(self, tolerance=1e-6):
+        """
+        Check if all points are coplanar (lie on the same plane).
+
+        This method checks if all Z coordinates are the same within a tolerance,
+        which would indicate the points are coplanar in the XY plane.
+
+        Args:
+            tolerance (float): The tolerance for comparing Z coordinates.
+                              Default is 1e-6.
+
+        Returns:
+            bool: True if points are coplanar, False otherwise.
+        """
+        if len(self.points) < 4:
+            # Less than 4 points are always coplanar
+            return True
+
+        # Check if all Z coordinates are the same (within tolerance)
+        z_coords = self.points[:, 2]
+        z_range = np.max(z_coords) - np.min(z_coords)
+
+        return z_range < tolerance
+
+    def _update_2d_bbox(self):
+        """
+        Calculate 2D bounding box dimensions for coplanar points.
+
+        This method is used when points are coplanar (e.g., after draping),
+        and 3D OBB calculation would fail. It calculates the bounding box
+        in the XY plane and sets the height to the Z-axis range (usually ~0).
+        """
+        if len(self.points) == 0:
+            return
+
+        # Calculate bounding box in XY plane
+        min_coords = np.min(self.points, axis=0)
+        max_coords = np.max(self.points, axis=0)
+
+        # Set dimensions
+        self.length = max_coords[0] - min_coords[0]
+        self.width = max_coords[1] - min_coords[1]
+        self.height = max_coords[2] - min_coords[2]  # Usually ~0 for coplanar points
+
+        # Set center
+        self.center = [
+            (min_coords[0] + max_coords[0]) / 2,
+            (min_coords[1] + max_coords[1]) / 2,
+            (min_coords[2] + max_coords[2]) / 2
+        ]
+
+        print(
+            f"Calculated 2D bounding box for coplanar points: L={self.length:.2f}, W={self.width:.2f}, H={self.height:.6f}")
