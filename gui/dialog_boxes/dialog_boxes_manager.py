@@ -31,6 +31,8 @@ class DialogBoxesManager(QObject):
         """
         Open a dialog box for the specified analysis type.
 
+        If the plugin has no parameters, execute it immediately without showing a dialog.
+
         Args:
             analysis_type (str): The type of analysis to create a dialog for
         """
@@ -43,11 +45,16 @@ class DialogBoxesManager(QObject):
             plugin_instance = plugin_class()
             parameter_schema = plugin_instance.get_parameters()
 
-            # Create and open a dynamic dialog
-            dialog = DynamicDialog(f"{analysis_type.title()} Parameters", parameter_schema)
-            if dialog.exec_():
-                # If the user clicked OK, get the parameters and emit the signal
-                params = dialog.get_parameters()
-                self.analysis_params.emit(analysis_type, params)
+            # If no parameters needed, execute immediately
+            if not parameter_schema or len(parameter_schema) == 0:
+                # Execute plugin directly with empty parameters
+                self.analysis_params.emit(analysis_type, {})
+            else:
+                # Create and open a dynamic dialog for parameter input
+                dialog = DynamicDialog(f"{analysis_type.title()} Parameters", parameter_schema)
+                if dialog.exec_():
+                    # If the user clicked OK, get the parameters and emit the signal
+                    params = dialog.get_parameters()
+                    self.analysis_params.emit(analysis_type, params)
         else:
             print(f"Warning: No plugin found for analysis type '{analysis_type}'")

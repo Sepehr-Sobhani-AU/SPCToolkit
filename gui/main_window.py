@@ -85,15 +85,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def setup_base_menus(self):
         """Set up the base menu structure for the application."""
         self.menubar = self.menuBar()
-
-        # Create File menu with basic actions
-        self.menus["File"] = self.menubar.addMenu("File")
-
-        # Add "Import Point Cloud" action to File menu
-        import_action = QtWidgets.QAction("Import Point Cloud", self)
-        import_action.triggered.connect(self.open_file_dialog)
-        self.menus["File"].addAction(import_action)
-        self.actions["import_point_cloud"] = import_action
+        # All menus are now dynamically created from plugin folder structure!
 
     def populate_menus_from_plugins(self):
         """
