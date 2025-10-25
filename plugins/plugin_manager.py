@@ -6,7 +6,7 @@ import sys
 from typing import Dict, List, Type, Any, Tuple
 from collections import defaultdict
 
-from plugins.interfaces import Plugin, AnalysisPlugin
+from plugins.interfaces import Plugin, AnalysisPlugin, ActionPlugin
 
 
 class PluginManager:
@@ -39,9 +39,10 @@ class PluginManager:
         else:
             self.plugin_root = plugin_root
 
-        # Store all discovered plugins: {plugin_name: (plugin_class, menu_path)}
+        # Store all discovered plugins: {plugin_name: (plugin_class, menu_path, plugin_type)}
         # menu_path is None for root-level system plugins
-        self.plugins: Dict[str, Tuple[Type[Plugin], str]] = {}
+        # plugin_type is either "data" or "action"
+        self.plugins: Dict[str, Tuple[Type[Plugin], str, str]] = {}
 
         # Menu structure derived from folder hierarchy
         # Structure: {menu_path: [plugin_names]}
@@ -51,6 +52,9 @@ class PluginManager:
         # Legacy support
         self.analysis_plugins: Dict[str, Type[Plugin]] = {}  # For backward compatibility
         self.menu_plugins: List = []  # Empty list for backward compatibility
+
+        # Store action plugins separately for easy access
+        self.action_plugins: Dict[str, Type[ActionPlugin]] = {}
 
         # Load plugins on initialization
         self.load_plugins()
@@ -94,12 +98,16 @@ class PluginManager:
 
         # Print summary
         total_plugins = len(self.plugins)
-        menu_plugins = len([p for p, (_, path) in self.plugins.items() if path is not None])
+        menu_plugins = len([p for p, (_, path, _) in self.plugins.items() if path is not None])
         system_plugins = total_plugins - menu_plugins
+        action_plugin_count = len(self.action_plugins)
+        data_plugin_count = len(self.analysis_plugins)
 
         print(f"Loaded {total_plugins} total plugins:")
         print(f"  - {menu_plugins} menu plugins")
         print(f"  - {system_plugins} system plugins")
+        print(f"  - {action_plugin_count} action plugins")
+        print(f"  - {data_plugin_count} data processing plugins")
         print(f"  - {len(self.menu_structure)} menu categories")
 
     def _load_plugin_file(self, directory: str, filename: str, menu_path: str, is_system_plugin: bool):
@@ -121,23 +129,27 @@ class PluginManager:
             # Import the module
             module = importlib.import_module(module_name)
 
-            # Look for Plugin classes in the module
+            # Look for Plugin or ActionPlugin classes in the module
             for name, obj in inspect.getmembers(module, inspect.isclass):
-                # Check if the class is a Plugin (but not the interface itself)
-                if issubclass(obj, Plugin) and obj not in (Plugin, AnalysisPlugin):
-                    self._register_plugin(obj, menu_path, is_system_plugin)
+                # Check if the class is an ActionPlugin first (more specific)
+                if issubclass(obj, ActionPlugin) and obj != ActionPlugin:
+                    self._register_plugin(obj, menu_path, is_system_plugin, plugin_type="action")
+                # Then check if the class is a Plugin (but not the interface itself)
+                elif issubclass(obj, Plugin) and obj not in (Plugin, AnalysisPlugin):
+                    self._register_plugin(obj, menu_path, is_system_plugin, plugin_type="data")
 
         except Exception as e:
             print(f"Error loading plugin module {module_name}: {str(e)}")
 
-    def _register_plugin(self, plugin_class: Type[Plugin], menu_path: str, is_system_plugin: bool):
+    def _register_plugin(self, plugin_class, menu_path: str, is_system_plugin: bool, plugin_type: str):
         """
         Register a plugin class.
 
         Args:
-            plugin_class: The plugin class to register
+            plugin_class: The plugin class to register (Plugin or ActionPlugin)
             menu_path: The menu path for this plugin (None for system plugins)
             is_system_plugin: Whether this is a system plugin
+            plugin_type: Either "data" or "action"
         """
         try:
             # Create an instance to get the name
@@ -148,23 +160,27 @@ class PluginManager:
             if plugin_name in self.plugins:
                 print(f"Warning: Plugin '{plugin_name}' is already registered. Overwriting.")
 
-            # Register the plugin with its menu path
-            self.plugins[plugin_name] = (plugin_class, menu_path)
+            # Register the plugin with its menu path and type
+            self.plugins[plugin_name] = (plugin_class, menu_path, plugin_type)
 
-            # Add to legacy analysis_plugins dict for backward compatibility
-            self.analysis_plugins[plugin_name] = plugin_class
+            # Add to type-specific registries
+            if plugin_type == "action":
+                self.action_plugins[plugin_name] = plugin_class
+            else:
+                # Add to legacy analysis_plugins dict for backward compatibility
+                self.analysis_plugins[plugin_name] = plugin_class
 
             # Add to menu structure if not a system plugin
             if not is_system_plugin and menu_path is not None:
                 self.menu_structure[menu_path].append(plugin_name)
-                print(f"Registered plugin: '{plugin_name}' -> Menu: {menu_path}")
+                print(f"Registered {plugin_type} plugin: '{plugin_name}' -> Menu: {menu_path}")
             else:
-                print(f"Registered system plugin: '{plugin_name}'")
+                print(f"Registered system {plugin_type} plugin: '{plugin_name}'")
 
         except Exception as e:
             print(f"Error registering plugin {plugin_class.__name__}: {str(e)}")
 
-    def get_plugin(self, plugin_name: str) -> Type[Plugin]:
+    def get_plugin(self, plugin_name: str):
         """
         Get a plugin class by name.
 
@@ -177,6 +193,32 @@ class PluginManager:
         if plugin_name in self.plugins:
             return self.plugins[plugin_name][0]
         return None
+
+    def get_plugin_type(self, plugin_name: str) -> str:
+        """
+        Get the type of a plugin ("data" or "action").
+
+        Args:
+            plugin_name: The name of the plugin
+
+        Returns:
+            "data", "action", or None if plugin not found
+        """
+        if plugin_name in self.plugins:
+            return self.plugins[plugin_name][2]
+        return None
+
+    def is_action_plugin(self, plugin_name: str) -> bool:
+        """
+        Check if a plugin is an action plugin.
+
+        Args:
+            plugin_name: The name of the plugin
+
+        Returns:
+            True if the plugin is an action plugin, False otherwise
+        """
+        return self.get_plugin_type(plugin_name) == "action"
 
     def get_menu_structure(self) -> Dict[str, List[str]]:
         """

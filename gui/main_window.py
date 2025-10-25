@@ -252,6 +252,49 @@ class MainWindow(QtWidgets.QMainWindow):
         """Handler for 'Open' action to open and display a point cloud file."""
         self.file_manager.open_point_cloud_file(self)
 
-    def open_dialog_box(self, analysis_type):
-        """Open a dialog box for parameter input for an analysis type."""
-        self.dialog_boxes_manager.open_dialog_box(analysis_type)
+    def open_dialog_box(self, plugin_name):
+        """
+        Open a dialog box for parameter input or execute action directly.
+
+        Routes to appropriate handler based on plugin type (data processing vs action).
+        """
+        # Check if this is an action plugin
+        if self.plugin_manager.is_action_plugin(plugin_name):
+            # Handle action plugin directly
+            self.execute_action_plugin(plugin_name)
+        else:
+            # Handle data processing plugin through dialog manager
+            self.dialog_boxes_manager.open_dialog_box(plugin_name)
+
+    def execute_action_plugin(self, plugin_name: str):
+        """
+        Execute an action plugin.
+
+        Args:
+            plugin_name: The name of the action plugin to execute
+        """
+        plugin_class = self.plugin_manager.get_plugin(plugin_name)
+        if not plugin_class:
+            print(f"Error: Action plugin '{plugin_name}' not found")
+            return
+
+        try:
+            plugin_instance = plugin_class()
+            parameter_schema = plugin_instance.get_parameters()
+
+            # If no parameters needed, execute immediately
+            if not parameter_schema or len(parameter_schema) == 0:
+                plugin_instance.execute(self, {})
+            else:
+                # Import DynamicDialog here to avoid circular imports
+                from gui.dialog_boxes.dynamic_dialog import DynamicDialog
+
+                # Create and open a dynamic dialog for parameter input
+                dialog = DynamicDialog(f"{plugin_name.title()} Parameters", parameter_schema)
+                if dialog.exec_():
+                    # If the user clicked OK, get the parameters and execute
+                    params = dialog.get_parameters()
+                    plugin_instance.execute(self, params)
+
+        except Exception as e:
+            print(f"Error executing action plugin '{plugin_name}': {str(e)}")
