@@ -51,7 +51,6 @@ class PluginManager:
 
         # Legacy support
         self.analysis_plugins: Dict[str, Type[Plugin]] = {}  # For backward compatibility
-        self.menu_plugins: List = []  # Empty list for backward compatibility
 
         # Store action plugins separately for easy access
         self.action_plugins: Dict[str, Type[ActionPlugin]] = {}
@@ -238,12 +237,3 @@ class PluginManager:
             Dict[str, Type[Plugin]]: Dictionary mapping plugin names to plugin classes
         """
         return self.analysis_plugins
-
-    def get_menu_plugins(self) -> List:
-        """
-        Get menu plugins (legacy method - returns empty list in new architecture).
-
-        Returns:
-            Empty list (menus are now built from folder structure)
-        """
-        return self.menu_plugins

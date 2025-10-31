@@ -7,18 +7,23 @@ def test_plugin_loading():
     # Create the plugin manager
     plugin_manager = PluginManager()
 
-    # Print discovered plugins
-    print("\nAnalysis Plugins:")
+    # Print discovered data processing plugins
+    print("\nData Processing Plugins:")
     for name, plugin_class in plugin_manager.get_analysis_plugins().items():
         print(f"  - {name}")
 
-    print("\nMenu Plugins:")
-    for plugin in plugin_manager.get_menu_plugins():
-        print(f"  - {plugin.__class__.__name__}")
-        menu_location = plugin.get_menu_location()
-        menu_items = plugin.get_menu_items()
-        print(f"    Location: {menu_location}")
-        print(f"    Items: {', '.join(item['name'] for item in menu_items)}")
+    # Print discovered action plugins
+    print("\nAction Plugins:")
+    for name, plugin_class in plugin_manager.action_plugins.items():
+        print(f"  - {name}")
+
+    # Print menu structure (derived from folder hierarchy)
+    print("\nMenu Structure:")
+    menu_structure = plugin_manager.get_menu_structure()
+    for menu_path, plugin_names in sorted(menu_structure.items()):
+        print(f"  {menu_path}:")
+        for plugin_name in plugin_names:
+            print(f"    - {plugin_name}")
 
     # Test creating an instance of an analysis plugin
     analysis_plugins = plugin_manager.get_analysis_plugins()
