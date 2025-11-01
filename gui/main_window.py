@@ -6,8 +6,9 @@
 from config.config import global_variables
 
 from PyQt5 import QtWidgets, QtCore
-from gui.widgets import PCDViewerWidget, TreeStructureWidget
+from gui.widgets import PCDViewerWidget, TreeStructureWidget, ProcessOverlayWidget
 from core.data_manager import DataManager
+from core.analysis_thread_manager import AnalysisThreadManager
 from services.file_manager import FileManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from plugins.plugin_manager import PluginManager
@@ -52,6 +53,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.plugin_manager
         )
         global_variables.global_data_manager = self.data_manager
+
+        # Store reference to main window in global variables
+        global_variables.global_main_window = self
+
+        # Create analysis thread manager for background processing
+        self.analysis_thread_manager = AnalysisThreadManager()
+        global_variables.global_analysis_thread_manager = self.analysis_thread_manager
+
+        # Create overlay widgets for blocking UI during processing
+        self.tree_overlay = ProcessOverlayWidget(parent=self)
+        self.window_overlay = ProcessOverlayWidget(parent=self)
 
         # Set up the UI components
         self.setup_ui()
@@ -298,3 +310,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         except Exception as e:
             print(f"Error executing action plugin '{plugin_name}': {str(e)}")
+
+    def disable_menus(self):
+        """
+        Disable the entire menu bar to prevent user interaction during processing.
+        """
+        self.menubar.setEnabled(False)
+
+    def enable_menus(self):
+        """
+        Enable the menu bar after processing is complete.
+        """
+        self.menubar.setEnabled(True)

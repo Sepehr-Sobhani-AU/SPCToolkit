@@ -42,6 +42,7 @@ class DataManager(QObject):
         self.tree_widget = tree_widget
         self.viewer_widget = viewer_widget
         self.dialog_boxes_manager = dialog_boxes_manager
+        self.plugin_manager = plugin_manager
         self.data_nodes = DataNodes()
 
         # Set the data nodes instance in the global variables for easy access
@@ -146,28 +147,95 @@ class DataManager(QObject):
 
     def apply_analysis(self, analysis_type: str, params: dict):
         """
-        Apply an analysis to the selected branches.
+        Apply an analysis to the selected branches using threaded execution.
 
         Args:
             analysis_type (str): The type of analysis to apply.
             params (dict): Parameters for the analysis.
         """
 
-        # Map analysis types to their dialog classes
+        # Get global instances via singleton pattern
+        main_window = global_variables.global_main_window
+        thread_manager = global_variables.global_analysis_thread_manager
 
+        # Show overlay and disable menus during processing
+        main_window.tree_overlay.position_over(self.tree_widget)
+        main_window.tree_overlay.show_processing(f"Running {analysis_type}...")
+        main_window.disable_menus()
+
+        # Get plugin class
+        plugins = self.plugin_manager.get_analysis_plugins()
+        if analysis_type not in plugins:
+            print(f"Error: Plugin '{analysis_type}' not found")
+            main_window.tree_overlay.hide_processing()
+            main_window.enable_menus()
+            return
+
+        plugin_class = plugins[analysis_type]
+
+        # Process each selected branch
         for uid in self.selected_branches:
             data_node = self.data_nodes.get_node(uuid.UUID(uid))
-            # If the data node is a derived type (e.g. Masks or ClusterLabels) not a PointCloud, reconstruct
-            # the branch first as a PointCloud before applying the analysis. Then apply the analysis to the
-            # reconstructed PointCloud.
-            if data_node.data_type != "point_cloud":
-                point_cloud = self.reconstruct_branch(uid)
-                # As apply_analysis method works on DataNode instances, a new temporary DataNode instance is created
-                reconstructed_data_node = DataNode(params=data_node.params, data=point_cloud, data_type="point_cloud")
-                reconstructed_data_node.uid = data_node.uid
-                data_node = reconstructed_data_node
 
-            self.analysis_manager.apply_analysis(data_node, analysis_type, params)
+            # Note: Reconstruction will happen in the background thread if needed
+            # We pass the original data_node and the thread will handle reconstruction
+
+            # Start threaded analysis - uses singleton pattern, no callback!
+            # Pass the UID so thread can do reconstruction if needed
+            thread_manager.start_analysis(plugin_class, data_node, params, analysis_type, str(data_node.uid))
+
+        # Start polling for completion
+        self._start_completion_polling()
+
+    def _start_completion_polling(self):
+        """Start QTimer to poll for thread completion."""
+        if not hasattr(self, '_completion_timer'):
+            from PyQt5.QtCore import QTimer
+            self._completion_timer = QTimer()
+            self._completion_timer.timeout.connect(self._check_thread_completion)
+
+        self._completion_timer.start(100)  # Poll every 100ms
+
+    def _check_thread_completion(self):
+        """
+        Check if analysis thread completed.
+        Called periodically by QTimer. Thread manager will process results via singleton pattern.
+        """
+        thread_manager = global_variables.global_analysis_thread_manager
+
+        # Thread manager processes completion and calls handle_analysis_result() via singleton
+        if thread_manager.check_and_process_completion():
+            self._completion_timer.stop()
+
+    def handle_analysis_result(self, result, result_type, dependencies, data_node, analysis_type, params):
+        """
+        Handle completed analysis result.
+
+        Called by AnalysisThreadManager via singleton pattern when analysis completes.
+
+        Args:
+            result: The analysis result (PointCloud, Masks, Clusters, etc.)
+            result_type: Type identifier for the result
+            dependencies: List of dependency UIDs
+            data_node: The DataNode that was analyzed
+            analysis_type: Name of the analysis that was performed
+            params: Parameters used for the analysis
+        """
+        # Create DataNode for the result
+        data_node_result = DataNode(
+            f"{analysis_type},{params}",
+            data=result,
+            data_type=result_type,
+            parent_uid=data_node.uid,
+            depends_on=dependencies,
+            tags=[analysis_type, params]
+        )
+
+        # Add to data nodes collection
+        uid = self.data_nodes.add_node(data_node_result)
+
+        # Update tree widget
+        self.tree_widget.add_branch(str(uid), str(data_node.uid), data_node_result.params)
 
     # TODO: Docstrings
     # TODO: Validations
@@ -228,7 +296,20 @@ class DataManager(QObject):
         Args:
             visibility_status (dict): Dictionary of UUIDs to visibility states.
         """
-        self._render_visible_data(visibility_status, zoom_extent=False)
+        # Get main window reference
+        main_window = global_variables.global_main_window
+
+        # Show overlay and disable menus during processing
+        main_window.tree_overlay.position_over(self.tree_widget)
+        main_window.tree_overlay.show_processing("Updating visibility...")
+        main_window.disable_menus()
+
+        try:
+            self._render_visible_data(visibility_status, zoom_extent=False)
+        finally:
+            # Hide overlay and re-enable menus
+            main_window.tree_overlay.hide_processing()
+            main_window.enable_menus()
 
     def _on_branch_selection_changed(self, uids: list[str]):
         """
@@ -246,7 +327,20 @@ class DataManager(QObject):
         Args:
             visibility_status (dict): Dictionary of UUIDs to visibility states.
         """
-        self._render_visible_data(visibility_status, zoom_extent=True)
+        # Get main window reference
+        main_window = global_variables.global_main_window
+
+        # Show overlay and disable menus during processing
+        main_window.tree_overlay.position_over(self.tree_widget)
+        main_window.tree_overlay.show_processing("Rendering new branch...")
+        main_window.disable_menus()
+
+        try:
+            self._render_visible_data(visibility_status, zoom_extent=True)
+        finally:
+            # Hide overlay and re-enable menus
+            main_window.tree_overlay.hide_processing()
+            main_window.enable_menus()
 
     def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False):
         """

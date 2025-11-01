@@ -6,6 +6,67 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SPCToolkit is a PyQt5-based point cloud processing application with a plugin-based architecture. The application provides interactive visualization and analysis of 3D point cloud data through a tree-based hierarchical data management system.
 
+## Important Architectural Principles
+
+### Communication Pattern: Prefer Singleton Over Signal/Slot
+**CRITICAL**: This project avoids Qt's custom signal/slot mechanism. Use the following priority order:
+
+**Priority Order:**
+1. **FIRST CHOICE - Singleton Pattern**: Use `global_variables` to access instances and call methods directly
+2. **SECOND CHOICE - Callbacks**: Use callback functions when singleton pattern doesn't make sense
+3. **NEVER USE - Custom Signals/Slots**: Avoid creating custom pyqtSignal declarations
+
+**What to AVOID:**
+- ❌ Custom `pyqtSignal()` declarations
+- ❌ `.connect()` for custom signals
+- ❌ `.emit()` for custom signals
+- ❌ Signal-based communication between managers/widgets
+
+**What to USE (in priority order):**
+1. ✅ **Singleton pattern** (global_variables) - PREFER THIS
+2. ✅ Callback functions - Use when singleton is not appropriate
+3. ✅ Direct method calls
+4. ✅ Polling patterns for checking async status
+
+**Exception:** Built-in Qt widget signals (like `QThread.finished`, `QTimer.timeout`) may be used when absolutely necessary.
+
+**Example - WRONG:**
+```python
+# WRONG: Using custom signals
+class MyManager(QObject):
+    data_updated = pyqtSignal(str)
+    def process(self):
+        self.data_updated.emit("done")
+```
+
+**Example - BEST (Singleton Pattern):**
+```python
+# BEST: Using singleton pattern with direct calls
+class MyManager:
+    def process(self):
+        # Do work
+        # Directly call method on global instance
+        global_variables.global_main_window.update_display()
+        global_variables.global_data_manager.refresh_data()
+```
+
+**Example - ACCEPTABLE (Callbacks):**
+```python
+# ACCEPTABLE: Using callbacks when singleton doesn't fit
+class MyManager:
+    def process(self, completion_callback):
+        # Do work
+        result = calculate_something()
+        # Call the callback
+        completion_callback(result)
+
+# Usage
+def on_complete(result):
+    print(f"Got result: {result}")
+
+manager.process(on_complete)
+```
+
 ## Running the Application
 
 ```bash
@@ -137,14 +198,52 @@ class YourMenuPlugin(MenuPlugin):
         main_window.open_dialog_box(action_name)
 ```
 
-## Global Variables
+## Global Variables (Singleton Pattern)
 
-The application uses a singleton pattern for global access (config/config.py):
-- `global_variables.global_file_manager`
-- `global_variables.global_pcd_viewer_widget`
-- `global_variables.global_tree_structure_widget`
-- `global_variables.global_data_nodes`
-- `global_variables.global_data_manager`
+The application uses a singleton pattern for global access to core manager and widget instances (config/config.py):
+
+### GlobalVariables Class
+```python
+class GlobalVariables:
+    def __init__(self):
+        self.global_file_manager = None
+        self.global_pcd_viewer_widget = None
+        self.global_tree_structure_widget = None
+        self.global_data_nodes = None
+        self.global_data_manager = None
+        self.global_main_window = None
+
+# Singleton instance
+global_variables = GlobalVariables()
+```
+
+### Important Implementation Rules:
+1. **Store only manager/widget class instances** - NOT individual variables or primitive values
+2. **Pattern**: Each attribute should reference a class instance (FileManager, TreeStructureWidget, DataManager, etc.)
+3. **Avoid**: Storing individual variables like `is_processing`, `current_operation`, etc.
+4. **Access**: Any module can access via `from config.config import global_variables`
+5. **Assignment**: Instances are assigned when created (usually in MainWindow.__init__)
+
+### Current Global Instances:
+- `global_variables.global_file_manager` - FileManager instance
+- `global_variables.global_pcd_viewer_widget` - PCDViewerWidget instance
+- `global_variables.global_tree_structure_widget` - TreeStructureWidget instance
+- `global_variables.global_data_nodes` - DataNodes collection manager
+- `global_variables.global_data_manager` - DataManager instance
+- `global_variables.global_main_window` - MainWindow instance
+
+### Usage Example:
+```python
+from config.config import global_variables
+
+# Access any global manager
+data_manager = global_variables.global_data_manager
+main_window = global_variables.global_main_window
+
+# Call methods on global instances
+main_window.disable_menus()
+global_variables.global_tree_structure_widget.add_branch(...)
+```
 
 ## GUI Architecture
 
@@ -220,3 +319,4 @@ Unit tests are located in `unit_test/` directory. Tests verify:
 - Analysis plugin execution
 - Menu plugin registration
 - Individual plugin functionality
+- Do not use signal/slot method

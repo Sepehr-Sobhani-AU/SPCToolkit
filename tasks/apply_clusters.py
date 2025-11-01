@@ -13,8 +13,14 @@ class ApplyClusters:
         self.colors = clusters.colors
 
     def execute(self):
-        self.point_cloud.cluster_labels = self.labels
-        self.point_cloud.colors = self.colors
-        return self.point_cloud
+        # Create a NEW point cloud instead of modifying the original
+        # This ensures the original point cloud's colors are not changed
+        new_point_cloud = PointCloud(
+            points=self.point_cloud.points,
+            colors=self.colors,  # Use cluster colors
+            normals=self.point_cloud.normals
+        )
+        new_point_cloud.cluster_labels = self.labels
+        return new_point_cloud
 
 

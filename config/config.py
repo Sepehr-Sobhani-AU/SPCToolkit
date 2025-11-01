@@ -10,6 +10,8 @@ class GlobalVariables:
         self.global_tree_structure_widget = None
         self.global_data_nodes: core.data_nodes = None
         self.global_data_manager: core.data_manager = None
+        self.global_main_window = None
+        self.global_analysis_thread_manager = None
 
 
 # Singleton instance
