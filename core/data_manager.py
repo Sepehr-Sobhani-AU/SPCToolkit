@@ -158,10 +158,11 @@ class DataManager(QObject):
         main_window = global_variables.global_main_window
         thread_manager = global_variables.global_analysis_thread_manager
 
-        # Show overlay and disable menus during processing
+        # Show overlay and disable menus and tree during processing
         main_window.tree_overlay.position_over(self.tree_widget)
         main_window.tree_overlay.show_processing(f"Running {analysis_type}...")
         main_window.disable_menus()
+        main_window.disable_tree()
 
         # Get plugin class
         plugins = self.plugin_manager.get_analysis_plugins()
@@ -299,17 +300,19 @@ class DataManager(QObject):
         # Get main window reference
         main_window = global_variables.global_main_window
 
-        # Show overlay and disable menus during processing
+        # Show overlay and disable menus and tree during processing
         main_window.tree_overlay.position_over(self.tree_widget)
         main_window.tree_overlay.show_processing("Updating visibility...")
         main_window.disable_menus()
+        main_window.disable_tree()
 
         try:
             self._render_visible_data(visibility_status, zoom_extent=False)
         finally:
-            # Hide overlay and re-enable menus
+            # Hide overlay and re-enable menus and tree
             main_window.tree_overlay.hide_processing()
             main_window.enable_menus()
+            main_window.enable_tree()
 
     def _on_branch_selection_changed(self, uids: list[str]):
         """
@@ -330,17 +333,19 @@ class DataManager(QObject):
         # Get main window reference
         main_window = global_variables.global_main_window
 
-        # Show overlay and disable menus during processing
+        # Show overlay and disable menus and tree during processing
         main_window.tree_overlay.position_over(self.tree_widget)
         main_window.tree_overlay.show_processing("Rendering new branch...")
         main_window.disable_menus()
+        main_window.disable_tree()
 
         try:
             self._render_visible_data(visibility_status, zoom_extent=True)
         finally:
-            # Hide overlay and re-enable menus
+            # Hide overlay and re-enable menus and tree
             main_window.tree_overlay.hide_processing()
             main_window.enable_menus()
+            main_window.enable_tree()
 
     def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False):
         """

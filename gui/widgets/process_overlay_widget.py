@@ -1,9 +1,7 @@
 """
-ProcessOverlayWidget - A semi-transparent overlay that blocks user interaction during processing.
+ProcessOverlayWidget - A semi-transparent overlay that shows processing status.
 
-This widget is designed to be positioned over other widgets to prevent user interaction
-while long-running operations are in progress. It displays a message to inform the user
-what operation is currently running.
+This widget displays a message to inform the user what operation is currently running.
 """
 
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -11,12 +9,11 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 
 class ProcessOverlayWidget(QtWidgets.QWidget):
     """
-    A semi-transparent overlay widget that blocks interactions during processing.
+    A semi-transparent overlay widget that shows processing status.
 
     Features:
     - Semi-transparent background
     - Centered message label
-    - Blocks all mouse/keyboard events to underlying widget
     - Can be positioned over any widget or manually positioned
     """
 
@@ -30,9 +27,7 @@ class ProcessOverlayWidget(QtWidgets.QWidget):
         super().__init__(parent)
 
         # Set up the widget properties
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)  # Block mouse events
 
         # Initially hidden
         self.hide()
@@ -65,7 +60,7 @@ class ProcessOverlayWidget(QtWidgets.QWidget):
         self.message_label.setStyleSheet("""
             QLabel {
                 color: white;
-                font-size: 14pt;
+                font-size: 7pt;
                 font-weight: bold;
                 background-color: transparent;
             }

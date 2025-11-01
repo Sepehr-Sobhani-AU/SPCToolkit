@@ -231,6 +231,7 @@ global_variables = GlobalVariables()
 - `global_variables.global_data_nodes` - DataNodes collection manager
 - `global_variables.global_data_manager` - DataManager instance
 - `global_variables.global_main_window` - MainWindow instance
+- `global_variables.global_analysis_thread_manager` - AnalysisThreadManager instance
 
 ### Usage Example:
 ```python
@@ -248,18 +249,24 @@ global_variables.global_tree_structure_widget.add_branch(...)
 ## GUI Architecture
 
 **MainWindow** (gui/main_window.py):
-- Dynamically builds menus from menu plugins
+- Dynamically builds menus from folder-based plugin structure
 - Contains QSplitter with TreeStructureWidget (left) and PCDViewerWidget (right)
 - Coordinates FileManager, DataManager, and DialogBoxesManager
+- Provides methods to disable/enable menus and tree during processing:
+  - `disable_menus()` / `enable_menus()` - Controls menu bar availability
+  - `disable_tree()` / `enable_tree()` - Controls tree widget availability
+- Contains ProcessOverlayWidget instances for visual feedback during operations
 
 **TreeStructureWidget** (gui/widgets/tree_structure_widget.py):
 - Displays hierarchical data structure
 - Emits signals for visibility changes, selection, branch additions
+- Disabled during processing to prevent user interaction
 
 **PCDViewerWidget** (gui/widgets/pcd_viewer_widget.py):
 - Custom 3D visualization using PyOpenGL (QOpenGLWidget)
 - Renders point clouds using OpenGL VBOs for performance
 - Supports interactive rotation, panning, zooming, and point picking
+- Remains enabled during processing to allow camera manipulation
 - Updates based on visibility status from tree widget
 - Hotkeys:
   - Left Click: Rotate around X and Y axes
@@ -273,11 +280,39 @@ global_variables.global_tree_structure_widget.add_branch(...)
   - ESC: Deselect all selected points (with confirmation)
   - Ctrl + R: Reset camera view to default state
 
+**ProcessOverlayWidget** (gui/widgets/process_overlay_widget.py):
+- Semi-transparent overlay that displays processing status messages
+- Positioned over tree widget during operations for visual feedback
+- Does NOT block user interactions (protection handled by disabling widgets)
+- Shows messages like "Running DBSCAN...", "Updating visibility...", etc.
+
 **DialogBoxesManager** (gui/dialog_boxes/dialog_boxes_manager.py):
 - Creates dynamic parameter input dialogs based on plugin `get_parameters()` schema
 - Emits parameters back to DataManager for analysis execution
 
 ## Important Implementation Details
+
+### Background Threading for Long Operations
+
+The application uses background threading to keep the UI responsive during long-running operations:
+
+**AnalysisThreadManager** (core/analysis_thread_manager.py):
+- Manages background thread execution using Python's `threading.Thread` (NOT QThread)
+- Uses singleton pattern for communication - NO callbacks or custom signals
+- QTimer polling checks for completion every 100ms
+- When complete, calls methods directly on global instances via singleton pattern
+- Handles reconstruction in background thread if needed (memory efficient - no deep copy)
+
+**Thread Safety:**
+- Plugins only READ data, never modify it (read-only access is thread-safe)
+- No deep copy needed - plugins return new objects instead of modifying input
+- Reconstruction happens in background thread to avoid blocking UI
+
+**UI Protection During Processing:**
+- Menu bar is disabled via `main_window.disable_menus()`
+- Tree widget is disabled via `main_window.disable_tree()`
+- ProcessOverlayWidget shows status message (visual feedback only, doesn't block)
+- Viewer remains enabled for camera manipulation (rotate, pan, zoom)
 
 ### Batch Processing
 

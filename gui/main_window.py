@@ -322,3 +322,15 @@ class MainWindow(QtWidgets.QMainWindow):
         Enable the menu bar after processing is complete.
         """
         self.menubar.setEnabled(True)
+
+    def disable_tree(self):
+        """
+        Disable the tree widget to prevent user interaction during processing.
+        """
+        self.tree_widget.setEnabled(False)
+
+    def enable_tree(self):
+        """
+        Enable the tree widget after processing is complete.
+        """
+        self.tree_widget.setEnabled(True)

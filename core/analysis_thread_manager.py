@@ -86,9 +86,10 @@ class AnalysisThreadManager:
         main_window = global_variables.global_main_window
         data_manager = global_variables.global_data_manager
 
-        # Hide overlay and enable menus (UI updates)
+        # Hide overlay and enable menus and tree (UI updates)
         main_window.tree_overlay.hide_processing()
         main_window.enable_menus()
+        main_window.enable_tree()
 
         if self.error_data:
             # Handle error case
