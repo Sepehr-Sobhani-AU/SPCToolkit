@@ -382,7 +382,7 @@ class DataManager(QObject):
         self.viewer_widget.update()
 
         if zoom_extent:
-            self.viewer_widget.zoom_extent()
+            self.viewer_widget.zoom_to_extent()
     # def on_branch_deleted(self, uids: list[str]):
     #     """
     #     Handle branch deletion from the tree structure widget.

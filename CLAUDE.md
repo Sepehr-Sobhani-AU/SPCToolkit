@@ -83,14 +83,19 @@ python unit_test/menu_plugin_test.py
 
 ### Plugin System
 
-The application uses a dual-plugin architecture that automatically discovers and loads plugins from designated directories:
+The application uses a folder-based plugin architecture that automatically discovers and loads plugins from designated directories:
 
-- **Analysis Plugins** (`plugins/analysis/`): Implement point cloud processing algorithms (DBSCAN, filtering, eigenvalue analysis, etc.)
-- **Menu Plugins** (`plugins/menus/`): Define UI menu items and their actions
+- **Analysis Plugins** (`plugins/*/` folders): Implement point cloud processing algorithms (DBSCAN, filtering, eigenvalue analysis, etc.)
+- **Action Plugins** (`plugins/*/` folders): Implement menu actions without data processing (save project, load project, zoom to extent, etc.)
+
+The folder structure defines the menu hierarchy automatically:
+- `plugins/Points/Clustering/dbscan_plugin.py` → Menu: **Points > Clustering > DBSCAN**
+- `plugins/File/save_project_plugin.py` → Menu: **File > Save Project**
+- `plugins/View/zoom_to_extent_plugin.py` → Menu: **View > Zoom To Extent**
 
 Both plugin types inherit from abstract base classes in `plugins/interfaces.py`:
-- `AnalysisPlugin`: Requires `get_name()`, `get_parameters()`, and `execute()` methods
-- `MenuPlugin`: Requires `get_menu_location()`, `get_menu_items()`, and `handle_action()` methods
+- `AnalysisPlugin`: Requires `get_name()`, `get_parameters()`, and `execute()` methods - processes data and returns results
+- `ActionPlugin`: Requires `get_name()`, `get_parameters()`, and `execute()` methods - performs actions without returning data
 
 The `PluginManager` (plugins/plugin_manager.py) scans plugin directories on startup, imports modules, and registers classes that implement the plugin interfaces.
 
@@ -142,7 +147,7 @@ The reconstruction system allows viewing derived data (masks, clusters, etc.) as
 
 ### Analysis Plugin Template
 
-Place in `plugins/analysis/your_plugin.py`:
+Place in `plugins/YourCategory/your_analysis_plugin.py`:
 
 ```python
 from typing import Dict, Any, List, Tuple
@@ -150,9 +155,9 @@ from plugins.interfaces import AnalysisPlugin
 from core.data_node import DataNode
 from core.point_cloud import PointCloud
 
-class YourPlugin(AnalysisPlugin):
+class YourAnalysisPlugin(AnalysisPlugin):
     def get_name(self) -> str:
-        return "your_plugin_name"
+        return "your_analysis_name"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {
@@ -173,29 +178,48 @@ class YourPlugin(AnalysisPlugin):
         return result, "result_type", [data_node.uid]
 ```
 
-### Menu Plugin Template
+### Action Plugin Template
 
-Place in `plugins/menus/your_menu_plugin.py`:
+Place in `plugins/YourMenu/your_action_plugin.py`:
 
 ```python
-from typing import Dict, Any, List
-from plugins.interfaces import MenuPlugin
+from typing import Dict, Any
+from plugins.interfaces import ActionPlugin
+from config.config import global_variables
 
-class YourMenuPlugin(MenuPlugin):
-    def get_menu_location(self) -> str:
-        return "Action/SubMenu"  # Or just "TopLevel"
+class YourActionPlugin(ActionPlugin):
+    def get_name(self) -> str:
+        return "your_action_name"
 
-    def get_menu_items(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "name": "Menu Item",
-                "action": "action_name",
-                "tooltip": "Description"
+    def get_parameters(self) -> Dict[str, Any]:
+        """
+        Return parameter schema for dynamic dialog.
+        Return empty dict {} if no parameters needed.
+        """
+        return {
+            "option": {
+                "type": "choice",
+                "options": ["Option1", "Option2"],
+                "default": "Option1",
+                "label": "Choose Option",
+                "description": "Select an option"
             }
-        ]
+        }
 
-    def handle_action(self, action_name: str, main_window):
-        main_window.open_dialog_box(action_name)
+    def execute(self, main_window, params: Dict[str, Any]) -> None:
+        """
+        Execute the action.
+
+        Args:
+            main_window: The main application window
+            params: Parameters from the dialog (or empty dict)
+        """
+        # Access global instances via singleton pattern
+        viewer_widget = global_variables.global_pcd_viewer_widget
+        data_manager = global_variables.global_data_manager
+
+        # Perform action
+        # No return value needed
 ```
 
 ## Global Variables (Singleton Pattern)
@@ -268,6 +292,11 @@ global_variables.global_tree_structure_widget.add_branch(...)
 - Supports interactive rotation, panning, zooming, and point picking
 - Remains enabled during processing to allow camera manipulation
 - Updates based on visibility status from tree widget
+- Key methods:
+  - `set_points(points, colors)` - Set point cloud data for visualization
+  - `zoom_to_extent()` - Frame all visible points optimally with 20% padding
+  - `reset_view()` - Reset camera to default position and orientation
+  - `update()` - Trigger view refresh
 - Hotkeys:
   - Left Click: Rotate around X and Y axes
   - Ctrl + Left Click: Rotate around Z-axis
@@ -279,6 +308,7 @@ global_variables.global_tree_structure_widget.add_branch(...)
   - Shift + Right Click: Deselect a point
   - ESC: Deselect all selected points (with confirmation)
   - Ctrl + R: Reset camera view to default state
+  - F: Zoom to extent (fit all visible points in viewport)
 
 **ProcessOverlayWidget** (gui/widgets/process_overlay_widget.py):
 - Semi-transparent overlay that displays processing status messages
@@ -333,6 +363,90 @@ To support a new derived data type:
 2. Create a reconstruction task class in `tasks/` inheriting from a base task pattern
 3. Register the data type in `NodeReconstructionManager.tasks_registry`
 4. Create an analysis plugin that returns the new data type
+
+## Common Plugin Examples
+
+### Example: Zoom To Extent Plugin (Action Plugin)
+Located in `plugins/View/zoom_to_extent_plugin.py`:
+
+```python
+from typing import Dict, Any
+from plugins.interfaces import ActionPlugin
+from config.config import global_variables
+
+class ZoomToExtentPlugin(ActionPlugin):
+    def get_name(self) -> str:
+        return "zoom_to_extent"
+
+    def get_parameters(self) -> Dict[str, Any]:
+        return {}  # No parameters needed
+
+    def execute(self, main_window, params: Dict[str, Any]) -> None:
+        viewer_widget = global_variables.global_pcd_viewer_widget
+        viewer_widget.zoom_to_extent()
+```
+
+### Example: Save Project Plugins (Action Plugins)
+
+**Save Project** (`plugins/File/save_project_plugin.py`):
+- Standard "Save" behavior (Ctrl+S)
+- First save: prompts for filename
+- Subsequent saves: overwrites current file silently (no confirmation)
+- Uses `file_manager.save_project(new_file=False)`
+- Only shows error messages (no success popup)
+
+**Save Project As** (`plugins/File/save_project_as_plugin.py`):
+- Standard "Save As" behavior (Ctrl+Shift+S)
+- Always prompts for a new filename
+- Qt file dialog automatically shows overwrite warning if file exists
+- Uses `file_manager.save_project(new_file=True)`
+- Only shows error messages (no success popup)
+
+**FileManager Path Tracking:**
+- `FileManager.current_project_path` tracks the last saved/loaded project file path
+- When loading a project, the path is automatically stored for future saves
+- When saving with `new_file=False`, uses the stored path (or prompts if none exists)
+- When saving with `new_file=True`, always prompts and updates the stored path
+
+### Example: Label Clusters Plugin (Action Plugin with Parameters)
+Located in `plugins/Training/label_clusters_plugin.py`:
+
+```python
+from typing import Dict, Any
+from plugins.interfaces import ActionPlugin
+from config.config import global_variables
+
+class LabelClustersPlugin(ActionPlugin):
+    def get_name(self) -> str:
+        return "label_clusters"
+
+    def get_parameters(self) -> Dict[str, Any]:
+        return {
+            "class_name": {
+                "type": "choice",
+                "options": ["Tree", "Pole", "Building", "Ground"],
+                "default": "Tree",
+                "label": "Class Label"
+            },
+            "save_directory": {
+                "type": "string",
+                "default": "training_data",
+                "label": "Save Directory"
+            }
+        }
+
+    def execute(self, main_window, params: Dict[str, Any]) -> None:
+        data_manager = global_variables.global_data_manager
+        viewer_widget = global_variables.global_pcd_viewer_widget
+
+        # Get selected branch and reconstruct
+        selected_uid = data_manager.selected_branches[0]
+        point_cloud = data_manager.reconstruct_branch(selected_uid)
+
+        # Get selected clusters from picked points
+        selected_indices = viewer_widget.picked_points_indices
+        # ... process and save clusters
+```
 
 ## Dependencies
 

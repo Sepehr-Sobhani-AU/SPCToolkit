@@ -93,10 +93,20 @@ class FileManager(QObject):
             if not filename.endswith(".pcdtk"):
                 filename += ".pcdtk"
 
+        # Get tree visibility state from global variables
+        from config.config import global_variables
+        tree_widget = global_variables.global_tree_structure_widget
+
+        # Extract tree visibility state
+        tree_visibility = None
+        if tree_widget is not None:
+            tree_visibility = tree_widget.visibility_status.copy()
+
         # Add version information to the saved data
         project_data = {
             'version': '1.0.0',
-            'data_nodes': data_nodes
+            'data_nodes': data_nodes,
+            'tree_visibility': tree_visibility
         }
 
         try:
@@ -150,9 +160,12 @@ class FileManager(QObject):
             if isinstance(project_data, dict) and 'version' in project_data:
                 version = project_data['version']
                 loaded_data_nodes = project_data['data_nodes']
+                # Extract tree visibility state if available
+                self._last_loaded_tree_visibility = project_data.get('tree_visibility', None)
             else:
                 # Handle older project files without version info
                 loaded_data_nodes = project_data
+                self._last_loaded_tree_visibility = None
 
             # Store the path for future saves
             self.current_project_path = filename

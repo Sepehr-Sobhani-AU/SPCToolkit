@@ -26,6 +26,7 @@ class PCDViewerWidget(QOpenGLWidget):
         - CTRL + Right/Middle Click: Pan along the Z-axis.
         - Mouse Wheel: Zoom in and out.
         - CTRL + R: Reset the camera view to its default state.
+        - F: Zoom to extent (fit all visible points in viewport).
         - SHIFT + Left Click: Select a point in the point cloud.
         - SHIFT + Right Click: Deselect a point in the point cloud.
         - ESC: Deselect all selected points after confirmation.
@@ -399,64 +400,6 @@ class PCDViewerWidget(QOpenGLWidget):
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-    def zoom_extent(self):
-        """
-        Zoom the view to fit all visible point cloud data.
-
-        This method calculates the bounding box of the visible point cloud,
-        centers the view on it, and adjusts the camera distance to ensure
-        all points are visible in the viewport with some padding.
-        """
-        if self.points is None or len(self.points) == 0:
-            return
-
-        # Calculate the center, size, and maximum extent to prepare initial parameters
-        min_bounds = self.points.min(axis=0)
-        max_bounds = self.points.max(axis=0)
-        self.center = (min_bounds + max_bounds) / 2.0
-        self.size = max_bounds - min_bounds
-        self.max_extent = self.size.max()
-
-        # Calculate optimal camera distance based on field of view and bounding box size
-        half_fov_rad = np.radians(self.fov / 2)
-        self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # Add 20% padding
-        self.camera_distance = self.default_camera_distance
-
-        # Update panning offsets to align the center with the view
-        self.pan_x = -self.center[0]
-        self.pan_y = -self.center[1]
-        self.pan_z = -self.center[2]
-
-        # Save these values as defaults for reset_view
-        self.default_pan_x = self.pan_x
-        self.default_pan_y = self.pan_y
-        self.default_pan_z = self.pan_z
-
-        # Reset rotation to default values
-        self.rot_x = self.default_rot_x
-        self.rot_y = self.default_rot_y
-        self.rot_z = self.default_rot_z
-
-        # Reset zoom factor
-        self.zoom_factor = 1.0
-        self.default_zoom_factor = 1.0
-
-        # Show the axis briefly after zooming to help with orientation
-        self.show_axis = True
-
-        # Update the view
-        self.update()
-
-        # Set a timer to hide the axis after a short time
-        if hasattr(self, 'axis_timer') and self.axis_timer is not None:
-            self.axis_timer.stop()
-
-        from PyQt5.QtCore import QTimer
-        self.axis_timer = QTimer(self)
-        self.axis_timer.setSingleShot(True)
-        self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
-        self.axis_timer.start(1000)  # Hide axis after 1 second
-
     def set_points(self, points: np.ndarray, colors: np.ndarray = None):
         """
         Set the point cloud data to be visualised in the widget.
@@ -599,15 +542,6 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.show_axis:
             # Draw axis symbol at the center of rotation
             self.draw_axis_symbol(self.center)
-
-    def zoom_extent1(self):
-        # Calculate the center, size, and maximum extent to prepare initial parameters
-        min_bounds = self.points.min(axis=0)
-        max_bounds = self.points.max(axis=0)
-        self.center = (min_bounds + max_bounds) / 2.0
-        self.size = max_bounds - min_bounds
-        self.max_extent = self.size.max()
-        self.camera_distance = np.linalg.norm(max_bounds - min_bounds) * 1.2
 
     def render_point_cloud(self):
         """
@@ -904,6 +838,8 @@ class PCDViewerWidget(QOpenGLWidget):
                 self.update()
         elif event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_R:
             self.reset_view()
+        elif event.key() == Qt.Key_F:
+            self.zoom_to_extent()
 
         # Ensure the parent class handles other key events
         super(PCDViewerWidget, self).keyPressEvent(event)
@@ -1177,6 +1113,81 @@ class PCDViewerWidget(QOpenGLWidget):
         self.center[2] = -self.default_pan_z
 
         self.update()
+
+    def zoom_to_extent(self):
+        """
+        Zoom the camera to fit all visible points in the viewport.
+
+        This method calculates the bounding box of the currently displayed point cloud
+        and adjusts the camera parameters to frame the entire dataset optimally.
+        It resets rotation angles, centers the view on the data, and calculates
+        an appropriate camera distance based on the field of view.
+
+        The following parameters are adjusted:
+        - `center`: Set to the center of the point cloud bounding box
+        - `camera_distance`: Calculated based on bounding box size and FOV
+        - `zoom_factor`: Reset to 1.0
+        - `rot_x`, `rot_y`, `rot_z`: Reset to default values
+        - `pan_x`, `pan_y`, `pan_z`: Adjusted to center the view
+        - Also updates default values for reset_view functionality
+
+        After adjusting parameters, the view is updated to reflect the changes.
+        """
+        # Check if points are available
+        if self.points is None or len(self.points) == 0:
+            return
+
+        # Calculate bounding box of visible points
+        min_bounds = np.min(self.points[:, :3], axis=0)
+        max_bounds = np.max(self.points[:, :3], axis=0)
+
+        # Calculate center, size, and maximum extent
+        self.center = (min_bounds + max_bounds) / 2.0
+        self.size = max_bounds - min_bounds
+        self.max_extent = np.max(self.size)
+
+        # Avoid division by zero for degenerate cases
+        if self.max_extent == 0:
+            self.max_extent = 1.0
+
+        # Calculate optimal camera distance based on FOV and bounding box
+        half_fov_rad = np.radians(self.fov / 2)
+        self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # 20% padding
+        self.camera_distance = self.default_camera_distance
+
+        # Update panning offsets to align the center with the view
+        self.pan_x = -self.center[0]
+        self.pan_y = -self.center[1]
+        self.pan_z = -self.center[2]
+
+        # Save these values as defaults for reset_view
+        self.default_pan_x = self.pan_x
+        self.default_pan_y = self.pan_y
+        self.default_pan_z = self.pan_z
+
+        # Reset rotation to default values
+        self.rot_x = self.default_rot_x
+        self.rot_y = self.default_rot_y
+        self.rot_z = self.default_rot_z
+
+        # Reset zoom factor
+        self.zoom_factor = 1.0
+        self.default_zoom_factor = 1.0
+
+        # Show axis briefly for orientation
+        self.show_axis = True
+
+        # Update the view
+        self.update()
+
+        # Set a timer to hide the axis after a short time
+        if hasattr(self, 'axis_timer') and self.axis_timer is not None:
+            self.axis_timer.stop()
+
+        self.axis_timer = QTimer(self)
+        self.axis_timer.setSingleShot(True)
+        self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
+        self.axis_timer.start(500)  # 500ms delay
 
     def show_point_cloud(self, visible=True):
         """Show the point cloud by setting visibility to True and updating the view."""
