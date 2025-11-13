@@ -72,7 +72,12 @@ class EigenvalueUtils:
 
         # Create batch processor with appropriate batch size
         point_count = len(points)
-        actual_batch_size = min(batch_size, point_count)
+
+        # If batch_size is None, use the entire point cloud as one batch
+        if batch_size is None:
+            actual_batch_size = point_count
+        else:
+            actual_batch_size = min(batch_size, point_count)
 
         # Create a batch processor with 10% overlap to ensure smooth transitions between batches
         batch_processor = BatchProcessor(

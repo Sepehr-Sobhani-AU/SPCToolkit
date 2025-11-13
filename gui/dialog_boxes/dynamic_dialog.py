@@ -1,7 +1,7 @@
 # gui/dialog_boxes/dynamic_dialog.py
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                              QDialogButtonBox, QLabel, QSpinBox, QDoubleSpinBox,
-                             QComboBox, QCheckBox)
+                             QComboBox, QCheckBox, QHBoxLayout, QPushButton, QFileDialog, QWidget)
 from typing import Dict, Any
 
 
@@ -43,19 +43,21 @@ class DynamicDialog(QDialog):
 
             if param_type == "int":
                 widget = QSpinBox()
-                widget.setValue(default_value)
+                # Set min/max range BEFORE setting value to avoid clamping issues
                 if "min" in param_info:
                     widget.setMinimum(param_info["min"])
                 if "max" in param_info:
                     widget.setMaximum(param_info["max"])
+                widget.setValue(default_value)
             elif param_type == "float":
                 widget = QDoubleSpinBox()
-                widget.setValue(default_value)
+                # Set min/max range BEFORE setting value to avoid clamping issues
                 if "min" in param_info:
                     widget.setMinimum(param_info["min"])
                 if "max" in param_info:
                     widget.setMaximum(param_info["max"])
                 widget.setDecimals(4)  # Increased precision for floating-point values
+                widget.setValue(default_value)
             elif param_type == "dropdown":
                 widget = QComboBox()
                 options = param_info.get("options", {})
@@ -70,6 +72,7 @@ class DynamicDialog(QDialog):
             elif param_type == "choice":
                 # Handle choice type (list of options)
                 widget = QComboBox()
+                widget.setEditable(True)  # Allow custom text input
                 options = param_info.get("options", [])
 
                 for option in options:
@@ -81,10 +84,34 @@ class DynamicDialog(QDialog):
                     index = widget.findData(default_value)
                     if index >= 0:
                         widget.setCurrentIndex(index)
+                    else:
+                        # If default not in options, set it as custom text
+                        widget.setCurrentText(str(default_value))
             elif param_type == "bool":
                 # Handle boolean type
                 widget = QCheckBox()
                 widget.setChecked(bool(default_value))
+            elif param_type == "directory":
+                # Handle directory type with browse button
+                dir_widget = QWidget()
+                dir_layout = QHBoxLayout()
+                dir_layout.setContentsMargins(0, 0, 0, 0)
+
+                line_edit = QLineEdit()
+                line_edit.setText(str(default_value))
+
+                browse_button = QPushButton("Browse...")
+                browse_button.clicked.connect(
+                    lambda checked, le=line_edit: self._browse_directory(le)
+                )
+
+                dir_layout.addWidget(line_edit)
+                dir_layout.addWidget(browse_button)
+                dir_widget.setLayout(dir_layout)
+
+                widget = dir_widget
+                # Store the line_edit as the actual widget for value retrieval
+                self.param_widgets[param_name] = line_edit
             else:  # Default to string
                 widget = QLineEdit()
                 widget.setText(str(default_value))
@@ -93,8 +120,12 @@ class DynamicDialog(QDialog):
             if tooltip:
                 widget.setToolTip(tooltip)
 
-            form_layout.addRow(QLabel(label_text), widget)
-            self.param_widgets[param_name] = widget
+            # For directory type, widget is already added to param_widgets above
+            if param_type == "directory":
+                form_layout.addRow(QLabel(label_text), widget)
+            else:
+                form_layout.addRow(QLabel(label_text), widget)
+                self.param_widgets[param_name] = widget
 
         layout.addLayout(form_layout)
 
@@ -120,11 +151,32 @@ class DynamicDialog(QDialog):
                 self.params[param_name] = widget.value()
             elif param_type == "float":
                 self.params[param_name] = widget.value()
-            elif param_type == "dropdown" or param_type == "choice":
+            elif param_type == "dropdown":
                 self.params[param_name] = widget.currentData()  # Get the data value, not the display text
+            elif param_type == "choice":
+                # For editable combobox, get the current text (allows custom input)
+                self.params[param_name] = widget.currentText()
             elif param_type == "bool":
                 self.params[param_name] = widget.isChecked()
-            else:  # String
+            else:  # String or directory
                 self.params[param_name] = widget.text()
 
         return self.params
+
+    def _browse_directory(self, line_edit: QLineEdit):
+        """
+        Open a directory browser dialog and update the line edit.
+
+        Args:
+            line_edit: The QLineEdit widget to update with the selected directory
+        """
+        current_dir = line_edit.text() if line_edit.text() else ""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Directory",
+            current_dir,
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+
+        if directory:
+            line_edit.setText(directory)

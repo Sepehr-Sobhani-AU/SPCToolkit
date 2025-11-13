@@ -12,6 +12,7 @@ class GlobalVariables:
         self.global_data_manager: core.data_manager = None
         self.global_main_window = None
         self.global_analysis_thread_manager = None
+        self.training_data_folder = "training_data"  # Default training data directory
 
 
 # Singleton instance

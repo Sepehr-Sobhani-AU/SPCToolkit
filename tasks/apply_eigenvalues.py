@@ -30,10 +30,14 @@ class ApplyEigenvalues:
 
     def execute(self):
         """
-        Execute the task, applying eigenvalues_array as colors to the point cloud.
+        Execute the task, applying eigenvalues to the point cloud.
+
+        This method:
+        1. Maps eigenvalues to colors for visualization
+        2. Stores eigenvalues in point_cloud.attributes for downstream use
 
         Returns:
-            PointCloud: The point cloud with eigenvalue-based colors applied
+            PointCloud: The point cloud with eigenvalue-based colors and attributes applied
         """
         # Create a copy of the point cloud to avoid modifying the original
         result_point_cloud = self.point_cloud.get_subset(np.ones(self.point_cloud.size, dtype=bool))
@@ -55,6 +59,9 @@ class ApplyEigenvalues:
         # Apply colors to the point cloud
         result_point_cloud.colors = colors.astype(np.float32)
 
-        print(f"Applied eigenvalue-based colors to point cloud")
+        # Store eigenvalues in attributes for downstream use (e.g., training data preparation)
+        result_point_cloud.add_attribute('eigenvalues', eigenvalues_array)
+
+        print(f"Applied eigenvalue-based colors to point cloud and stored eigenvalues in attributes")
 
         return result_point_cloud
