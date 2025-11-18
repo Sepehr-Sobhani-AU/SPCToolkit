@@ -1,5 +1,5 @@
 """
-A class for a DataNode's 'data' attribute as a list of point indexes.
+A class for a DataNode's 'data' attribute as a list of cluster labels.
 """
 
 import numpy as np
