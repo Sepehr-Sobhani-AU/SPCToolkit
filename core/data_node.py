@@ -11,7 +11,17 @@ class DataNode:
     Attributes:
         uid (UUID): Unique identifier for the data node.
         params (str): A descriptive params for the data node.
-        data (Any): The actual data object stored in this node (e.g., point cloud, results).
+        data (Any): The actual data object stored in this node. Supported types:
+            - PointCloud: Primary 3D point cloud data with coordinates, colors, normals, and attributes
+            - masks: Boolean arrays for point selection/filtering
+            - cluster_labels: Integer arrays assigning points to clusters
+            - values: Arbitrary scalar values per point
+            - eigenvalues: Eigenvalue-based geometric features
+            - colors: RGB color arrays for visualization
+            - dist_to_ground: Distance-to-ground measurements
+            - feature_classes: Feature classification (Tree, Car, Building, etc.) for ML
+            - labels: Cluster labels
+            - indexs: Index arrays for point references
         parent_uid (UUID): The UUID of the parent node, if applicable.
         depends_on (List[UUID]): A list of UUIDs that this node depends on.
         tags (List[str]): Tags to classify the node (e.g., 'raw', 'derived', 'subsampled').

@@ -1,4 +1,4 @@
-# core/feature_labels.py
+# core/feature_classes.py
 """
 A class for representing feature classification labels for point cloud clusters.
 """
@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, List
 
 
-class FeatureLabels:
+class FeatureClasses:
     """
     A class for storing feature classification labels for point cloud clusters.
 
@@ -73,7 +73,7 @@ class FeatureLabels:
 
         return mask
 
-    def get_point_colors(self) -> np.ndarray:
+    def get_points_color(self) -> np.ndarray:
         """
         Get color values for all points based on their feature class.
 
@@ -93,7 +93,7 @@ class FeatureLabels:
 
     def __repr__(self):
         """
-        String representation of the FeatureLabels object.
+        String representation of the FeatureClasses object.
 
         Returns:
             str: Description of the object.
@@ -103,7 +103,7 @@ class FeatureLabels:
             mask = self.get_points_by_class(cls)
             class_counts[cls] = np.sum(mask)
 
-        return f"FeatureLabels(classes={len(self.get_unique_classes())}, " \
+        return f"FeatureClasses(classes={len(self.get_unique_classes())}, " \
                f"points={len(self.labels)}, " \
                f"counts={class_counts})"
 

@@ -248,6 +248,11 @@ class DataManager(QObject):
         if isinstance(uid, str):
             uid = uuid.UUID(uid)
         data_node = self.data_nodes.get_node(uid)
+
+        # Check if node exists
+        if data_node is None:
+            raise ValueError(f"DataNode with UID {uid} not found")
+
         while data_node.parent_uid is not None:
             self.data_node_uids.append(data_node.uid)
             parent_uid = data_node.parent_uid
@@ -358,10 +363,10 @@ class DataManager(QObject):
         points_to_show = np.empty((0, 3), dtype=np.float32)
         colors_to_show = np.empty((0, 3), dtype=np.float32)
         uids_to_show = [uid for uid, vis in visibility_status.items() if vis]
+
         # TODO: Update to handle multiple data types, point clouds, derived data, etc.
         if uids_to_show:
             for uid in uids_to_show:
-
                 node = self.data_nodes.get_node(uuid.UUID(uid))
                 node_type = node.data_type
                 # Render point clouds
