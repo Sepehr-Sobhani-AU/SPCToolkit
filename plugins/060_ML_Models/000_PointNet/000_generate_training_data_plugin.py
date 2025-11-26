@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import QMessageBox
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.point_cloud import PointCloud
-from gui.dialogs.training_data_preview_window import TrainingDataPreviewWindow
+from gui.dialogs.training_data_preview_window import DataPreviewWindow
 
 
 class GenerateTrainingDataPlugin(ActionPlugin):
@@ -230,7 +230,7 @@ class GenerateTrainingDataPlugin(ActionPlugin):
             print("=" * 60)
 
             # Store output directory for Preview Training Data plugin
-            TrainingDataPreviewWindow.last_training_data_dir = output_dir
+            DataPreviewWindow.last_directories["Training Data Preview"] = output_dir
 
             self._show_summary(main_window, output_dir, balanced_samples, balance_stats, skipped_total, target_points)
 

@@ -1,8 +1,8 @@
 """
-Training Data Preview Window
+Data Preview Window
 
-Provides an interactive window for browsing and previewing machine learning training data.
-Supports multiple model formats and displays samples with various coloring modes.
+Provides an interactive window for browsing and previewing saved data (training data, clusters, etc.).
+Supports multiple data formats and displays samples with various coloring modes.
 """
 
 import os
@@ -17,28 +17,30 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from gui.widgets.pcd_viewer_widget import PCDViewerWidget
+# Lazy import to avoid OpenGL dependency at module load time
+# PCDViewerWidget will be imported when __init__ is called
 
 
-class TrainingDataPreviewWindow(QDialog):
+class DataPreviewWindow(QDialog):
     """
-    Custom dialog window for previewing training data.
+    Generic dialog window for previewing saved data.
 
     Features:
-    - Directory browsing with session persistence
-    - Metadata display
+    - Directory browsing with session persistence (per window type)
+    - Optional metadata display
     - Class and sample selection
-    - 3D visualization with feature-based coloring
-    - Support for multiple model formats
+    - 3D visualization with automatic feature-based coloring
+    - Support for multiple data formats
     """
 
-    # Class variable for session persistence
-    last_training_data_dir = ""
+    # Class variable for session persistence - dictionary keyed by window title
+    last_directories = {}
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, window_title="Data Preview"):
         super().__init__(parent)
 
-        self.setWindowTitle("Training Data Preview")
+        self.window_title = window_title
+        self.setWindowTitle(window_title)
         self.resize(1200, 700)
 
         # State variables
@@ -48,13 +50,18 @@ class TrainingDataPreviewWindow(QDialog):
         self.current_sample_data = None
         self.first_load = True  # Track first visualization to control camera reset
 
+        # Auto-zoom behavior: clusters need zoom on each load (different scales)
+        # Training data can use first-load-only zoom (normalized)
+        self.auto_zoom_on_load = (window_title == "Clusters Preview")
+
         # Setup UI
         self._setup_ui()
 
-        # Initialize with last directory if available
-        if TrainingDataPreviewWindow.last_training_data_dir:
-            self.directory_edit.setText(TrainingDataPreviewWindow.last_training_data_dir)
-            self._load_directory(TrainingDataPreviewWindow.last_training_data_dir)
+        # Initialize with last directory if available for this window type
+        if self.window_title in DataPreviewWindow.last_directories:
+            last_dir = DataPreviewWindow.last_directories[self.window_title]
+            self.directory_edit.setText(last_dir)
+            self._load_directory(last_dir)
 
     def _setup_ui(self):
         """Setup the user interface layout."""
@@ -138,7 +145,8 @@ class TrainingDataPreviewWindow(QDialog):
 
         content_splitter.addWidget(left_panel_widget)
 
-        # Right panel: Viewer
+        # Right panel: Viewer (lazy import to avoid OpenGL dependency at module load)
+        from gui.widgets.pcd_viewer_widget import PCDViewerWidget
         self.viewer = PCDViewerWidget()
         content_splitter.addWidget(self.viewer)
 
@@ -150,13 +158,13 @@ class TrainingDataPreviewWindow(QDialog):
         self.setLayout(main_layout)
 
     def _browse_directory(self):
-        """Open file dialog to select training data directory."""
+        """Open file dialog to select data directory."""
         # Default to current directory if available, otherwise use project directory
         initial_dir = self.current_directory or os.getcwd()
 
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Select Training Data Directory",
+            "Select Data Directory",
             initial_dir,
             QFileDialog.ShowDirsOnly
         )
@@ -166,44 +174,47 @@ class TrainingDataPreviewWindow(QDialog):
 
     def _load_directory(self, directory: str):
         """
-        Load training data directory and metadata.
+        Load data directory and optionally load metadata if present.
 
         Args:
-            directory: Path to training data directory
+            directory: Path to data directory
         """
         if not os.path.exists(directory):
             QMessageBox.warning(self, "Invalid Directory", f"Directory does not exist:\n{directory}")
             return
 
-        # Check for metadata.json
-        metadata_path = os.path.join(directory, "metadata.json")
-        if not os.path.exists(metadata_path):
-            QMessageBox.warning(
-                self,
-                "No Metadata Found",
-                f"No metadata.json found in:\n{directory}\n\n"
-                "This does not appear to be a valid training data directory."
-            )
-            return
-
         try:
-            # Load metadata
-            with open(metadata_path, 'r') as f:
-                self.metadata = json.load(f)
-
-            # Extract feature order for color mode detection
-            if "data_format" in self.metadata and "feature_order" in self.metadata["data_format"]:
-                self.feature_order = self.metadata["data_format"]["feature_order"]
-            else:
-                self.feature_order = []
-
             # Update state
             self.current_directory = directory
-            TrainingDataPreviewWindow.last_training_data_dir = directory
-
-            # Update UI
+            DataPreviewWindow.last_directories[self.window_title] = directory
             self.directory_edit.setText(directory)
-            self.metadata_button.setEnabled(True)
+
+            # Try to load metadata.json if it exists (optional)
+            metadata_path = os.path.join(directory, "metadata.json")
+            if os.path.exists(metadata_path):
+                try:
+                    with open(metadata_path, 'r') as f:
+                        self.metadata = json.load(f)
+
+                    # Extract feature order for color mode detection
+                    if "data_format" in self.metadata and "feature_order" in self.metadata["data_format"]:
+                        self.feature_order = self.metadata["data_format"]["feature_order"]
+                    else:
+                        self.feature_order = []
+
+                    # Enable metadata button
+                    self.metadata_button.setEnabled(True)
+
+                except Exception as e:
+                    # Metadata loading failed, but continue without it
+                    self.metadata = None
+                    self.feature_order = []
+                    self.metadata_button.setEnabled(False)
+            else:
+                # No metadata file, continue without it
+                self.metadata = None
+                self.feature_order = []
+                self.metadata_button.setEnabled(False)
 
             # Scan for classes
             self._scan_classes()
@@ -215,7 +226,7 @@ class TrainingDataPreviewWindow(QDialog):
             QMessageBox.critical(
                 self,
                 "Error Loading Directory",
-                f"Failed to load training data:\n{str(e)}"
+                f"Failed to load data:\n{str(e)}"
             )
 
     def _scan_classes(self):
@@ -347,8 +358,9 @@ class TrainingDataPreviewWindow(QDialog):
             # Load data
             self.current_sample_data = np.load(filepath)
 
-            # Don't reset camera when changing files - only on very first load
-            # (first_load is set to True in __init__ and set to False after first visualization)
+            # Detect RGB columns if present (columns 3, 4, 5)
+            # Update color modes to include RGB option if available
+            self._detect_and_update_rgb_option()
 
             # Visualize with current color mode
             self._update_visualization()
@@ -380,6 +392,22 @@ class TrainingDataPreviewWindow(QDialog):
         self.viewer.point_size = value
         self.viewer.update()  # Refresh the view
 
+    def _detect_and_update_rgb_option(self):
+        """
+        Detect if RGB columns exist in current data and update color modes.
+        RGB is expected in columns 3, 4, 5 (after XYZ).
+        """
+        if self.current_sample_data is None:
+            return
+
+        # Check if data has at least 6 columns (XYZ + RGB)
+        if self.current_sample_data.shape[1] >= 6:
+            # Check if "RGB Colors" is already in the list
+            current_items = [self.color_combo.itemText(i) for i in range(self.color_combo.count())]
+            if "RGB Colors" not in current_items:
+                # Insert RGB option after "Uniform Gray" (at index 1)
+                self.color_combo.insertItem(1, "RGB Colors")
+
     def _update_visualization(self):
         """Update viewer with current sample and color mode."""
         if self.current_sample_data is None:
@@ -399,8 +427,8 @@ class TrainingDataPreviewWindow(QDialog):
         # Update viewer
         self.viewer.set_points(points, colors)
 
-        # Only zoom to extent on first load, not on color changes
-        if self.first_load:
+        # Zoom behavior: auto_zoom_on_load (clusters) zooms every time, else only first time
+        if self.auto_zoom_on_load or self.first_load:
             self.viewer.zoom_to_extent()
             self.first_load = False
 
@@ -501,6 +529,24 @@ class TrainingDataPreviewWindow(QDialog):
 
                 return colors
 
+            except (ValueError, IndexError):
+                return np.full((n, 3), 0.5, dtype=np.float32)
+
+        elif mode == "RGB Colors":
+            # Use RGB from columns 3, 4, 5
+            try:
+                if self.current_sample_data.shape[1] >= 6:
+                    rgb = self.current_sample_data[:, 3:6].copy()
+
+                    # Normalize RGB values to [0, 1] range
+                    # Assume RGB is either in [0, 255] or [0, 1] range
+                    if rgb.max() > 1.0:
+                        # Values are in [0, 255] range
+                        rgb = rgb / 255.0
+
+                    return np.clip(rgb, 0, 1).astype(np.float32)
+                else:
+                    return np.full((n, 3), 0.5, dtype=np.float32)
             except (ValueError, IndexError):
                 return np.full((n, 3), 0.5, dtype=np.float32)
 
@@ -609,45 +655,36 @@ class TrainingDataPreviewWindow(QDialog):
         if not self.metadata:
             return
 
-        # Format metadata as readable text
+        # Format metadata as readable text - automatically display all top-level sections
         lines = []
-        lines.append("=== TRAINING DATA METADATA ===\n")
+        lines.append(f"=== METADATA ===\n")
 
-        # Dataset Info
-        if "dataset_info" in self.metadata:
-            lines.append("DATASET INFO:")
-            lines.extend(self._format_nested_dict(self.metadata["dataset_info"]))
+        for section_key, section_data in self.metadata.items():
+            section_name = self._format_key_name(section_key).upper()
+            lines.append(f"{section_name}:")
+
+            if isinstance(section_data, dict):
+                # Check if it's balance_info (special formatting)
+                if section_key == "balance_info":
+                    for class_name, stats in section_data.items():
+                        if isinstance(stats, dict) and 'unique' in stats and 'resampled' in stats:
+                            lines.append(f"  {class_name}: unique={stats['unique']}, resampled={stats['resampled']}")
+                        else:
+                            lines.append(f"  {class_name}: {stats}")
+                else:
+                    lines.extend(self._format_nested_dict(section_data))
+            elif isinstance(section_data, list):
+                lines.append(f"  {', '.join(str(v) for v in section_data)}")
+            else:
+                lines.append(f"  {section_data}")
+
             lines.append("")
-
-        # Processing Info
-        if "processing" in self.metadata:
-            lines.append("PROCESSING:")
-            lines.extend(self._format_nested_dict(self.metadata["processing"]))
-            lines.append("")
-
-        # Data Format
-        if "data_format" in self.metadata:
-            lines.append("DATA FORMAT:")
-            lines.extend(self._format_nested_dict(self.metadata["data_format"]))
-            lines.append("")
-
-        # Balance Info
-        if "balance_info" in self.metadata:
-            lines.append("BALANCE INFO:")
-            for class_name, stats in self.metadata["balance_info"].items():
-                lines.append(f"  {class_name}: unique={stats['unique']}, resampled={stats['resampled']}")
-            lines.append("")
-
-        # Processing Summary
-        if "processing_summary" in self.metadata:
-            lines.append("PROCESSING SUMMARY:")
-            lines.extend(self._format_nested_dict(self.metadata["processing_summary"]))
 
         metadata_text = "\n".join(lines)
 
         # Show in message box
         msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Training Data Metadata")
+        msg_box.setWindowTitle("Metadata")
         msg_box.setText(metadata_text)
         msg_box.setIcon(QMessageBox.Information)
         msg_box.exec_()

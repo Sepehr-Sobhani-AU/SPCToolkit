@@ -1,31 +1,30 @@
 """
-Preview Training Data Plugin
+Preview Clusters Plugin
 
-Opens an interactive window for browsing and previewing machine learning training data.
-Supports multiple model formats (PointNet, PointNet++, etc.) and provides
-visualization with various feature-based coloring modes.
+Opens an interactive window for browsing and previewing saved cluster data.
+Provides visualization with various feature-based coloring modes.
 """
 
 from typing import Dict, Any
 
 from plugins.interfaces import ActionPlugin
-from gui.dialogs.training_data_preview_window import TrainingDataPreviewWindow
+from gui.dialogs.training_data_preview_window import DataPreviewWindow
 
 
-class PreviewTrainingDataPlugin(ActionPlugin):
+class PreviewClustersPlugin(ActionPlugin):
     """
-    Action plugin for previewing training data.
+    Action plugin for previewing saved cluster data.
 
     This plugin opens a dedicated window that allows users to:
-    - Browse training data directories
-    - View metadata
+    - Browse cluster data directories
+    - View metadata (if available)
     - Select classes and samples
     - Visualize samples in 3D with feature-based coloring
     """
 
     def get_name(self) -> str:
         """Return the plugin name."""
-        return "preview_training_data"
+        return "preview_clusters"
 
     def get_parameters(self) -> Dict[str, Any]:
         """
@@ -44,6 +43,9 @@ class PreviewTrainingDataPlugin(ActionPlugin):
             main_window: The main application window
             params: Not used for this plugin (empty dict)
         """
-        # Create and show preview window
-        preview_window = TrainingDataPreviewWindow(parent=main_window)
+        # Create and show preview window with specific title
+        preview_window = DataPreviewWindow(
+            parent=main_window,
+            window_title="Clusters Preview"
+        )
         preview_window.exec_()
