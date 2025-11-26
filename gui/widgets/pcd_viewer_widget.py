@@ -1114,20 +1114,23 @@ class PCDViewerWidget(QOpenGLWidget):
 
         self.update()
 
-    def zoom_to_extent(self):
+    def zoom_to_extent(self, preserve_rotation=False):
         """
         Zoom the camera to fit all visible points in the viewport.
 
         This method calculates the bounding box of the currently displayed point cloud
         and adjusts the camera parameters to frame the entire dataset optimally.
-        It resets rotation angles, centers the view on the data, and calculates
-        an appropriate camera distance based on the field of view.
+        It recenters the view on the data and calculates an appropriate camera distance.
+
+        Args:
+            preserve_rotation: If True, keeps current rotation angles (camera angle).
+                             If False, resets rotation to default values.
 
         The following parameters are adjusted:
         - `center`: Set to the center of the point cloud bounding box
         - `camera_distance`: Calculated based on bounding box size and FOV
         - `zoom_factor`: Reset to 1.0
-        - `rot_x`, `rot_y`, `rot_z`: Reset to default values
+        - `rot_x`, `rot_y`, `rot_z`: Reset to default (or preserved if preserve_rotation=True)
         - `pan_x`, `pan_y`, `pan_z`: Adjusted to center the view
         - Also updates default values for reset_view functionality
 
@@ -1165,10 +1168,11 @@ class PCDViewerWidget(QOpenGLWidget):
         self.default_pan_y = self.pan_y
         self.default_pan_z = self.pan_z
 
-        # Reset rotation to default values
-        self.rot_x = self.default_rot_x
-        self.rot_y = self.default_rot_y
-        self.rot_z = self.default_rot_z
+        # Reset rotation to default values (unless preserving rotation)
+        if not preserve_rotation:
+            self.rot_x = self.default_rot_x
+            self.rot_y = self.default_rot_y
+            self.rot_z = self.default_rot_z
 
         # Reset zoom factor
         self.zoom_factor = 1.0

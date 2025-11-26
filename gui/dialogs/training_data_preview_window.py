@@ -429,8 +429,9 @@ class DataPreviewWindow(QDialog):
         self.viewer.set_points(points, colors)
 
         # Only zoom when loading new files, not when changing colors
+        # Preserve rotation to keep the camera angle when fitting new data
         if zoom_to_extent:
-            self.viewer.zoom_to_extent()
+            self.viewer.zoom_to_extent(preserve_rotation=True)
 
     def _generate_colors(self, points: np.ndarray, mode: str) -> np.ndarray:
         """
