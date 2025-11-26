@@ -357,8 +357,8 @@ class DataPreviewWindow(QDialog):
             # Update color modes to include RGB option if available
             self._detect_and_update_rgb_option()
 
-            # Visualize with current color mode
-            self._update_visualization()
+            # Visualize with current color mode and zoom to fit new data
+            self._update_visualization(zoom_to_extent=True)
 
         except Exception as e:
             QMessageBox.critical(
@@ -375,7 +375,8 @@ class DataPreviewWindow(QDialog):
             mode: Selected color mode
         """
         if self.current_sample_data is not None:
-            self._update_visualization()
+            # Don't zoom when just changing color mode
+            self._update_visualization(zoom_to_extent=False)
 
     def _on_point_size_changed(self, value: float):
         """
@@ -403,8 +404,13 @@ class DataPreviewWindow(QDialog):
                 # Insert RGB option after "Uniform Gray" (at index 1)
                 self.color_combo.insertItem(1, "RGB Colors")
 
-    def _update_visualization(self):
-        """Update viewer with current sample and color mode."""
+    def _update_visualization(self, zoom_to_extent: bool = False):
+        """
+        Update viewer with current sample and color mode.
+
+        Args:
+            zoom_to_extent: If True, zoom to fit the data (used when loading new files)
+        """
         if self.current_sample_data is None:
             return
 
@@ -422,8 +428,9 @@ class DataPreviewWindow(QDialog):
         # Update viewer
         self.viewer.set_points(points, colors)
 
-        # Always zoom to extent to fit the data (preserves camera orientation)
-        self.viewer.zoom_to_extent()
+        # Only zoom when loading new files, not when changing colors
+        if zoom_to_extent:
+            self.viewer.zoom_to_extent()
 
     def _generate_colors(self, points: np.ndarray, mode: str) -> np.ndarray:
         """
