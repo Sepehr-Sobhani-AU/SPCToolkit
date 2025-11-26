@@ -48,11 +48,6 @@ class DataPreviewWindow(QDialog):
         self.metadata = None
         self.feature_order = []
         self.current_sample_data = None
-        self.first_load = True  # Track first visualization to control camera reset
-
-        # Auto-zoom behavior: clusters need zoom on each load (different scales)
-        # Training data can use first-load-only zoom (normalized)
-        self.auto_zoom_on_load = (window_title == "Clusters Preview")
 
         # Setup UI
         self._setup_ui()
@@ -427,10 +422,8 @@ class DataPreviewWindow(QDialog):
         # Update viewer
         self.viewer.set_points(points, colors)
 
-        # Zoom behavior: auto_zoom_on_load (clusters) zooms every time, else only first time
-        if self.auto_zoom_on_load or self.first_load:
-            self.viewer.zoom_to_extent()
-            self.first_load = False
+        # Always zoom to extent to fit the data (preserves camera orientation)
+        self.viewer.zoom_to_extent()
 
     def _generate_colors(self, points: np.ndarray, mode: str) -> np.ndarray:
         """

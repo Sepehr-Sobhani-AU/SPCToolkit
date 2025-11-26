@@ -1,8 +1,9 @@
 """
-Preview Clusters Plugin
+Preview Data Plugin
 
-Opens an interactive window for browsing and previewing saved cluster data.
-Provides visualization with various feature-based coloring modes.
+Opens an interactive window for browsing and previewing saved data (.npy format).
+Works with any data organized in class subdirectories (training data, clusters, etc.).
+Provides visualization with automatic feature-based coloring.
 """
 
 from typing import Dict, Any
@@ -11,20 +12,20 @@ from plugins.interfaces import ActionPlugin
 from gui.dialogs.training_data_preview_window import DataPreviewWindow
 
 
-class PreviewClustersPlugin(ActionPlugin):
+class PreviewDataPlugin(ActionPlugin):
     """
-    Action plugin for previewing saved cluster data.
+    Action plugin for previewing saved data.
 
     This plugin opens a dedicated window that allows users to:
-    - Browse cluster data directories
+    - Browse data directories (any .npy format organized by class folders)
     - View metadata (if available)
     - Select classes and samples
-    - Visualize samples in 3D with feature-based coloring
+    - Visualize samples in 3D with automatic feature-based coloring
     """
 
     def get_name(self) -> str:
         """Return the plugin name."""
-        return "preview_clusters"
+        return "preview_data"
 
     def get_parameters(self) -> Dict[str, Any]:
         """
@@ -43,9 +44,9 @@ class PreviewClustersPlugin(ActionPlugin):
             main_window: The main application window
             params: Not used for this plugin (empty dict)
         """
-        # Create and show preview window with specific title
+        # Create and show preview window with generic title
         preview_window = DataPreviewWindow(
             parent=main_window,
-            window_title="Clusters Preview"
+            window_title="Data Preview"
         )
         preview_window.exec_()
