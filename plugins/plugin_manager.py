@@ -3,6 +3,7 @@ import os
 import importlib
 import inspect
 import sys
+import re
 from typing import Dict, List, Type, Any, Tuple
 from collections import defaultdict
 
@@ -237,3 +238,24 @@ class PluginManager:
             Dict[str, Type[Plugin]]: Dictionary mapping plugin names to plugin classes
         """
         return self.analysis_plugins
+
+    @staticmethod
+    def _strip_prefix(name: str) -> str:
+        """
+        Strip numeric prefix from folder or file names.
+
+        Removes patterns like "000_", "010_", etc. from the beginning of names.
+        This allows folders/files to be ordered using prefixes while displaying clean names.
+
+        Examples:
+            "000_File" -> "File"
+            "010_Points" -> "Points"
+            "NoPrefix" -> "NoPrefix"
+
+        Args:
+            name: The folder or file name (possibly with numeric prefix)
+
+        Returns:
+            Name with prefix removed, or original name if no prefix found
+        """
+        return re.sub(r'^\d{3}_', '', name)

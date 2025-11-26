@@ -139,6 +139,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         Create menu hierarchy from a path like "Points/Clustering/Advanced".
 
+        Automatically strips numeric prefixes (e.g., "000_File" -> "File") from display names.
+
         Args:
             menu_path: Menu path with forward slashes (e.g., "Points/Clustering")
         """
@@ -158,15 +160,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 parent_menu = self.menus[current_path]
                 continue
 
+            # Strip numeric prefix from display name
+            display_name = self.plugin_manager._strip_prefix(part)
+
             # Create the menu or submenu
             if i == 0:
                 # Top-level menu
-                menu = self.menubar.addMenu(part)
+                menu = self.menubar.addMenu(display_name)
                 self.menus[current_path] = menu
                 parent_menu = menu
             else:
                 # Submenu
-                submenu = QtWidgets.QMenu(part, self)
+                submenu = QtWidgets.QMenu(display_name, self)
                 parent_menu.addMenu(submenu)
                 self.menus[current_path] = submenu
                 parent_menu = submenu
@@ -236,14 +241,17 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         Format plugin name for display in menu.
 
-        Converts "dbscan_clustering" to "DBSCAN Clustering"
+        Strips numeric prefixes and converts "dbscan_clustering" to "DBSCAN Clustering"
 
         Args:
-            name: Plugin name
+            name: Plugin name (possibly with numeric prefix)
 
         Returns:
             Formatted display name
         """
+        # Strip numeric prefix (e.g., "000_save_project" -> "save_project")
+        name = self.plugin_manager._strip_prefix(name)
+
         # Replace underscores with spaces
         formatted = name.replace('_', ' ')
 
