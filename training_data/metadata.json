@@ -1,0 +1,71 @@
+{
+  "dataset_info": {
+    "created_at": "2025-12-01T14:07:13.111657",
+    "created_by": "SPCToolkit",
+    "plugin": "PointNet Generate Training Data v1.0",
+    "source_directory": "C:/Users/Sepeh/OneDrive/AI/SPCToolkit-Plugin Base 00/Clusters",
+    "output_directory": "C:/Users/Sepeh/OneDrive/AI/SPCToolkit-Plugin Base 00/training_data",
+    "model_target": "PointNet",
+    "task_type": "Feature Classification"
+  },
+  "processing": {
+    "normalization": {
+      "enabled": true,
+      "method": "center_and_unit_sphere",
+      "random_rotation": false
+    },
+    "features": {
+      "normals": {
+        "enabled": true,
+        "knn": 30
+      },
+      "eigenvalues": {
+        "enabled": true,
+        "knn": 30,
+        "smooth": true
+      },
+      "distance_from_ground": {
+        "enabled": false
+      }
+    },
+    "sampling": {
+      "n_multiplier": 1,
+      "target_points_per_sample": 1024
+    }
+  },
+  "data_format": {
+    "file_format": "numpy (.npy)",
+    "array_shape": "(1024, 9)",
+    "feature_order": [
+      "X_norm",
+      "Y_norm",
+      "Z_norm",
+      "Nx",
+      "Ny",
+      "Nz",
+      "E1",
+      "E2",
+      "E3"
+    ],
+    "data_type": "float32"
+  },
+  "balance_info": {
+    "Car": {
+      "unique": 10,
+      "resampled": 0
+    },
+    "Complex": {
+      "unique": 2,
+      "resampled": 8
+    },
+    "Tree": {
+      "unique": 1,
+      "resampled": 9
+    }
+  },
+  "processing_summary": {
+    "total_samples": 30,
+    "num_classes": 3,
+    "skipped_clusters": 2
+  }
+}
