@@ -7,6 +7,7 @@ The directory should contain subfolders where each subfolder name is a class lab
 
 import os
 import json
+import csv
 import numpy as np
 from typing import Dict, Any
 from datetime import datetime
@@ -44,6 +45,67 @@ class TrainPointNetPlugin(ActionPlugin):
 
     def get_name(self) -> str:
         return "train_pointnet_model"
+
+    def _get_next_run_number(self, output_dir: str) -> int:
+        """
+        Get the next run number by scanning existing folders.
+
+        Args:
+            output_dir: Base output directory
+
+        Returns:
+            Next sequential run number
+        """
+        if not os.path.exists(output_dir):
+            return 1
+
+        # Find all folders matching run_XXX pattern
+        run_numbers = []
+        for item in os.listdir(output_dir):
+            if os.path.isdir(os.path.join(output_dir, item)) and item.startswith('run_'):
+                try:
+                    # Extract number from run_001, run_002, etc.
+                    parts = item.split('_')
+                    if len(parts) >= 2:
+                        run_num = int(parts[1])
+                        run_numbers.append(run_num)
+                except (ValueError, IndexError):
+                    continue
+
+        return max(run_numbers) + 1 if run_numbers else 1
+
+    def _write_to_tracking_csv(self, output_dir: str, training_data: Dict[str, Any]):
+        """
+        Write training results to central tracking CSV file.
+
+        Args:
+            output_dir: Base output directory
+            training_data: Dictionary containing all training information
+        """
+        csv_path = os.path.join(output_dir, 'training_history.csv')
+
+        # Define CSV columns
+        fieldnames = [
+            'folder_name', 'timestamp', 'run_number', 'epochs', 'batch_size',
+            'learning_rate', 'val_split', 'use_tnet', 'early_stopping_patience',
+            'repetitions', 'random_seed', 'best_val_acc', 'final_val_acc',
+            'epochs_completed', 'training_samples', 'validation_samples',
+            'num_classes', 'was_cancelled'
+        ]
+
+        # Check if file exists to determine if we need to write header
+        file_exists = os.path.exists(csv_path)
+
+        # Write to CSV
+        with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+            # Write header if new file
+            if not file_exists:
+                writer.writeheader()
+
+            # Write data row
+            writer.writerow(training_data)
 
     def get_parameters(self) -> Dict[str, Any]:
         return {
@@ -162,14 +224,20 @@ class TrainPointNetPlugin(ActionPlugin):
         best_overall_accuracy = 0.0
         best_overall_run = None
 
+        # Get starting run number for this session
+        base_run_number = self._get_next_run_number(output_dir)
+
         print(f"\n{'='*80}")
         print(f"Starting {repetitions} training run(s) with different random initializations")
+        print(f"Starting from run #{base_run_number}")
         print(f"{'='*80}")
 
         # Loop through repetitions
-        for run_number in range(1, repetitions + 1):
+        for rep_index in range(repetitions):
+            run_number = base_run_number + rep_index
+
             print(f"\n{'='*80}")
-            print(f"TRAINING RUN {run_number}/{repetitions}")
+            print(f"TRAINING RUN #{run_number} ({rep_index + 1}/{repetitions})")
             print(f"{'='*80}")
 
             # Set random seed using current timestamp for full randomness
@@ -182,11 +250,10 @@ class TrainPointNetPlugin(ActionPlugin):
             # Small delay to ensure different seeds for consecutive runs
             time.sleep(0.01)
 
-            # Create unique output directory based on parameters
-            # Format: pointnet_e{epochs}_bs{batch_size}_lr{lr}_tnet{yes/no}_p{patience}_run{X}_seed{seed}_{timestamp}
+            # Create unique output directory with simple naming
+            # Format: run_XXX_YYYYMMDD_HHMMSS
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            tnet_str = "tnet" if use_tnet else "notnet"
-            folder_name = f"pointnet_e{epochs}_bs{batch_size}_lr{learning_rate:.5f}_{tnet_str}_p{early_stopping_patience}_run{run_number}_seed{random_seed}_{timestamp}"
+            folder_name = f"run_{run_number:03d}_{timestamp}"
 
             # Combine base output dir with unique folder
             unique_output_dir = os.path.join(output_dir, folder_name)
@@ -292,7 +359,7 @@ class TrainPointNetPlugin(ActionPlugin):
 
                 # Update window title to show run number if multiple runs
                 if repetitions > 1:
-                    progress_window.setWindowTitle(f"PointNet Training Progress - Run {run_number}/{repetitions}")
+                    progress_window.setWindowTitle(f"PointNet Training Progress - Run #{run_number} ({rep_index + 1}/{repetitions})")
 
                 progress_window.show()
                 progress_window.training_started()
@@ -366,6 +433,8 @@ class TrainPointNetPlugin(ActionPlugin):
 
                 # Save training metadata
                 training_metadata = {
+                    'folder_name': folder_name,
+                    'timestamp': timestamp,
                     'num_points': int(num_points),
                     'num_features': int(num_features),
                     'num_classes': int(num_classes),
@@ -393,11 +462,18 @@ class TrainPointNetPlugin(ActionPlugin):
                 # Check if training was cancelled
                 was_cancelled = progress_window.training_cancelled
 
-                # Mark training as completed in progress window (don't close it)
+                # Mark training as completed in progress window
                 progress_window.training_completed(
                     training_metadata['best_val_accuracy'],
                     cancelled=was_cancelled
                 )
+
+                # Close the progress window immediately after completion
+                try:
+                    progress_window.close()
+                    print(f"\nProgress window for Run #{run_number} closed.")
+                except:
+                    pass  # Ignore errors if window already closed
 
                 # Print results
                 print("\n" + "="*80)
@@ -421,7 +497,7 @@ class TrainPointNetPlugin(ActionPlugin):
                             f"Best validation accuracy: {training_metadata['best_val_accuracy']:.2%}\n"
                             f"Epochs completed: {training_metadata['epochs_completed']}\n\n"
                             f"Best model saved to:\n{unique_output_dir}/\n\n"
-                            f"Note: The progress window remains open for your review."
+                            f"Training logged to: training_history.csv"
                         )
                     else:
                         QMessageBox.information(
@@ -431,7 +507,7 @@ class TrainPointNetPlugin(ActionPlugin):
                             f"Best validation accuracy: {training_metadata['best_val_accuracy']:.2%}\n"
                             f"Epochs completed: {training_metadata['epochs_completed']}\n\n"
                             f"Models saved to:\n{unique_output_dir}/\n\n"
-                            f"Note: The progress window remains open for your review."
+                            f"Training logged to: training_history.csv"
                         )
 
                 # Track this run's results
@@ -449,6 +525,30 @@ class TrainPointNetPlugin(ActionPlugin):
                 if training_metadata['best_val_accuracy'] > best_overall_accuracy:
                     best_overall_accuracy = training_metadata['best_val_accuracy']
                     best_overall_run = run_number
+
+                # Write to central tracking CSV
+                csv_data = {
+                    'folder_name': folder_name,
+                    'timestamp': timestamp,
+                    'run_number': run_number,
+                    'epochs': epochs,
+                    'batch_size': batch_size,
+                    'learning_rate': learning_rate,
+                    'val_split': val_split,
+                    'use_tnet': use_tnet,
+                    'early_stopping_patience': early_stopping_patience,
+                    'repetitions': repetitions,
+                    'random_seed': random_seed,
+                    'best_val_acc': training_metadata['best_val_accuracy'],
+                    'final_val_acc': training_metadata['final_val_accuracy'],
+                    'epochs_completed': training_metadata['epochs_completed'],
+                    'training_samples': training_metadata['training_samples'],
+                    'validation_samples': training_metadata['validation_samples'],
+                    'num_classes': training_metadata['num_classes'],
+                    'was_cancelled': was_cancelled
+                }
+                self._write_to_tracking_csv(output_dir, csv_data)
+                print(f"Training results logged to: {os.path.join(output_dir, 'training_history.csv')}")
 
             except Exception as e:
                 import traceback
@@ -486,19 +586,23 @@ class TrainPointNetPlugin(ActionPlugin):
             for result in all_run_results:
                 status = "CANCELLED" if result['was_cancelled'] else "COMPLETE"
                 best_marker = " ⭐ BEST" if result['run_number'] == best_overall_run else ""
-                print(f"Run {result['run_number']}: {result['best_val_accuracy']:.2%} ({result['epochs_completed']} epochs) [{status}]{best_marker}")
+                print(f"Run #{result['run_number']}: {result['best_val_accuracy']:.2%} ({result['epochs_completed']} epochs) [{status}]{best_marker}")
                 print(f"  Seed: {result['random_seed']}")
                 print(f"  Path: {result['output_dir']}")
             print(f"\nBest run: #{best_overall_run} with {best_overall_accuracy:.2%} validation accuracy")
+            print(f"\nAll results saved to: {os.path.join(output_dir, 'training_history.csv')}")
             print(f"{'='*80}")
 
             # Show summary message box
             summary_msg = f"Completed {len(all_run_results)} training run(s)\n\n"
-            summary_msg += f"Best result: Run #{best_overall_run} - {best_overall_accuracy:.2%}\n\n"
+            summary_msg += f"BEST RESULT: Run #{best_overall_run} - {best_overall_accuracy:.2%}\n\n"
             summary_msg += "All runs:\n"
             for result in all_run_results:
                 status = "✓" if not result['was_cancelled'] else "✗"
-                summary_msg += f"{status} Run {result['run_number']}: {result['best_val_accuracy']:.2%}\n"
+                best_marker = " <- BEST" if result['run_number'] == best_overall_run else ""
+                summary_msg += f"{status} Run #{result['run_number']}: {result['best_val_accuracy']:.2%}{best_marker}\n"
+            summary_msg += f"\nTracking file: training_history.csv\n"
+            summary_msg += f"\nAll training windows have been closed automatically."
 
             QMessageBox.information(
                 main_window,
