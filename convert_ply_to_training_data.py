@@ -91,6 +91,12 @@ def process_cluster(point_cloud, target_points=1024, compute_normals=True, compu
     """
     Process a cluster into training data format.
 
+    CRITICAL PIPELINE (must match inference exactly):
+    1. Check if enough points
+    2. NORMALIZE to unit sphere (ALL points)
+    3. Compute normals and eigenvalues on ALL NORMALIZED points
+    4. Sample to target_points (sampling XYZ, normals, eigenvalues together)
+
     Args:
         point_cloud: PointCloud object
         target_points: Number of points to sample (default: 1024)
@@ -106,45 +112,45 @@ def process_cluster(point_cloud, target_points=1024, compute_normals=True, compu
         print(f"    Skipping: only {point_cloud.size} points (need {target_points})")
         return None
 
-    # Sample to target points
-    if point_cloud.size > target_points:
-        # Random sampling
-        indices = np.random.choice(point_cloud.size, target_points, replace=False)
-        mask = np.zeros(point_cloud.size, dtype=bool)
-        mask[indices] = True
-        sampled_pc = point_cloud.get_subset(mask)
-    else:
-        sampled_pc = point_cloud
+    # CRITICAL: Normalize FIRST (on ALL points)
+    normalized_pc = normalize_point_cloud(point_cloud)
 
-    # Normalize
-    normalized_pc = normalize_point_cloud(sampled_pc)
-
-    # Get normalized XYZ
-    xyz_norm = normalized_pc.points  # (1024, 3)
-
-    # Compute normals if requested
+    # CRITICAL: Compute normals and eigenvalues on ALL normalized points (BEFORE downsampling)
+    # This ensures high-quality features computed from full neighborhood context
     if compute_normals:
         try:
             normalized_pc.estimate_normals(k=knn)
-            normals = normalized_pc.normals  # (1024, 3)
+            normals_full = normalized_pc.normals  # (n_points, 3)
         except Exception as e:
             print(f"    WARNING: Normal computation failed: {e}")
-            normals = np.zeros((target_points, 3), dtype=np.float32)
+            normals_full = np.zeros((normalized_pc.size, 3), dtype=np.float32)
     else:
-        normals = np.zeros((target_points, 3), dtype=np.float32)
+        normals_full = np.zeros((normalized_pc.size, 3), dtype=np.float32)
 
-    # Compute eigenvalues if requested
     if compute_eigenvalues:
         try:
-            eigenvalues = normalized_pc.get_eigenvalues(k=knn, smooth=True)  # (1024, 3)
+            eigenvalues_full = normalized_pc.get_eigenvalues(k=knn, smooth=True)  # (n_points, 3)
         except Exception as e:
             print(f"    WARNING: Eigenvalue computation failed: {e}")
-            eigenvalues = np.zeros((target_points, 3), dtype=np.float32)
+            eigenvalues_full = np.zeros((normalized_pc.size, 3), dtype=np.float32)
     else:
-        eigenvalues = np.zeros((target_points, 3), dtype=np.float32)
+        eigenvalues_full = np.zeros((normalized_pc.size, 3), dtype=np.float32)
 
-    # Combine features: [X, Y, Z, Nx, Ny, Nz, E1, E2, E3]
-    features = np.hstack([xyz_norm, normals, eigenvalues])  # (1024, 9)
+    # Combine ALL features: [X_norm, Y_norm, Z_norm, Nx, Ny, Nz, E1, E2, E3] (n_points, 9)
+    features_full = np.hstack([normalized_pc.points, normals_full, eigenvalues_full])
+
+    # NOW sample to target_points (after computing features on full cluster)
+    if features_full.shape[0] > target_points:
+        # Random sampling
+        indices = np.random.choice(features_full.shape[0], target_points, replace=False)
+        features = features_full[indices]
+    else:
+        # Use all points (pad if needed)
+        features = features_full
+        if features.shape[0] < target_points:
+            # Random duplication to reach target_points
+            indices = np.random.choice(features.shape[0], target_points - features.shape[0])
+            features = np.vstack([features, features[indices]])
 
     return features.astype(np.float32)
 
