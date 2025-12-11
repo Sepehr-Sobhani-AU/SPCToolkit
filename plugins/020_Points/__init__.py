@@ -1,0 +1,1 @@
+# Point cloud operations plugin category

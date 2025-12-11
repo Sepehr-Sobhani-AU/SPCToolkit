@@ -1,0 +1,1 @@
+# Cluster operations plugin category

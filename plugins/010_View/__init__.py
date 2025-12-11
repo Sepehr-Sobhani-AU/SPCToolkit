@@ -1,0 +1,1 @@
+# View operations plugin category
