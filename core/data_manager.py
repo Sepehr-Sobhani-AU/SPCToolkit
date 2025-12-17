@@ -242,26 +242,22 @@ class DataManager(QObject):
         # Update tree widget
         self.tree_widget.add_branch(str(uid), str(data_node.uid), data_node_result.params)
 
-        # Auto-cache the parent node since we just reconstructed it for analysis
-        # The reconstruction is already in memory from the analysis, so keep it cached
-        if not data_node.is_cached:
-            # Get the reconstructed point cloud from the analysis thread
-            # We need to reconstruct it to cache it
-            reconstructed_pc = self.reconstruct_branch(str(data_node.uid))
-            data_node.cached_point_cloud = reconstructed_pc
-            data_node.is_cached = True
-            data_node.cache_timestamp = __import__('time').time()
-
+        # Update UI to show cache status (thread may have cached the parent during analysis)
+        # The thread auto-caches if it had to reconstruct, so we just update the UI here
+        if data_node.is_cached:
             # Update UI to show cache checkbox as checked
+            # Block signals to prevent triggering on_item_checked which would call cache_branch()
             item = self.tree_widget.branches_dict.get(str(data_node.uid))
             if item:
+                self.tree_widget.blockSignals(True)
                 item.setCheckState(1, Qt.Checked)
+                self.tree_widget.blockSignals(False)
 
             # Update tooltip
             memory_usage = self.get_cache_memory_usage(str(data_node.uid))
             self.tree_widget.update_cache_tooltip(str(data_node.uid), memory_usage)
 
-            print(f"Auto-cached parent branch: {data_node.params} ({memory_usage})")
+            print(f"[CACHE STATUS] Parent is cached: {data_node.params} ({memory_usage})")
 
         # Hide parent and show only the new child result
         parent_uid_str = str(data_node.uid)
@@ -311,6 +307,12 @@ class DataManager(QObject):
         target_node = self.data_nodes.get_node(uid)
         if target_node is None:
             raise ValueError(f"DataNode with UID {uid} not found")
+
+        # CRITICAL: If the target itself is cached, return it immediately!
+        # No need to reconstruct anything if we already have the result
+        if target_node.is_cached and target_node.cached_point_cloud is not None:
+            print(f"[CACHE DIRECT HIT] Returning cached target: {target_node.params}")
+            return target_node.cached_point_cloud
 
         # Build path from target back to root (or first cached ancestor)
         path = [target_node]
@@ -437,6 +439,8 @@ class DataManager(QObject):
             visibility_status (dict): Dictionary of UUIDs to visibility states.
             zoom_extent (bool): Whether to zoom to the extent of the visible data
         """
+        import time
+
         points_to_show = np.empty((0, 3), dtype=np.float32)
         colors_to_show = np.empty((0, 3), dtype=np.float32)
         uids_to_show = [uid for uid, vis in visibility_status.items() if vis]
@@ -446,9 +450,29 @@ class DataManager(QObject):
             for uid in uids_to_show:
                 node = self.data_nodes.get_node(uuid.UUID(uid))
                 node_type = node.data_type
-                # Render point clouds
 
+                # Reconstruct the branch (will use cache if available)
                 point_cloud = self.reconstruct_branch(uid)
+
+                # Auto-cache visible branches since they're already in memory
+                # If not already cached, cache it now
+                if not node.is_cached:
+                    node.cached_point_cloud = point_cloud
+                    node.is_cached = True
+                    node.cache_timestamp = time.time()
+
+                    # Update UI to show cache checkbox as checked
+                    # Block signals to prevent triggering on_item_checked which would call cache_branch()
+                    item = self.tree_widget.branches_dict.get(uid)
+                    if item:
+                        self.tree_widget.blockSignals(True)
+                        item.setCheckState(1, Qt.Checked)
+                        self.tree_widget.blockSignals(False)
+
+                    # Update tooltip
+                    memory_usage = self.get_cache_memory_usage(uid)
+                    self.tree_widget.update_cache_tooltip(uid, memory_usage)
+                    print(f"[AUTO-CACHE] Cached visible branch: {node.params} ({memory_usage})")
 
                 points_to_show = np.append(points_to_show, point_cloud.points, axis=0)
                 if point_cloud.colors is not None:
@@ -498,7 +522,15 @@ class DataManager(QObject):
             print(f"Warning: Cannot cache branch {uid}, node not found")
             return
 
-        # Reconstruct the branch
+        # Check if already cached - if so, just update UI and return
+        if node.is_cached and node.cached_point_cloud is not None:
+            print(f"[CACHE] Branch already cached: {node.params}")
+            # Update UI tooltip (in case it wasn't set)
+            memory_usage = self.get_cache_memory_usage(uid)
+            self.tree_widget.update_cache_tooltip(uid, memory_usage)
+            return
+
+        # Reconstruct the branch (only if not already cached)
         point_cloud = self.reconstruct_branch(uid)
 
         # Store cache in the node
@@ -510,7 +542,7 @@ class DataManager(QObject):
         memory_usage = self.get_cache_memory_usage(uid)
         self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
-        print(f"Cached branch: {node.params} ({memory_usage})")
+        print(f"[CACHE] Cached branch: {node.params} ({memory_usage})")
 
     def uncache_branch(self, uid: str):
         """

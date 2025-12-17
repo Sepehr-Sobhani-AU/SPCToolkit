@@ -182,15 +182,27 @@ class AnalysisThread(threading.Thread):
         return new objects. This is memory efficient.
         """
         try:
+            import time
+
             # Use data_node directly (no copy needed - read-only access is thread-safe)
             data_node_to_process = self.data_node
 
             # Handle reconstruction in background thread if data is not a point_cloud
             if data_node_to_process.data_type != "point_cloud":
-                print(f"Reconstructing branch in background thread...")
-                # Reconstruct the branch in the background thread
+                print(f"[THREAD] Reconstructing branch in background thread...")
+                # Use DataManager.reconstruct_branch() which has cache optimization
+                data_manager = global_variables.global_data_manager
                 from core.data_node import DataNode
-                point_cloud = self._reconstruct_branch_in_thread()
+
+                point_cloud = data_manager.reconstruct_branch(self.node_uid)
+
+                # Auto-cache the parent since we just reconstructed it for analysis
+                if not data_node_to_process.is_cached:
+                    data_node_to_process.cached_point_cloud = point_cloud
+                    data_node_to_process.is_cached = True
+                    data_node_to_process.cache_timestamp = time.time()
+                    print(f"[THREAD AUTO-CACHE] Cached parent after reconstruction: {data_node_to_process.params}")
+
                 # Create a new temporary DataNode for the reconstructed point cloud
                 reconstructed_data_node = DataNode(
                     params=data_node_to_process.params,
@@ -216,7 +228,7 @@ class AnalysisThread(threading.Thread):
                 'result': result,
                 'result_type': result_type,
                 'dependencies': dependencies,
-                'data_node': data_node_to_process,
+                'data_node': self.data_node,  # Pass original data_node (which now may be cached)
                 'analysis_type': self.analysis_type,
                 'params': self.params
             }
@@ -234,41 +246,3 @@ class AnalysisThread(threading.Thread):
 
             print(f"Exception in analysis thread: {str(e)}")
 
-    def _reconstruct_branch_in_thread(self):
-        """
-        Reconstruct branch in background thread.
-        This is a copy of DataManager.reconstruct_branch() but runs in the background.
-        """
-        import uuid as uuid_module
-        from core.node_reconstruction_manager import NodeReconstructionManager
-
-        # Get data_nodes from global_variables
-        data_nodes = global_variables.global_data_nodes
-        reconstruction_manager = NodeReconstructionManager()
-
-        # Build hierarchy list
-        data_node_uids = []
-        uid = uuid_module.UUID(self.node_uid) if isinstance(self.node_uid, str) else self.node_uid
-        data_node = data_nodes.get_node(uid)
-
-        while data_node.parent_uid is not None:
-            data_node_uids.append(data_node.uid)
-            parent_uid = data_node.parent_uid
-            data_node = data_nodes.get_node(parent_uid)
-
-        data_node_uids.append(data_node.uid)
-        data_node_uids.reverse()
-
-        # Reconstruct from root to target
-        uid = data_node_uids[0]
-        data_node = data_nodes.get_node(uid)
-        point_cloud = data_node.data
-
-        for uid in data_node_uids[1:]:
-            data_node = data_nodes.get_node(uid)
-            if data_node.data_type == "point_cloud":
-                point_cloud = data_node.data
-            else:
-                point_cloud = reconstruction_manager.reconstruct_node(point_cloud, data_node)
-
-        return point_cloud
