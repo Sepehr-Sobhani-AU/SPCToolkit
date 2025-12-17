@@ -57,8 +57,8 @@ class TreeStructureWidget(QTreeWidget):
         if is_root:
             # Root nodes are always "cached" (data is in memory)
             item.setCheckState(1, Qt.Checked)
-            # Make cache checkbox non-editable for root nodes
-            item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+            # Store that this is a root node (we'll prevent unchecking in on_item_checked)
+            item.setData(1, Qt.UserRole, "root_cached")
         else:
             item.setCheckState(1, Qt.Unchecked)
 
@@ -161,6 +161,14 @@ class TreeStructureWidget(QTreeWidget):
                 self.branch_visibility_changed.emit(self.visibility_status)
             elif column == 1:
                 # Cache checkbox changed - use singleton pattern (NO signal!)
+
+                # Check if this is a root node (always cached)
+                is_root = item.data(1, Qt.UserRole) == "root_cached"
+                if is_root and item.checkState(1) == Qt.Unchecked:
+                    # Prevent unchecking root nodes - restore checked state
+                    item.setCheckState(1, Qt.Checked)
+                    return
+
                 is_cached = item.checkState(1) == Qt.Checked
                 data_manager = global_variables.global_data_manager
                 if data_manager:
