@@ -9,7 +9,6 @@ class TreeStructureWidget(QTreeWidget):
 
     Attributes:
         branch_visibility_changed (pyqtSignal): Signal emitted when branch visibility is toggled.
-        branch_cache_changed (pyqtSignal): Signal emitted when branch cache status is toggled.
         branch_hierarchy_updated (pyqtSignal): Signal emitted when branch hierarchy is modified.
         selected_branches_changed (pyqtSignal): Signal emitted when branches are selected.
     """
@@ -17,7 +16,6 @@ class TreeStructureWidget(QTreeWidget):
     # Signals
     branch_added = pyqtSignal(dict)
     branch_visibility_changed = pyqtSignal(dict)
-    branch_cache_changed = pyqtSignal(str, bool)  # uid, is_cached
     branch_hierarchy_updated = pyqtSignal(dict)
     branch_selection_changed = pyqtSignal(list)
 
@@ -27,7 +25,6 @@ class TreeStructureWidget(QTreeWidget):
         # Internal dictionaries to manage tree branches
         self.branches_dict = {}
         self.visibility_status = {}
-        self.cache_status = {}
 
         # Configure tree widget properties
         self.setColumnCount(2)  # Column 0: Branch name/visibility, Column 1: Cache
@@ -38,7 +35,7 @@ class TreeStructureWidget(QTreeWidget):
         self.itemChanged.connect(self.on_item_checked)
         self.itemSelectionChanged.connect(self.on_selection_changed)
 
-    def add_branch(self, uuid: str, parent_uuid: str, name: str):
+    def add_branch(self, uuid: str, parent_uuid: str, name: str, is_root: bool = False):
         """
         Adds a new branch to the tree.
 
@@ -46,6 +43,7 @@ class TreeStructureWidget(QTreeWidget):
             uuid (str): Unique identifier for the branch.
             parent_uuid (str): Unique identifier of the parent branch. None for top-level branches.
             name (str): Name of the branch.
+            is_root (bool): Whether this is a root PointCloud node (always cached).
         """
         # Create a new tree item for the branch
         item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
@@ -56,7 +54,13 @@ class TreeStructureWidget(QTreeWidget):
         item.setFlags(item.flags() | Qt.ItemIsEditable)
 
         # Column 1: Cache checkbox
-        item.setCheckState(1, Qt.Unchecked)
+        if is_root:
+            # Root nodes are always "cached" (data is in memory)
+            item.setCheckState(1, Qt.Checked)
+            # Make cache checkbox non-editable for root nodes
+            item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+        else:
+            item.setCheckState(1, Qt.Unchecked)
 
         # If a parent UUID is provided, find the parent and add as a child
         if parent_uuid and parent_uuid in self.branches_dict:
@@ -69,7 +73,6 @@ class TreeStructureWidget(QTreeWidget):
         # Update internal dictionaries
         self.branches_dict[uuid] = item
         self.visibility_status[uuid] = True
-        self.cache_status[uuid] = False
 
         # Emit the visibility_status update signal
         self.branch_added.emit(self.visibility_status)
@@ -148,6 +151,8 @@ class TreeStructureWidget(QTreeWidget):
             item: The tree item that was checked/unchecked.
             column: The column index (0 for visibility, 1 for cache).
         """
+        from config.config import global_variables
+
         uid = item.data(0, Qt.UserRole)
         if uid:
             if column == 0:
@@ -155,10 +160,14 @@ class TreeStructureWidget(QTreeWidget):
                 self.visibility_status[uid] = item.checkState(0) == Qt.Checked
                 self.branch_visibility_changed.emit(self.visibility_status)
             elif column == 1:
-                # Cache checkbox changed
+                # Cache checkbox changed - use singleton pattern (NO signal!)
                 is_cached = item.checkState(1) == Qt.Checked
-                self.cache_status[uid] = is_cached
-                self.branch_cache_changed.emit(uid, is_cached)
+                data_manager = global_variables.global_data_manager
+                if data_manager:
+                    if is_cached:
+                        data_manager.cache_branch(uid)
+                    else:
+                        data_manager.uncache_branch(uid)
 
     # TODO: Fix selecting multiple items using Ctrl key
     def on_selection_changed(self):

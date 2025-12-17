@@ -59,7 +59,6 @@ class DataManager(QObject):
         self.tree_widget.branch_visibility_changed.connect(self._on_branch_visibility_changed)
         self.tree_widget.branch_added.connect(self._on_branch_added)
         self.tree_widget.branch_selection_changed.connect(self._on_branch_selection_changed)
-        self.tree_widget.branch_cache_changed.connect(self._on_branch_cache_changed)
         self.dialog_boxes_manager.analysis_params.connect(self.apply_analysis)
         # self.tree_widget.branch_deleted.connect(self.on_branch_deleted)
         # self.tree_widget.branch_moved.connect(self.on_branch_moved)
@@ -79,8 +78,12 @@ class DataManager(QObject):
             # Add the DataNode to the DataNodes manager
             uid = self.data_nodes.add_node(data_node)
 
-            # Update the TreeStructureWidget
-            self.tree_widget.add_branch(str(uid), "", point_cloud.name)
+            # Update the TreeStructureWidget - root nodes are always "cached"
+            self.tree_widget.add_branch(str(uid), "", point_cloud.name, is_root=True)
+
+            # Set tooltip showing memory usage for root node
+            memory_usage = self.get_cache_memory_usage(str(uid))
+            self.tree_widget.update_cache_tooltip(str(uid), memory_usage)
 
         except Exception as e:
             self.error_occurred.emit(f"Failed to load point cloud: {file_path}. Error: {str(e)}")
@@ -243,11 +246,11 @@ class DataManager(QObject):
     # TODO: Validations
     def reconstruct_branch(self, uid) -> PointCloud:
         """
-        Reconstruct a branch by applying transformations from root (or nearest cached ancestor) to target.
+        Reconstruct a branch by applying transformations from nearest cached ancestor to target.
 
-        This method builds the hierarchy from target to root, then finds the nearest cached ancestor.
-        Reconstruction starts from the cached point cloud (if any) rather than always from root,
-        significantly speeding up deep hierarchies.
+        This method steps up the hierarchy checking each ancestor for a cache.
+        When a cached ancestor is found (or root is reached), reconstruction starts from there.
+        This is more efficient than the previous approach of always building the full hierarchy.
 
         Args:
             uid: UUID of the branch to reconstruct (str or uuid.UUID).
@@ -258,54 +261,57 @@ class DataManager(QObject):
         Raises:
             ValueError: If the data node is not found.
         """
-        # Step up the hierarchy until the root data node is reached and create a list of data node UUIDs
-        # in the hierarchy.
         # TODO: There is inconsistancy in type of uid, it is str in some places and uuid.UUID in others.
-        self.data_node_uids = []
         if isinstance(uid, str):
             uid = uuid.UUID(uid)
-        data_node = self.data_nodes.get_node(uid)
 
-        # Check if node exists
-        if data_node is None:
+        # Get target node
+        target_node = self.data_nodes.get_node(uid)
+        if target_node is None:
             raise ValueError(f"DataNode with UID {uid} not found")
 
-        while data_node.parent_uid is not None:
-            self.data_node_uids.append(data_node.uid)
-            parent_uid = data_node.parent_uid
-            data_node = self.data_nodes.get_node(parent_uid)
+        # Build path from target back to root (or first cached ancestor)
+        path = [target_node]
+        current_node = target_node
 
-        self.data_node_uids.append(data_node.uid)
+        # Step up hierarchy, checking for cached ancestors
+        while current_node.parent_uid is not None:
+            parent_node = self.data_nodes.get_node(current_node.parent_uid)
+            if parent_node is None:
+                break
 
-        # Reverse the list of data node UUIDs to step back down the hierarchy from the root data node to the current data node.
-        self.data_node_uids.reverse()
+            path.append(parent_node)
 
-        # Find the nearest cached ancestor to start reconstruction from
-        start_index = 0
-        point_cloud = None
+            # Check if this parent is cached (or is root PointCloud with data in memory)
+            if parent_node.is_cached and parent_node.cached_point_cloud is not None:
+                # Found cached ancestor - stop here
+                break
+            elif parent_node.data_type == "point_cloud" and parent_node.parent_uid is None:
+                # This is root PointCloud - stop here (data always in memory)
+                break
 
-        for i, node_uid in enumerate(self.data_node_uids):
-            node = self.data_nodes.get_node(node_uid)
-            if node.is_cached and node.cached_point_cloud is not None:
-                # Found a cached ancestor - start from here
-                start_index = i
-                point_cloud = node.cached_point_cloud
-                # Continue searching for a closer cached ancestor
+            current_node = parent_node
 
-        # If no cache found, start from root as before
-        if point_cloud is None:
-            uid = self.data_node_uids[0]
-            data_node = self.data_nodes.get_node(uid)
-            point_cloud = data_node.data
-            start_index = 0
+        # Reverse path to go from start point (cache/root) to target
+        path.reverse()
 
-        # Apply transformations from the start point (cache or root) to the target
-        for uid in self.data_node_uids[start_index + 1:]:
-            data_node = self.data_nodes.get_node(uid)
-            if data_node.data_type == "point_cloud":
-                point_cloud = data_node.data
+        # Start from the first node (either cached ancestor or root)
+        start_node = path[0]
+        if start_node.is_cached and start_node.cached_point_cloud is not None:
+            # Start from cached reconstruction
+            point_cloud = start_node.cached_point_cloud
+        else:
+            # Start from root PointCloud data
+            point_cloud = start_node.data
+
+        # Apply transformations from start to target
+        for node in path[1:]:
+            if node.data_type == "point_cloud":
+                # Direct PointCloud (shouldn't happen in normal hierarchy, but handle it)
+                point_cloud = node.data
             else:
-                point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, data_node)
+                # Apply transformation
+                point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, node)
 
         return point_cloud
 
@@ -433,19 +439,6 @@ class DataManager(QObject):
     #     """
     #     self.move_branch(uids, new_parent_uid)
 
-    def _on_branch_cache_changed(self, uid: str, is_cached: bool):
-        """
-        Handle cache status changes from the tree structure widget.
-
-        Args:
-            uid (str): UUID of the branch whose cache status changed.
-            is_cached (bool): Whether caching is now enabled for this branch.
-        """
-        if is_cached:
-            self.cache_branch(uid)
-        else:
-            self.uncache_branch(uid)
-
     def cache_branch(self, uid: str):
         """
         Cache the reconstruction result for a branch.
@@ -565,7 +558,6 @@ class DataManager(QObject):
             item = self.tree_widget.branches_dict.get(node_uid)
             if item:
                 item.setCheckState(1, Qt.Unchecked)
-                self.tree_widget.cache_status[node_uid] = False
 
         if nodes_to_invalidate:
             print(f"Invalidated {len(nodes_to_invalidate)} descendant caches")
