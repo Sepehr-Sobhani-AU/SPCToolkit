@@ -25,6 +25,9 @@ class DataNode:
         parent_uid (UUID): The UUID of the parent node, if applicable.
         depends_on (List[UUID]): A list of UUIDs that this node depends on.
         tags (List[str]): Tags to classify the node (e.g., 'raw', 'derived', 'subsampled').
+        is_cached (bool): Flag indicating if this branch should be cached for faster reconstruction.
+        cached_point_cloud (PointCloud): Runtime-only cached reconstruction result (not serialized).
+        cache_timestamp (float): Timestamp when cache was created (for debugging/validation, runtime-only).
     """
 
     def __init__(
@@ -36,7 +39,8 @@ class DataNode:
         data_name: str = "",
         parent_uid: uuid.UUID = None,
         depends_on: List[uuid.UUID] = None,
-        tags: List[str] = None
+        tags: List[str] = None,
+        is_cached: bool = False
     ):
         """
         Initializes a new DataNode instance.
@@ -48,6 +52,7 @@ class DataNode:
             depends_on (List[UUID], optional): List of dependent nodes. Defaults to None.
             tags (List[str], optional): Tags for classification. Defaults to None.
             data_type (str): The type of data stored in the node.
+            is_cached (bool): Whether this branch should be cached. Defaults to False.
         """
         self.uid: uuid.UUID = uuid.uuid4()
         self.params: str = params
@@ -58,6 +63,11 @@ class DataNode:
         self.parent_uid: uuid.UUID = parent_uid
         self.depends_on: List[uuid.UUID] = depends_on if depends_on else []
         self.tags: List[str] = tags if tags else []
+
+        # Cache attributes
+        self.is_cached: bool = is_cached
+        self.cached_point_cloud: Any = None  # Runtime-only, not serialized
+        self.cache_timestamp: float = None   # Runtime-only, not serialized
 
     def __repr__(self) -> str:
         """

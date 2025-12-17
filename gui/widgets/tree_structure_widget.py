@@ -9,6 +9,7 @@ class TreeStructureWidget(QTreeWidget):
 
     Attributes:
         branch_visibility_changed (pyqtSignal): Signal emitted when branch visibility is toggled.
+        branch_cache_changed (pyqtSignal): Signal emitted when branch cache status is toggled.
         branch_hierarchy_updated (pyqtSignal): Signal emitted when branch hierarchy is modified.
         selected_branches_changed (pyqtSignal): Signal emitted when branches are selected.
     """
@@ -16,6 +17,7 @@ class TreeStructureWidget(QTreeWidget):
     # Signals
     branch_added = pyqtSignal(dict)
     branch_visibility_changed = pyqtSignal(dict)
+    branch_cache_changed = pyqtSignal(str, bool)  # uid, is_cached
     branch_hierarchy_updated = pyqtSignal(dict)
     branch_selection_changed = pyqtSignal(list)
 
@@ -25,9 +27,11 @@ class TreeStructureWidget(QTreeWidget):
         # Internal dictionaries to manage tree branches
         self.branches_dict = {}
         self.visibility_status = {}
+        self.cache_status = {}
 
         # Configure tree widget properties
-        self.setHeaderHidden(True)
+        self.setColumnCount(2)  # Column 0: Branch name/visibility, Column 1: Cache
+        self.setHeaderLabels(["Branch", "Cache"])
         self.setSelectionMode(QTreeWidget.MultiSelection)
 
         # Connect signals
@@ -44,10 +48,15 @@ class TreeStructureWidget(QTreeWidget):
             name (str): Name of the branch.
         """
         # Create a new tree item for the branch
-        item = QTreeWidgetItem([name])
+        item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
         item.setData(0, Qt.UserRole, uuid)
+
+        # Column 0: Visibility checkbox
         item.setCheckState(0, Qt.Checked)
         item.setFlags(item.flags() | Qt.ItemIsEditable)
+
+        # Column 1: Cache checkbox
+        item.setCheckState(1, Qt.Unchecked)
 
         # If a parent UUID is provided, find the parent and add as a child
         if parent_uuid and parent_uuid in self.branches_dict:
@@ -60,6 +69,7 @@ class TreeStructureWidget(QTreeWidget):
         # Update internal dictionaries
         self.branches_dict[uuid] = item
         self.visibility_status[uuid] = True
+        self.cache_status[uuid] = False
 
         # Emit the visibility_status update signal
         self.branch_added.emit(self.visibility_status)
@@ -130,14 +140,25 @@ class TreeStructureWidget(QTreeWidget):
     #             self.visibility_status[uid] = new_status
     #             self.branches_dict[uid].setCheckState(0, Qt.Checked if new_status else Qt.Unchecked)
 
-    def on_item_checked(self, item):
+    def on_item_checked(self, item, column):
         """
-        Handles item check state changes by user and updates visibility status.
+        Handles item check state changes by user and updates visibility or cache status.
+
+        Args:
+            item: The tree item that was checked/unchecked.
+            column: The column index (0 for visibility, 1 for cache).
         """
         uid = item.data(0, Qt.UserRole)
         if uid:
-            self.visibility_status[uid] = item.checkState(0) == Qt.Checked
-            self.branch_visibility_changed.emit(self.visibility_status)
+            if column == 0:
+                # Visibility checkbox changed
+                self.visibility_status[uid] = item.checkState(0) == Qt.Checked
+                self.branch_visibility_changed.emit(self.visibility_status)
+            elif column == 1:
+                # Cache checkbox changed
+                is_cached = item.checkState(1) == Qt.Checked
+                self.cache_status[uid] = is_cached
+                self.branch_cache_changed.emit(uid, is_cached)
 
     # TODO: Fix selecting multiple items using Ctrl key
     def on_selection_changed(self):
@@ -198,3 +219,19 @@ class TreeStructureWidget(QTreeWidget):
             parent_uuid = parent_item.data(0, Qt.UserRole) if parent_item else None
             hierarchy[uid] = parent_uuid
         return hierarchy
+
+    def update_cache_tooltip(self, uid: str, memory_usage: str = None):
+        """
+        Update the tooltip for the cache column to show memory usage.
+
+        Args:
+            uid (str): UUID of the branch.
+            memory_usage (str, optional): Memory usage string (e.g., "12.34 MB").
+                                         If None, shows "Not cached".
+        """
+        item = self.branches_dict.get(uid)
+        if item:
+            if memory_usage:
+                item.setToolTip(1, f"Cached: {memory_usage}")
+            else:
+                item.setToolTip(1, "Not cached")

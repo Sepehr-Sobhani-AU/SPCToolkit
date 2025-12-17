@@ -4,7 +4,7 @@ from config.config import global_variables
 import uuid
 
 import numpy as np
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal, Qt
 
 from core.node_reconstruction_manager import NodeReconstructionManager
 from services.file_manager import FileManager
@@ -59,6 +59,7 @@ class DataManager(QObject):
         self.tree_widget.branch_visibility_changed.connect(self._on_branch_visibility_changed)
         self.tree_widget.branch_added.connect(self._on_branch_added)
         self.tree_widget.branch_selection_changed.connect(self._on_branch_selection_changed)
+        self.tree_widget.branch_cache_changed.connect(self._on_branch_cache_changed)
         self.dialog_boxes_manager.analysis_params.connect(self.apply_analysis)
         # self.tree_widget.branch_deleted.connect(self.on_branch_deleted)
         # self.tree_widget.branch_moved.connect(self.on_branch_moved)
@@ -241,6 +242,22 @@ class DataManager(QObject):
     # TODO: Docstrings
     # TODO: Validations
     def reconstruct_branch(self, uid) -> PointCloud:
+        """
+        Reconstruct a branch by applying transformations from root (or nearest cached ancestor) to target.
+
+        This method builds the hierarchy from target to root, then finds the nearest cached ancestor.
+        Reconstruction starts from the cached point cloud (if any) rather than always from root,
+        significantly speeding up deep hierarchies.
+
+        Args:
+            uid: UUID of the branch to reconstruct (str or uuid.UUID).
+
+        Returns:
+            PointCloud: The reconstructed point cloud.
+
+        Raises:
+            ValueError: If the data node is not found.
+        """
         # Step up the hierarchy until the root data node is reached and create a list of data node UUIDs
         # in the hierarchy.
         # TODO: There is inconsistancy in type of uid, it is str in some places and uuid.UUID in others.
@@ -260,27 +277,36 @@ class DataManager(QObject):
 
         self.data_node_uids.append(data_node.uid)
 
-
         # Reverse the list of data node UUIDs to step back down the hierarchy from the root data node to the current data node.
         self.data_node_uids.reverse()
 
-        # Apply the analysis reconstruction to 'data_node_uuids' list of data nodes recursively.
-        # The first data node in the list is the root and is a PointCloud instance.
-        # The AnalysisReconstruction class will be used as a recursive function, it will apply the analysis reconstruction
-        # to all data nodes in the hierarchy.
-        # It will get a PointCloud instance and a DataNode instance as input and return a PointCloud instance.
-        # So, each time the AnalysisReconstruction class is called, it will return a PointCloud instance that will be used
-        # as input for the next call. Also, the DataNode instance will be the next item in 'data_node_uuids' list.
+        # Find the nearest cached ancestor to start reconstruction from
+        start_index = 0
+        point_cloud = None
 
-        uid = self.data_node_uids[0]
-        data_node = self.data_nodes.get_node(uid)
-        point_cloud = data_node.data
-        for uid in self.data_node_uids[1:]:
+        for i, node_uid in enumerate(self.data_node_uids):
+            node = self.data_nodes.get_node(node_uid)
+            if node.is_cached and node.cached_point_cloud is not None:
+                # Found a cached ancestor - start from here
+                start_index = i
+                point_cloud = node.cached_point_cloud
+                # Continue searching for a closer cached ancestor
+
+        # If no cache found, start from root as before
+        if point_cloud is None:
+            uid = self.data_node_uids[0]
+            data_node = self.data_nodes.get_node(uid)
+            point_cloud = data_node.data
+            start_index = 0
+
+        # Apply transformations from the start point (cache or root) to the target
+        for uid in self.data_node_uids[start_index + 1:]:
             data_node = self.data_nodes.get_node(uid)
             if data_node.data_type == "point_cloud":
                 point_cloud = data_node.data
             else:
                 point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, data_node)
+
         return point_cloud
 
     # def validate_dependency(self, uid: str) -> bool:
@@ -406,6 +432,163 @@ class DataManager(QObject):
     #         new_parent_uid (str): UUID of the new parent branch.
     #     """
     #     self.move_branch(uids, new_parent_uid)
+
+    def _on_branch_cache_changed(self, uid: str, is_cached: bool):
+        """
+        Handle cache status changes from the tree structure widget.
+
+        Args:
+            uid (str): UUID of the branch whose cache status changed.
+            is_cached (bool): Whether caching is now enabled for this branch.
+        """
+        if is_cached:
+            self.cache_branch(uid)
+        else:
+            self.uncache_branch(uid)
+
+    def cache_branch(self, uid: str):
+        """
+        Cache the reconstruction result for a branch.
+
+        Args:
+            uid (str): UUID of the branch to cache.
+        """
+        import time
+
+        node = self.data_nodes.get_node(uuid.UUID(uid))
+        if node is None:
+            print(f"Warning: Cannot cache branch {uid}, node not found")
+            return
+
+        # Reconstruct the branch
+        point_cloud = self.reconstruct_branch(uid)
+
+        # Store cache in the node
+        node.cached_point_cloud = point_cloud
+        node.is_cached = True
+        node.cache_timestamp = time.time()
+
+        # Update UI tooltip
+        memory_usage = self.get_cache_memory_usage(uid)
+        self.tree_widget.update_cache_tooltip(uid, memory_usage)
+
+        print(f"Cached branch: {node.params} ({memory_usage})")
+
+    def uncache_branch(self, uid: str):
+        """
+        Remove cached data for a branch.
+
+        Args:
+            uid (str): UUID of the branch to uncache.
+        """
+        node = self.data_nodes.get_node(uuid.UUID(uid))
+        if node is None:
+            print(f"Warning: Cannot uncache branch {uid}, node not found")
+            return
+
+        # Clear cache
+        node.cached_point_cloud = None
+        node.is_cached = False
+        node.cache_timestamp = None
+
+        # Update UI tooltip
+        self.tree_widget.update_cache_tooltip(uid, None)
+
+        print(f"Uncached branch: {node.params}")
+
+    def get_cache_memory_usage(self, uid: str) -> str:
+        """
+        Calculate approximate memory usage of cached point cloud.
+
+        Args:
+            uid (str): UUID of the branch.
+
+        Returns:
+            str: Memory usage in human-readable format (e.g., "12.34 MB").
+        """
+        node = self.data_nodes.get_node(uuid.UUID(uid))
+        if node is None or not node.is_cached or node.cached_point_cloud is None:
+            return "0 MB"
+
+        pc = node.cached_point_cloud
+        bytes_used = 0
+
+        # Calculate memory for points
+        if hasattr(pc, 'points') and pc.points is not None:
+            bytes_used += pc.points.nbytes
+
+        # Calculate memory for colors
+        if hasattr(pc, 'colors') and pc.colors is not None:
+            bytes_used += pc.colors.nbytes
+
+        # Calculate memory for normals
+        if hasattr(pc, 'normals') and pc.normals is not None:
+            bytes_used += pc.normals.nbytes
+
+        # Calculate memory for attributes
+        if hasattr(pc, 'attributes') and pc.attributes is not None:
+            for key, value in pc.attributes.items():
+                if hasattr(value, 'nbytes'):
+                    bytes_used += value.nbytes
+
+        mb_used = bytes_used / (1024 * 1024)
+        return f"{mb_used:.2f} MB"
+
+    def invalidate_descendant_caches(self, uid: str):
+        """
+        Invalidate all caches that depend on this branch.
+
+        This should be called when a branch is modified to ensure descendant
+        caches are rebuilt. Currently not used since nodes are immutable (only
+        created, not modified), but useful for future features.
+
+        Args:
+            uid (str): UUID of the branch that was modified.
+        """
+        nodes_to_invalidate = []
+        uid_obj = uuid.UUID(uid)
+
+        # Find all descendants that have caches
+        for node_uid, node in self.data_nodes.data_nodes.items():
+            if self._is_descendant_of(node, uid_obj) and node.is_cached:
+                nodes_to_invalidate.append(str(node_uid))
+
+        # Clear their caches
+        for node_uid in nodes_to_invalidate:
+            node = self.data_nodes.get_node(uuid.UUID(node_uid))
+            node.cached_point_cloud = None
+            node.cache_timestamp = None
+            # Note: We keep is_cached=True so user preference is preserved
+            # The cache will be rebuilt next time it's accessed
+
+            # Update UI to show cache is stale/needs rebuild
+            item = self.tree_widget.branches_dict.get(node_uid)
+            if item:
+                item.setCheckState(1, Qt.Unchecked)
+                self.tree_widget.cache_status[node_uid] = False
+
+        if nodes_to_invalidate:
+            print(f"Invalidated {len(nodes_to_invalidate)} descendant caches")
+
+    def _is_descendant_of(self, node: DataNode, ancestor_uid: uuid.UUID) -> bool:
+        """
+        Check if a node is a descendant of the specified ancestor.
+
+        Args:
+            node: The node to check.
+            ancestor_uid: UUID of the potential ancestor.
+
+        Returns:
+            bool: True if node is a descendant of ancestor_uid.
+        """
+        current = node
+        while current.parent_uid is not None:
+            if current.parent_uid == ancestor_uid:
+                return True
+            current = self.data_nodes.get_node(current.parent_uid)
+            if current is None:
+                break
+        return False
 
     # Render visible data nodes in the viewer widget
 
