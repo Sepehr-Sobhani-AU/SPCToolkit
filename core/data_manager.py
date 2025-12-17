@@ -242,6 +242,48 @@ class DataManager(QObject):
         # Update tree widget
         self.tree_widget.add_branch(str(uid), str(data_node.uid), data_node_result.params)
 
+        # Auto-cache the parent node since we just reconstructed it for analysis
+        # The reconstruction is already in memory from the analysis, so keep it cached
+        if not data_node.is_cached:
+            # Get the reconstructed point cloud from the analysis thread
+            # We need to reconstruct it to cache it
+            reconstructed_pc = self.reconstruct_branch(str(data_node.uid))
+            data_node.cached_point_cloud = reconstructed_pc
+            data_node.is_cached = True
+            data_node.cache_timestamp = __import__('time').time()
+
+            # Update UI to show cache checkbox as checked
+            item = self.tree_widget.branches_dict.get(str(data_node.uid))
+            if item:
+                item.setCheckState(1, Qt.Checked)
+
+            # Update tooltip
+            memory_usage = self.get_cache_memory_usage(str(data_node.uid))
+            self.tree_widget.update_cache_tooltip(str(data_node.uid), memory_usage)
+
+            print(f"Auto-cached parent branch: {data_node.params} ({memory_usage})")
+
+        # Hide parent and show only the new child result
+        parent_uid_str = str(data_node.uid)
+        child_uid_str = str(uid)
+
+        # Update visibility status
+        if parent_uid_str in self.tree_widget.visibility_status:
+            self.tree_widget.visibility_status[parent_uid_str] = False
+        self.tree_widget.visibility_status[child_uid_str] = True
+
+        # Update UI checkboxes
+        parent_item = self.tree_widget.branches_dict.get(parent_uid_str)
+        if parent_item:
+            parent_item.setCheckState(0, Qt.Unchecked)
+
+        child_item = self.tree_widget.branches_dict.get(child_uid_str)
+        if child_item:
+            child_item.setCheckState(0, Qt.Checked)
+
+        # Trigger visibility update to render the child
+        self.tree_widget.branch_visibility_changed.emit(self.tree_widget.visibility_status)
+
     # TODO: Docstrings
     # TODO: Validations
     def reconstruct_branch(self, uid) -> PointCloud:
@@ -300,9 +342,11 @@ class DataManager(QObject):
         if start_node.is_cached and start_node.cached_point_cloud is not None:
             # Start from cached reconstruction
             point_cloud = start_node.cached_point_cloud
+            print(f"[CACHE HIT] Starting from cached node: {start_node.params} | Path length: {len(path)} | Steps saved: {len(path)-1}")
         else:
             # Start from root PointCloud data
             point_cloud = start_node.data
+            print(f"[CACHE MISS] Starting from root: {start_node.params} | Path length: {len(path)} | Full reconstruction")
 
         # Apply transformations from start to target
         for node in path[1:]:
@@ -311,6 +355,7 @@ class DataManager(QObject):
                 point_cloud = node.data
             else:
                 # Apply transformation
+                print(f"[RECONSTRUCTION] Applying {node.data_type} transformation for {node.params}")
                 point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, node)
 
         return point_cloud
