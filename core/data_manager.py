@@ -254,7 +254,7 @@ class DataManager(QObject):
         self.tree_widget.add_branch(str(uid), str(data_node.uid), data_node_result.params)
 
         # Show memory usage for the new branch
-        if data_node_result.memory_size:
+        if hasattr(data_node_result, 'memory_size') and data_node_result.memory_size:
             self.tree_widget.update_cache_tooltip(str(uid), data_node_result.memory_size)
 
         # Update UI to show cache status (thread may have cached the parent during analysis)
@@ -382,18 +382,29 @@ class DataManager(QObject):
         Update memory labels for all branches in the tree.
 
         This should be called after loading a project to display stored memory sizes.
+        For old projects without memory_size, calculates it for all nodes.
         """
         for uid, node in self.data_nodes.data_nodes.items():
             uid_str = str(uid)
             if uid_str in self.tree_widget.branches_dict:
-                # Use stored memory size if available
-                if node.memory_size:
+                # Check if memory_size attribute exists and has a value
+                if hasattr(node, 'memory_size') and node.memory_size:
+                    # Use stored memory size
                     self.tree_widget.update_cache_tooltip(uid_str, node.memory_size)
-                # Otherwise calculate for point_cloud types only (fast, no reconstruction)
-                elif node.data_type == "point_cloud":
-                    memory_size = self._calculate_point_cloud_memory(node.data)
-                    node.memory_size = memory_size  # Store it
-                    self.tree_widget.update_cache_tooltip(uid_str, memory_size)
+                else:
+                    # Calculate memory for nodes without stored size
+                    if node.data_type == "point_cloud":
+                        # Fast - just calculate from data
+                        memory_size = self._calculate_point_cloud_memory(node.data)
+                        node.memory_size = memory_size
+                        self.tree_widget.update_cache_tooltip(uid_str, memory_size)
+                    else:
+                        # For derived types, need to reconstruct to get size
+                        # Do this on-demand when branch becomes visible
+                        # For now, show estimated size from raw data
+                        memory_size = self._estimate_derived_memory(node.data)
+                        node.memory_size = memory_size
+                        self.tree_widget.update_cache_tooltip(uid_str, memory_size)
 
     # def validate_dependency(self, uid: str) -> bool:
     #     """
@@ -489,6 +500,9 @@ class DataManager(QObject):
 
                 # Calculate memory usage for display (works for any point cloud)
                 memory_usage = self._calculate_point_cloud_memory(point_cloud)
+
+                # Store memory size in node (persists when project is saved)
+                node.memory_size = memory_usage
 
                 # Auto-cache visible branches since they're already in memory
                 # If not already cached, cache it now
@@ -678,10 +692,18 @@ class DataManager(QObject):
             str: Memory usage in human-readable format (e.g., "12.34 MB").
         """
         node = self.data_nodes.get_node(uuid.UUID(uid))
-        if node is None or not node.is_cached or node.cached_point_cloud is None:
+        if node is None:
             return "0 MB"
 
-        return self._calculate_point_cloud_memory(node.cached_point_cloud)
+        # Try to use stored memory size first
+        if hasattr(node, 'memory_size') and node.memory_size:
+            return node.memory_size
+
+        # Otherwise calculate from cached point cloud if available
+        if node.is_cached and node.cached_point_cloud is not None:
+            return self._calculate_point_cloud_memory(node.cached_point_cloud)
+
+        return "0 MB"
 
     def invalidate_descendant_caches(self, uid: str):
         """
