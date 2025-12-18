@@ -69,6 +69,9 @@ class DataNode:
         self.cached_point_cloud: Any = None  # Runtime-only, not serialized
         self.cache_timestamp: float = None   # Runtime-only, not serialized
 
+        # Memory size (saved with project, calculated once)
+        self.memory_size: str = None  # e.g., "12.34 MB"
+
     def __repr__(self) -> str:
         """
         Provides a string representation of the DataNode.

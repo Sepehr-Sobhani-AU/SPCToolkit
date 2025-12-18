@@ -116,6 +116,9 @@ class LoadProjectPlugin(ActionPlugin):
         # Unblock signals
         tree_widget.blockSignals(False)
 
+        # Update memory labels for all loaded branches
+        data_manager.update_all_branch_memory_labels()
+
         # Update viewer to show visible branches and zoom to extent
         data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=True)
 
@@ -137,10 +140,14 @@ class LoadProjectPlugin(ActionPlugin):
 
         # Add root nodes first
         for node in root_nodes:
+            # Detect if this is a root PointCloud node
+            is_root = (node.data_type == "point_cloud" or node.data_type == "PointCloud")
+
             tree_widget.add_branch(
                 str(node.uid),
                 "",  # No parent
-                node.params or node.data_type  # Use params or data_type as name
+                node.params or node.data_type,  # Use params or data_type as name
+                is_root=is_root
             )
 
         # Add child nodes recursively

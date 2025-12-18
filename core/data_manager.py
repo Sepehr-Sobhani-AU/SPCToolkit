@@ -75,15 +75,18 @@ class DataManager(QObject):
             # Create a DataNode from the loaded PointCloud
             data_node = DataNode(params=point_cloud.name, data=point_cloud, data_type="point_cloud", parent_uid=None,
                                  depends_on=None, tags=[])
+
+            # Calculate and store memory size
+            data_node.memory_size = self._calculate_point_cloud_memory(point_cloud)
+
             # Add the DataNode to the DataNodes manager
             uid = self.data_nodes.add_node(data_node)
 
             # Update the TreeStructureWidget - root nodes are always "cached"
             self.tree_widget.add_branch(str(uid), "", point_cloud.name, is_root=True)
 
-            # Set tooltip showing memory usage for root node
-            memory_usage = self.get_cache_memory_usage(str(uid))
-            self.tree_widget.update_cache_tooltip(str(uid), memory_usage)
+            # Show memory usage for root node
+            self.tree_widget.update_cache_tooltip(str(uid), data_node.memory_size)
 
         except Exception as e:
             self.error_occurred.emit(f"Failed to load point cloud: {file_path}. Error: {str(e)}")
@@ -236,11 +239,23 @@ class DataManager(QObject):
             tags=[analysis_type, params]
         )
 
+        # Calculate and store memory size (reconstruct to get point cloud size)
+        # Note: This is an estimate based on the result type
+        if result_type == "point_cloud":
+            data_node_result.memory_size = self._calculate_point_cloud_memory(result)
+        else:
+            # For derived types, estimate based on data size
+            data_node_result.memory_size = self._estimate_derived_memory(result)
+
         # Add to data nodes collection
         uid = self.data_nodes.add_node(data_node_result)
 
         # Update tree widget
         self.tree_widget.add_branch(str(uid), str(data_node.uid), data_node_result.params)
+
+        # Show memory usage for the new branch
+        if data_node_result.memory_size:
+            self.tree_widget.update_cache_tooltip(str(uid), data_node_result.memory_size)
 
         # Update UI to show cache status (thread may have cached the parent during analysis)
         # The thread auto-caches if it had to reconstruct, so we just update the UI here
@@ -361,6 +376,24 @@ class DataManager(QObject):
                 point_cloud = self.node_reconstruction_manager.reconstruct_node(point_cloud, node)
 
         return point_cloud
+
+    def update_all_branch_memory_labels(self):
+        """
+        Update memory labels for all branches in the tree.
+
+        This should be called after loading a project to display stored memory sizes.
+        """
+        for uid, node in self.data_nodes.data_nodes.items():
+            uid_str = str(uid)
+            if uid_str in self.tree_widget.branches_dict:
+                # Use stored memory size if available
+                if node.memory_size:
+                    self.tree_widget.update_cache_tooltip(uid_str, node.memory_size)
+                # Otherwise calculate for point_cloud types only (fast, no reconstruction)
+                elif node.data_type == "point_cloud":
+                    memory_size = self._calculate_point_cloud_memory(node.data)
+                    node.memory_size = memory_size  # Store it
+                    self.tree_widget.update_cache_tooltip(uid_str, memory_size)
 
     # def validate_dependency(self, uid: str) -> bool:
     #     """
@@ -572,6 +605,31 @@ class DataManager(QObject):
         self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
         print(f"Uncached branch: {node.params} (was {memory_usage})")
+
+    def _estimate_derived_memory(self, data) -> str:
+        """
+        Estimate memory usage of derived data types (masks, clusters, etc.).
+
+        Args:
+            data: The derived data object.
+
+        Returns:
+            str: Estimated memory usage in human-readable format.
+        """
+        bytes_used = 0
+
+        # Handle different data types
+        if hasattr(data, 'nbytes'):
+            # NumPy arrays and similar
+            bytes_used = data.nbytes
+        elif hasattr(data, '__dict__'):
+            # Objects with attributes - estimate from all attributes
+            for attr_name, attr_value in data.__dict__.items():
+                if hasattr(attr_value, 'nbytes'):
+                    bytes_used += attr_value.nbytes
+
+        mb_used = bytes_used / (1024 * 1024)
+        return f"{mb_used:.2f} MB" if mb_used > 0 else "< 0.01 MB"
 
     def _calculate_point_cloud_memory(self, point_cloud) -> str:
         """
