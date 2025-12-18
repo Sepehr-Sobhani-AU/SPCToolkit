@@ -454,6 +454,9 @@ class DataManager(QObject):
                 # Reconstruct the branch (will use cache if available)
                 point_cloud = self.reconstruct_branch(uid)
 
+                # Calculate memory usage for display (works for any point cloud)
+                memory_usage = self._calculate_point_cloud_memory(point_cloud)
+
                 # Auto-cache visible branches since they're already in memory
                 # If not already cached, cache it now
                 if not node.is_cached:
@@ -469,10 +472,10 @@ class DataManager(QObject):
                         item.setCheckState(1, Qt.Checked)
                         self.tree_widget.blockSignals(False)
 
-                    # Update tooltip
-                    memory_usage = self.get_cache_memory_usage(uid)
-                    self.tree_widget.update_cache_tooltip(uid, memory_usage)
                     print(f"[AUTO-CACHE] Cached visible branch: {node.params} ({memory_usage})")
+
+                # Always display memory usage (whether cached or not)
+                self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
                 points_to_show = np.append(points_to_show, point_cloud.points, axis=0)
                 if point_cloud.colors is not None:
@@ -556,15 +559,55 @@ class DataManager(QObject):
             print(f"Warning: Cannot uncache branch {uid}, node not found")
             return
 
+        # Get memory usage before clearing cache (so we can still show it)
+        memory_usage = self.get_cache_memory_usage(uid)
+
         # Clear cache
         node.cached_point_cloud = None
         node.is_cached = False
         node.cache_timestamp = None
 
-        # Update UI tooltip
-        self.tree_widget.update_cache_tooltip(uid, None)
+        # Keep showing memory usage even after uncaching (helps user decide)
+        # The size remains the same, just not taking up RAM anymore
+        self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
-        print(f"Uncached branch: {node.params}")
+        print(f"Uncached branch: {node.params} (was {memory_usage})")
+
+    def _calculate_point_cloud_memory(self, point_cloud) -> str:
+        """
+        Calculate approximate memory usage of a point cloud.
+
+        Args:
+            point_cloud: PointCloud instance to calculate memory for.
+
+        Returns:
+            str: Memory usage in human-readable format (e.g., "12.34 MB").
+        """
+        if point_cloud is None:
+            return "0 MB"
+
+        bytes_used = 0
+
+        # Calculate memory for points
+        if hasattr(point_cloud, 'points') and point_cloud.points is not None:
+            bytes_used += point_cloud.points.nbytes
+
+        # Calculate memory for colors
+        if hasattr(point_cloud, 'colors') and point_cloud.colors is not None:
+            bytes_used += point_cloud.colors.nbytes
+
+        # Calculate memory for normals
+        if hasattr(point_cloud, 'normals') and point_cloud.normals is not None:
+            bytes_used += point_cloud.normals.nbytes
+
+        # Calculate memory for attributes
+        if hasattr(point_cloud, 'attributes') and point_cloud.attributes is not None:
+            for key, value in point_cloud.attributes.items():
+                if hasattr(value, 'nbytes'):
+                    bytes_used += value.nbytes
+
+        mb_used = bytes_used / (1024 * 1024)
+        return f"{mb_used:.2f} MB"
 
     def get_cache_memory_usage(self, uid: str) -> str:
         """
@@ -580,29 +623,7 @@ class DataManager(QObject):
         if node is None or not node.is_cached or node.cached_point_cloud is None:
             return "0 MB"
 
-        pc = node.cached_point_cloud
-        bytes_used = 0
-
-        # Calculate memory for points
-        if hasattr(pc, 'points') and pc.points is not None:
-            bytes_used += pc.points.nbytes
-
-        # Calculate memory for colors
-        if hasattr(pc, 'colors') and pc.colors is not None:
-            bytes_used += pc.colors.nbytes
-
-        # Calculate memory for normals
-        if hasattr(pc, 'normals') and pc.normals is not None:
-            bytes_used += pc.normals.nbytes
-
-        # Calculate memory for attributes
-        if hasattr(pc, 'attributes') and pc.attributes is not None:
-            for key, value in pc.attributes.items():
-                if hasattr(value, 'nbytes'):
-                    bytes_used += value.nbytes
-
-        mb_used = bytes_used / (1024 * 1024)
-        return f"{mb_used:.2f} MB"
+        return self._calculate_point_cloud_memory(node.cached_point_cloud)
 
     def invalidate_descendant_caches(self, uid: str):
         """

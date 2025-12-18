@@ -239,16 +239,20 @@ class TreeStructureWidget(QTreeWidget):
 
     def update_cache_tooltip(self, uid: str, memory_usage: str = None):
         """
-        Update the tooltip for the cache column to show memory usage.
+        Update the cache column to show memory usage as text label.
 
         Args:
             uid (str): UUID of the branch.
             memory_usage (str, optional): Memory usage string (e.g., "12.34 MB").
-                                         If None, shows "Not cached".
+                                         If None, shows empty string.
         """
         item = self.branches_dict.get(uid)
         if item:
             if memory_usage:
-                item.setToolTip(1, f"Cached: {memory_usage}")
+                # Set the text label in the cache column to show memory usage
+                item.setText(1, memory_usage)
+                item.setToolTip(1, f"Memory usage: {memory_usage}")
             else:
-                item.setToolTip(1, "Not cached")
+                # Clear the text if no memory usage info
+                item.setText(1, "")
+                item.setToolTip(1, "")
