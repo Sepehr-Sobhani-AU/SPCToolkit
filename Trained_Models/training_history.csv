@@ -1,2 +1,0 @@
-folder_name,timestamp,run_number,epochs,batch_size,learning_rate,val_split,use_tnet,early_stopping_patience,repetitions,random_seed,best_val_acc,final_val_acc,epochs_completed,training_samples,validation_samples,num_classes,was_cancelled
-run_002_20251219_232612,20251219_232612,2,100,32,0.001,0.2,True,20,1,915613351,1.0,0.9986394643783569,48,2937,735,17,False
