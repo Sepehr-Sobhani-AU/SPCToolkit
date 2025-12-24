@@ -27,3 +27,11 @@ ENV/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Data and model directories
+_Tree_group/
+base_dataset/
+clusters/
+models/
+Trained_Models/
+training_data/
