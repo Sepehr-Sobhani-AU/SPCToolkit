@@ -269,33 +269,50 @@ class TrainPointNetPlugin(ActionPlugin):
                 # Show progress overlay
                 main_window.tree_overlay.show_processing("Loading training data...")
 
-                # Load training data
+                # Load training data (returns list of variable-size arrays)
                 data, labels, class_mapping, metadata = self.load_training_data(data_dir)
 
-                num_samples, num_points, num_features = data.shape
+                num_samples = len(data)
+                num_features = data[0].shape[1]
                 num_classes = len(class_mapping)
+
+                # Determine num_points (model input size) from metadata or calculate
+                if metadata and 'processing' in metadata and 'sampling' in metadata['processing']:
+                    # Use min_points from metadata as model input size
+                    num_points = metadata['processing']['sampling'].get('min_points_per_sample', 1024)
+                else:
+                    # Fallback: use minimum from data
+                    num_points = min(sample.shape[0] for sample in data)
+
+                print(f"\nModel will use {num_points} points per sample (randomly sampled during training)")
 
                 # Show data info
                 class_counts = {class_mapping[i]: np.sum(labels == i) for i in range(num_classes)}
                 info_msg = f"Loaded {num_samples} samples from {num_classes} classes:\n"
                 for class_name, count in class_counts.items():
                     info_msg += f"  {class_name}: {count} samples\n"
-                info_msg += f"\nShape: ({num_points} points, {num_features} features)"
+                info_msg += f"\nShape: Variable size up to 20K points, {num_features} features"
+                info_msg += f"\nModel input: {num_points} points (randomly sampled each epoch)"
 
                 print("\n" + "="*80)
                 print("PointNet Training Started")
                 print("="*80)
                 print(info_msg)
 
-                # Split train/validation
+                # Split train/validation indices
                 main_window.tree_overlay.show_processing(f"Splitting data ({val_split*100:.0f}% validation)...")
 
-                X_train, X_val, y_train, y_val = train_test_split(
-                    data, labels,
+                train_indices, val_indices = train_test_split(
+                    np.arange(num_samples),
                     test_size=val_split,
                     random_state=42,
                     stratify=labels
                 )
+
+                X_train = [data[i] for i in train_indices]
+                y_train = labels[train_indices]
+                X_val = [data[i] for i in val_indices]
+                y_val = labels[val_indices]
 
                 print(f"\nTraining samples: {len(X_train)}")
                 print(f"Validation samples: {len(X_val)}")
@@ -403,21 +420,77 @@ class TrainPointNetPlugin(ActionPlugin):
                 progress_callback = ProgressWindowCallback(progress_window)
                 callbacks = [model_checkpoint, early_stopping, reduce_lr, progress_callback]
 
-                # Train model
-                main_window.tree_overlay.show_processing(f"Training model...")
+                # Create TensorFlow datasets with random sampling
+                main_window.tree_overlay.show_processing("Creating training datasets...")
 
                 print(f"\nTraining configuration:")
                 print(f"  Epochs: {epochs}")
                 print(f"  Batch size: {batch_size}")
                 print(f"  Learning rate: {learning_rate}")
+                print(f"  Random sampling: ENABLED (samples {num_points} points per sample each epoch)")
                 print("-"*80)
 
-                history = classifier.train(
-                    X_train, y_train,
-                    X_val, y_val,
+                # Create random sampling function
+                def create_random_sample_fn(num_points_target):
+                    def random_sample(points, label):
+                        # Get current number of points
+                        current_num_points = tf.shape(points)[0]
+
+                        # Randomly sample num_points_target indices
+                        indices = tf.random.shuffle(tf.range(current_num_points))[:num_points_target]
+
+                        # Gather points at those indices
+                        sampled_points = tf.gather(points, indices)
+
+                        return sampled_points, label
+                    return random_sample
+
+                random_sample_fn = create_random_sample_fn(num_points)
+
+                # Create generator functions for variable-size data
+                def train_generator():
+                    for sample, label in zip(X_train, y_train):
+                        yield sample, label
+
+                def val_generator():
+                    for sample, label in zip(X_val, y_val):
+                        yield sample, label
+
+                # Create training dataset using from_generator (handles variable-size arrays)
+                train_dataset = tf.data.Dataset.from_generator(
+                    train_generator,
+                    output_signature=(
+                        tf.TensorSpec(shape=(None, num_features), dtype=tf.float32),
+                        tf.TensorSpec(shape=(), dtype=tf.int32)
+                    )
+                )
+                train_dataset = train_dataset.shuffle(buffer_size=len(X_train), seed=42)
+                train_dataset = train_dataset.map(random_sample_fn, num_parallel_calls=tf.data.AUTOTUNE)
+                train_dataset = train_dataset.batch(batch_size)
+                train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
+
+                # Create validation dataset using from_generator
+                val_dataset = tf.data.Dataset.from_generator(
+                    val_generator,
+                    output_signature=(
+                        tf.TensorSpec(shape=(None, num_features), dtype=tf.float32),
+                        tf.TensorSpec(shape=(), dtype=tf.int32)
+                    )
+                )
+                val_dataset = val_dataset.map(random_sample_fn, num_parallel_calls=tf.data.AUTOTUNE)
+                val_dataset = val_dataset.batch(batch_size)
+                val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
+
+                # Train model
+                main_window.tree_overlay.show_processing(f"Training model...")
+
+                history = classifier.model.fit(
+                    train_dataset,
+                    validation_data=val_dataset,
                     epochs=epochs,
-                    batch_size=batch_size,
-                    callbacks=callbacks
+                    callbacks=callbacks,
+                    class_weight=class_weights,
+                    verbose=1
                 )
 
                 # Save final model
@@ -452,6 +525,11 @@ class TrainPointNetPlugin(ActionPlugin):
                     'random_seed': random_seed,
                     'run_number': run_number,
                     'total_repetitions': repetitions,
+                    'random_sampling': {
+                        'enabled': True,
+                        'num_points': int(num_points),
+                        'note': 'Each epoch randomly samples different subsets of points from variable-size training data'
+                    },
                     'source_metadata': metadata
                 }
 
@@ -678,8 +756,18 @@ class TrainPointNetPlugin(ActionPlugin):
         if len(all_data) == 0:
             raise ValueError("No valid samples loaded!")
 
-        # Convert to numpy arrays
-        data = np.array(all_data, dtype=np.float32)
+        # NOTE: Data samples may have variable sizes (from min_points to max 20K)
+        # Keep as list of arrays instead of stacking into single array
         labels = np.array(all_labels, dtype=np.int32)
 
-        return data, labels, class_mapping, metadata
+        # Print info about loaded data
+        point_counts = [sample.shape[0] for sample in all_data]
+        num_features = all_data[0].shape[1]
+        print(f"\nLoaded {len(all_data)} samples:")
+        print(f"  num_features: {num_features}")
+        print(f"  num_points per sample:")
+        print(f"    min: {min(point_counts)}")
+        print(f"    max: {max(point_counts)}")
+        print(f"    mean: {np.mean(point_counts):.1f}")
+
+        return all_data, labels, class_mapping, metadata

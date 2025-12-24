@@ -18,6 +18,7 @@ from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.point_cloud import PointCloud
 from gui.dialogs.training_data_preview_window import DataPreviewWindow
+from gui.dialogs.data_generation_progress_dialog import DataGenerationProgressDialog
 
 
 class GenerateTrainingDataPlugin(ActionPlugin):
@@ -95,6 +96,48 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                 "default": True,
                 "label": "Smooth Eigenvalues",
                 "description": "Apply smoothing to eigenvalues (used if Compute Eigenvalues is checked)"
+            },
+            "augmentation_multiplier": {
+                "type": "int",
+                "default": 5,
+                "min": 1,
+                "max": 20,
+                "label": "Augmentation Multiplier",
+                "description": "Number of augmented versions per cluster (1 = no augmentation)"
+            },
+            "enable_z_rotation": {
+                "type": "bool",
+                "default": True,
+                "label": "Enable Z-axis Rotation",
+                "description": "Random rotation around vertical axis (0-360°)"
+            },
+            "enable_horizontal_mirror": {
+                "type": "bool",
+                "default": True,
+                "label": "Enable Horizontal Mirroring",
+                "description": "Random flip along X or Y axis"
+            },
+            "enable_xyz_jitter": {
+                "type": "bool",
+                "default": True,
+                "label": "Enable XYZ Jitter",
+                "description": "Add random noise to coordinates"
+            },
+            "jitter_sigma": {
+                "type": "float",
+                "default": 0.01,
+                "min": 0.0,
+                "max": 0.1,
+                "label": "Jitter Sigma",
+                "description": "Standard deviation for jitter noise (used if Enable XYZ Jitter is checked)"
+            },
+            "max_points_for_features": {
+                "type": "int",
+                "default": 20000,
+                "min": 1024,
+                "max": 100000,
+                "label": "Max Points for Feature Computation",
+                "description": "Maximum points per cluster before feature computation. Large clusters are subsampled to this limit (MUST match inference setting to prevent data leakage)"
             }
         }
 
@@ -137,9 +180,23 @@ class GenerateTrainingDataPlugin(ActionPlugin):
         print("Starting PointNet Training Data Generation...")
         print("=" * 60)
 
+        # Create and show progress dialog
+        progress_dialog = DataGenerationProgressDialog(parent=main_window)
+        progress_dialog.show()
+
+        # Track cancellation
+        cancelled = False
+
+        def check_cancelled():
+            """Check if user cancelled."""
+            return progress_dialog.cancelled
+
         try:
             # Step 1: Scan input directory and organize clusters by class
             print("\n[1/6] Scanning input directory...")
+            progress_dialog.set_operation("Step 1/6: Scanning input directory...")
+            progress_dialog.set_status("Reading directory structure...")
+
             class_clusters = self._scan_input_directory(input_dir)
 
             print(f"DEBUG: Scanned input directory: {input_dir}")
@@ -148,6 +205,7 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                 print(f"  - {class_name}: {len(paths)} files")
 
             if not class_clusters:
+                progress_dialog.mark_complete(success=False, message="No data found")
                 QMessageBox.warning(
                     main_window,
                     "No Data Found",
@@ -162,9 +220,17 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                 )
                 return
 
-            # Step 2: Process all clusters (first pass)
-            print(f"\n[2/6] Processing clusters (target: {target_points} points)...")
-            class_samples = {}  # {class_name: [(data, source_cluster_path), ...]}
+            # Step 2: Process all clusters with augmentation
+            augmentation_multiplier = params.get('augmentation_multiplier', 1)
+            print(f"\n[2/6] Processing clusters (target: {target_points} points, augmentation: {augmentation_multiplier}x)...")
+            progress_dialog.set_operation(f"Step 2/6: Processing clusters (augmentation: {augmentation_multiplier}x)...")
+
+            # Calculate total samples to process
+            total_clusters = sum(len(paths) for paths in class_clusters.values())
+            total_samples_to_process = total_clusters * augmentation_multiplier
+            processed_samples = 0
+
+            class_samples = {}  # {class_name: [(data, source_cluster_path, aug_idx), ...]}
             skipped_total = 0
             error_count = 0
 
@@ -173,26 +239,64 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                 skipped_class = 0
 
                 for cluster_path in cluster_paths:
-                    try:
-                        # Process cluster
-                        sample_data = self._process_cluster(cluster_path, params, target_points)
+                    # Check for cancellation
+                    if check_cancelled():
+                        cancelled = True
+                        break
 
-                        if sample_data is not None:
-                            class_samples[class_name].append((sample_data, cluster_path))
-                        else:
-                            skipped_class += 1
+                    # Create augmentation_multiplier versions of each cluster
+                    for aug_idx in range(augmentation_multiplier):
+                        # Check for cancellation
+                        if check_cancelled():
+                            cancelled = True
+                            break
 
-                    except Exception as e:
-                        error_count += 1
-                        print(f"Error processing {cluster_path}: {str(e)}")
+                        try:
+                            # Process cluster with augmentation
+                            sample_data = self._process_cluster(cluster_path, params, target_points, augmentation_index=aug_idx)
+
+                            if sample_data is not None:
+                                class_samples[class_name].append((sample_data, cluster_path, aug_idx))
+                            else:
+                                # Only count as skipped on first attempt (aug_idx == 0)
+                                if aug_idx == 0:
+                                    skipped_class += 1
+
+                        except Exception as e:
+                            error_count += 1
+                            print(f"Error processing {cluster_path} (aug {aug_idx}): {str(e)}")
+
+                        # Update progress
+                        processed_samples += 1
+                        progress_dialog.update_progress(
+                            current=processed_samples,
+                            total=total_samples_to_process,
+                            current_class=class_name,
+                            processed_count=processed_samples - error_count - skipped_total,
+                            skipped_count=skipped_total
+                        )
+
+                    if cancelled:
+                        break
+
+                if cancelled:
+                    break
 
                 skipped_total += skipped_class
-                print(f"Class '{class_name}': {len(class_samples[class_name])} samples, {skipped_class} skipped")
+                unique_clusters = len(cluster_paths) - skipped_class
+                print(f"Class '{class_name}': {len(class_samples[class_name])} samples from {unique_clusters} unique clusters, {skipped_class} skipped")
+
+            # Check if cancelled
+            if cancelled:
+                progress_dialog.mark_complete(success=False, message="Generation cancelled by user")
+                print("\nGeneration cancelled by user")
+                return
 
             # Remove empty classes
             class_samples = {k: v for k, v in class_samples.items() if len(v) > 0}
 
             if not class_samples:
+                progress_dialog.mark_complete(success=False, message="No valid samples found")
                 QMessageBox.warning(
                     main_window,
                     "No Valid Samples",
@@ -203,11 +307,18 @@ class GenerateTrainingDataPlugin(ActionPlugin):
 
             # Step 3: Balance classes
             print(f"\n[3/6] Balancing classes...")
+            progress_dialog.set_operation("Step 3/6: Balancing classes...")
+            progress_dialog.set_status("Ensuring equal samples per class...")
+
             balanced_samples, balance_stats = self._balance_classes(class_samples, params, target_points)
 
             # Step 4: Save all samples
             print(f"\n[4/6] Saving training data...")
+            progress_dialog.set_operation("Step 4/6: Saving training data...")
+            progress_dialog.set_status("Writing files to disk...")
+
             total_saved = 0
+            total_to_save = sum(len(samples) for samples in balanced_samples.values())
 
             for class_name, samples in balanced_samples.items():
                 class_dir = os.path.join(output_dir, class_name)
@@ -219,15 +330,33 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                     np.save(filepath, sample_data)
                     total_saved += 1
 
+                    # Update progress every 10 files
+                    if total_saved % 10 == 0 or total_saved == total_to_save:
+                        progress_dialog.update_progress(
+                            current=total_saved,
+                            total=total_to_save,
+                            current_class=class_name,
+                            processed_count=total_saved,
+                            skipped_count=0
+                        )
+
             print(f"   Saved {total_saved} training samples")
 
             # Step 5: Generate and save metadata
             print(f"\n[5/6] Generating metadata...")
+            progress_dialog.set_operation("Step 5/6: Generating metadata...")
+            progress_dialog.set_status("Writing metadata.json...")
+
             self._save_metadata(output_dir, params, balanced_samples, balance_stats, skipped_total)
 
             # Step 6: Update session persistence and show success message
             print(f"\n[6/6] Complete!")
             print("=" * 60)
+            progress_dialog.set_operation("Step 6/6: Complete!")
+            progress_dialog.set_status("All done!")
+
+            # Mark progress dialog as complete
+            progress_dialog.mark_complete(success=True)
 
             # Store output directory for Preview Training Data plugin
             DataPreviewWindow.last_directories["Training Data Preview"] = output_dir
@@ -235,6 +364,10 @@ class GenerateTrainingDataPlugin(ActionPlugin):
             self._show_summary(main_window, output_dir, balanced_samples, balance_stats, skipped_total, target_points)
 
         except Exception as e:
+            # Mark dialog as complete with error
+            if 'progress_dialog' in locals():
+                progress_dialog.mark_complete(success=False, message=f"Error: {str(e)}")
+
             QMessageBox.critical(
                 main_window,
                 "Processing Error",
@@ -274,17 +407,85 @@ class GenerateTrainingDataPlugin(ActionPlugin):
 
         return class_clusters
 
-    def _process_cluster(self, cluster_path: str, params: Dict[str, Any], target_points: int) -> np.ndarray:
+    def _apply_augmentation(self, xyz: np.ndarray, params: Dict[str, Any], seed: int) -> np.ndarray:
         """
-        Process a single cluster file.
+        Apply augmentation transformations to point cloud coordinates.
 
-        IMPORTANT: Features (normals, eigenvalues) must be computed on the FULL cluster
-        before subsampling, as they depend on local neighborhoods.
+        IMPORTANT: Augmentation is applied BEFORE normalization to unit sphere.
+        This ensures that features (normals, eigenvalues) are computed on properly
+        normalized data after augmentation.
+
+        Augmentations applied (if enabled):
+        1. Z-axis rotation (0-360 degrees)
+        2. Horizontal mirroring (randomly X or Y axis, 50% chance)
+        3. XYZ jitter (Gaussian noise)
+
+        Args:
+            xyz: Point cloud coordinates (n, 3)
+            params: Augmentation parameters
+            seed: Random seed for reproducibility
+
+        Returns:
+            Augmented coordinates (n, 3)
+        """
+        # Set random seed for reproducibility
+        np.random.seed(seed)
+
+        xyz = xyz.copy()
+
+        # 1. Z-axis rotation (random angle 0-360 degrees)
+        if params.get('enable_z_rotation', True):
+            angle_deg = np.random.uniform(0, 360)
+            angle_rad = np.radians(angle_deg)
+            cos_a = np.cos(angle_rad)
+            sin_a = np.sin(angle_rad)
+
+            # Rotation matrix around Z-axis
+            rotation_matrix = np.array([
+                [cos_a, -sin_a, 0],
+                [sin_a, cos_a, 0],
+                [0, 0, 1]
+            ])
+
+            xyz = xyz @ rotation_matrix.T
+
+        # 2. Horizontal mirroring (50% chance, randomly X or Y axis)
+        if params.get('enable_horizontal_mirror', True):
+            if np.random.random() > 0.5:
+                # Mirror along X or Y axis
+                if np.random.random() > 0.5:
+                    xyz[:, 0] *= -1  # Mirror X-axis (left-right)
+                else:
+                    xyz[:, 1] *= -1  # Mirror Y-axis (front-back)
+
+        # 3. XYZ jitter (Gaussian noise)
+        if params.get('enable_xyz_jitter', True):
+            sigma = params.get('jitter_sigma', 0.01)
+            jitter = np.random.normal(0, sigma, xyz.shape)
+            xyz += jitter
+
+        return xyz
+
+    def _process_cluster(self, cluster_path: str, params: Dict[str, Any], target_points: int, augmentation_index: int = 0) -> np.ndarray:
+        """
+        Process a single cluster file with optional augmentation.
+
+        IMPORTANT: Processing order:
+        1. Load cluster
+        2. Apply augmentation (if augmentation_index > 0)
+        3. SUBSAMPLE if cluster > 20,000 points (for feature computation efficiency)
+        4. Normalize to unit sphere
+        5. Compute features (normals, eigenvalues) on subsampled+normalized cluster
+        6. Return FULL-SIZE features (variable size up to 20K points)
+
+        NOTE: Clusters must have >= target_points (n×1024) but are saved at full size.
+        Random subsampling to n×1024 happens during training, not here!
 
         Args:
             cluster_path: Path to .npy cluster file
             params: Processing parameters
             target_points: Required number of points (n × 1024)
+            augmentation_index: Index for augmentation (0 = no augmentation)
 
         Returns:
             Processed sample data as numpy array, or None if cluster should be skipped
@@ -299,13 +500,26 @@ class GenerateTrainingDataPlugin(ActionPlugin):
         # Extract XYZ only (discard RGB)
         xyz = cluster_data[:, :3].copy()
 
-        # Create PointCloud from FULL cluster (DO NOT subsample yet!)
+        # Apply augmentation BEFORE normalization (if not the first version)
+        if augmentation_index > 0:
+            # Create unique seed from cluster path and augmentation index
+            seed = hash(cluster_path + str(augmentation_index)) % (2**32)
+            xyz = self._apply_augmentation(xyz, params, seed)
+
+        # CRITICAL FIX: Subsample large clusters BEFORE feature computation
+        # This matches the inference pipeline and prevents data leakage
+        max_points_for_features = params.get('max_points_for_features', 20000)
+        if len(xyz) > max_points_for_features:
+            indices = np.random.choice(len(xyz), max_points_for_features, replace=False)
+            xyz = xyz[indices]
+
+        # Create PointCloud from subsampled cluster
         point_cloud = PointCloud(points=xyz)
 
-        # Build feature list by computing on FULL cluster
+        # Build feature list
         features = []
 
-        # Apply normalization if requested (on full cluster)
+        # Apply normalization if requested
         if params['normalize']:
             point_cloud.normalise(
                 apply_scaling=True,
@@ -316,7 +530,7 @@ class GenerateTrainingDataPlugin(ActionPlugin):
         # Add XYZ (normalized or not)
         features.append(point_cloud.points)
 
-        # Compute normals if requested (on full cluster)
+        # Compute normals if requested
         if params['compute_normals']:
             knn = params['normals_knn']
 
@@ -327,7 +541,7 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                 point_cloud.estimate_normals(k=knn)
                 features.append(point_cloud.normals)
 
-        # Compute eigenvalues if requested (on full cluster)
+        # Compute eigenvalues if requested
         if params['compute_eigenvalues']:
             knn = params['eigenvalues_knn']
             smooth = params['eigenvalues_smooth']
@@ -339,80 +553,70 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                 eigenvalues = point_cloud.get_eigenvalues(k=knn, smooth=smooth)
                 features.append(eigenvalues)
 
-        # Stack features horizontally (full cluster with all computed features)
+        # Stack features horizontally
         combined = np.hstack(features).astype(np.float32)
 
-        # NOW subsample to target_points (AFTER all features are computed)
-        # This preserves feature correspondence and neighborhood-based computations
-        if len(combined) > target_points:
-            indices = np.random.choice(len(combined), target_points, replace=False)
-            combined = combined[indices]
+        # NOTE: We do NOT subsample to target_points (n×1024) here anymore!
+        # Random subsampling will be done during training for better augmentation
+        # This keeps full feature-rich data (up to max_points_for_features = 20K points)
+        # But we still require minimum of target_points to ensure enough data
 
         return combined
 
     def _balance_classes(
         self,
-        class_samples: Dict[str, List[Tuple[np.ndarray, str]]],
+        class_samples: Dict[str, List[Tuple[np.ndarray, str, int]]],
         params: Dict[str, Any],
         target_points: int
     ) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, Dict[str, int]]]:
         """
         Balance classes by resampling to match the maximum class count.
 
-        Uses even distribution strategy: if 105 samples needed from 29 clusters,
-        create floor(105/29)=3 samples from all clusters, then 4 samples from first 18 clusters.
+        With augmentation: samples already include multiple augmented versions per cluster,
+        so we just need to ensure all classes have the same total number of samples.
 
         Args:
-            class_samples: Dictionary of {class_name: [(sample_data, source_path), ...]}
+            class_samples: Dictionary of {class_name: [(sample_data, source_path, aug_idx), ...]}
             params: Processing parameters
             target_points: Target points per sample
 
         Returns:
             Tuple of (balanced_samples, balance_stats) where:
             - balanced_samples: {class_name: [sample_data, ...]}
-            - balance_stats: {class_name: {'unique': int, 'resampled': int}}
+            - balance_stats: {class_name: {'unique_clusters': int, 'total_samples': int}}
         """
-        # Find maximum class count
+        # Find maximum class count (total samples including augmented versions)
         max_count = max(len(samples) for samples in class_samples.values())
 
         balanced_samples = {}
         balance_stats = {}
+        augmentation_multiplier = params.get('augmentation_multiplier', 1)
 
         for class_name, samples in class_samples.items():
-            num_unique_clusters = len(samples)
+            # Calculate number of unique clusters (divide by augmentation_multiplier)
+            num_unique_clusters = len(samples) // augmentation_multiplier
 
-            if num_unique_clusters >= max_count:
-                # Already has enough samples
-                balanced_samples[class_name] = [data for data, _ in samples[:max_count]]
+            if len(samples) >= max_count:
+                # Already has enough samples, just take the first max_count
+                balanced_samples[class_name] = [data for data, _, _ in samples[:max_count]]
                 balance_stats[class_name] = {
-                    'unique': num_unique_clusters,
-                    'resampled': 0
+                    'unique_clusters': num_unique_clusters,
+                    'total_samples': max_count
                 }
             else:
-                # Need to generate more samples through resampling
-                base_samples_per_cluster = max_count // num_unique_clusters
-                remainder = max_count - (base_samples_per_cluster * num_unique_clusters)
-
+                # Need to cycle through samples to reach max_count
                 all_class_samples = []
+                sample_idx = 0
 
-                for cluster_idx, (original_data, source_path) in enumerate(samples):
-                    # Determine how many samples to create from this cluster
-                    if cluster_idx < remainder:
-                        samples_to_create = base_samples_per_cluster + 1
-                    else:
-                        samples_to_create = base_samples_per_cluster
-
-                    # Create samples by reprocessing the source cluster
-                    for _ in range(samples_to_create):
-                        # Reprocess to get different random subsample
-                        sample_data = self._process_cluster(source_path, params, target_points)
-                        if sample_data is not None:
-                            all_class_samples.append(sample_data)
+                for _ in range(max_count):
+                    data, _, _ = samples[sample_idx % len(samples)]
+                    all_class_samples.append(data)
+                    sample_idx += 1
 
                 balanced_samples[class_name] = all_class_samples
                 balance_stats[class_name] = {
-                    'unique': num_unique_clusters,
-                    'resampled': max_count - num_unique_clusters
+                    'unique_clusters': num_unique_clusters,
+                    'total_samples': max_count
                 }
 
         return balanced_samples, balance_stats
@@ -451,11 +655,14 @@ class GenerateTrainingDataPlugin(ActionPlugin):
         target_points = params['n_multiplier'] * 1024
 
         # Build metadata
+        augmentation_multiplier = params.get('augmentation_multiplier', 1)
+        augmentation_enabled = augmentation_multiplier > 1
+
         metadata = {
             "dataset_info": {
                 "created_at": datetime.now().isoformat(),
                 "created_by": "SPCToolkit",
-                "plugin": "PointNet Generate Training Data v1.0",
+                "plugin": "PointNet Generate Training Data v2.0 (with augmentation)",
                 "source_directory": params['input_directory'],
                 "output_directory": output_dir,
                 "model_target": "PointNet",
@@ -466,6 +673,15 @@ class GenerateTrainingDataPlugin(ActionPlugin):
                     "enabled": params['normalize'],
                     "method": "center_and_unit_sphere" if params['normalize'] else None,
                     "random_rotation": False
+                },
+                "augmentation": {
+                    "enabled": augmentation_enabled,
+                    "multiplier": augmentation_multiplier,
+                    "z_rotation": params.get('enable_z_rotation', False),
+                    "horizontal_mirror": params.get('enable_horizontal_mirror', False),
+                    "xyz_jitter": params.get('enable_xyz_jitter', False),
+                    "jitter_sigma": params.get('jitter_sigma', 0.0) if params.get('enable_xyz_jitter', False) else None,
+                    "note": "Augmentation applied BEFORE normalization, features computed on augmented+normalized data" if augmentation_enabled else None
                 },
                 "features": {
                     "normals": {
@@ -535,11 +751,10 @@ class GenerateTrainingDataPlugin(ActionPlugin):
         if balanced_samples:
             summary_lines.append("Breakdown by class:")
             for class_name in sorted(balanced_samples.keys()):
-                unique = balance_stats[class_name]['unique']
-                resampled = balance_stats[class_name]['resampled']
-                count = len(balanced_samples[class_name])
+                unique_clusters = balance_stats[class_name]['unique_clusters']
+                total_samples = balance_stats[class_name]['total_samples']
                 summary_lines.append(
-                    f"  - {class_name}: {count} samples ({unique} unique clusters, {resampled} resampled)"
+                    f"  - {class_name}: {total_samples} samples from {unique_clusters} unique clusters"
                 )
 
         if skipped_count > 0:

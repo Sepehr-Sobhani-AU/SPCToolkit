@@ -39,7 +39,7 @@ class ApplyFeatureClasses:
         result_point_cloud = self.point_cloud.get_subset(np.ones(self.point_cloud.size, dtype=bool))
 
         # Add feature class labels as attributes
-        result_point_cloud.add_attribute("feature_labels", self.feature_labels.labels)
+        result_point_cloud.add_attribute("feature_class_ids", self.feature_labels.labels)
 
         # Get color values based on feature classes
         colors = self.feature_labels.get_points_color()

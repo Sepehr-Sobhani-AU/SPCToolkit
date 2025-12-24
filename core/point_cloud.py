@@ -1140,3 +1140,37 @@ class PointCloud:
 
         print(
             f"Calculated 2D bounding box for coplanar points: L={self.length:.2f}, W={self.width:.2f}, H={self.height:.6f}")
+
+    def estimate_normals(self, k: int = 30):
+        """
+        Estimate normals for the point cloud using KNN.
+
+        Uses Open3D's normal estimation based on k-nearest neighbors.
+        The normals are stored in self.normals as a (n, 3) numpy array.
+
+        Args:
+            k: Number of nearest neighbors to use for normal estimation
+
+        Raises:
+            ImportError: If Open3D is not available
+            ValueError: If point cloud has no points
+        """
+        if not hasattr(self, 'points') or self.points is None or len(self.points) == 0:
+            raise ValueError("Point cloud has no points")
+
+        try:
+            import open3d as o3d
+        except ImportError:
+            raise ImportError("Open3D is required for normal estimation. Install with: pip install open3d")
+
+        # Create Open3D point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.points)
+
+        # Estimate normals using KNN
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamKNN(knn=k)
+        )
+
+        # Extract normals back to numpy array
+        self.normals = np.asarray(pcd.normals, dtype=np.float32)

@@ -370,6 +370,10 @@ class DataManager(QObject):
             if node.data_type == "point_cloud":
                 # Direct PointCloud (shouldn't happen in normal hierarchy, but handle it)
                 point_cloud = node.data
+            elif node.data_type == "container":
+                # Container nodes are organizational only - skip transformation
+                print(f"[RECONSTRUCTION] Skipping container node: {node.params}")
+                continue
             else:
                 # Apply transformation
                 print(f"[RECONSTRUCTION] Applying {node.data_type} transformation for {node.params}")

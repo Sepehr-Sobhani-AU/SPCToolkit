@@ -306,6 +306,21 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             unclassified_id = len(class_mapping_extended)
             class_mapping_extended[unclassified_id] = "Unclassified"
 
+            # Convert cluster-based class_ids dict to per-point array
+            # class_ids is currently {cluster_id: class_id}
+            # We need to create an array where each point gets its cluster's class_id
+            point_class_ids = np.full(point_cloud.size, unclassified_id, dtype=np.int32)
+
+            for cluster_id, predicted_class_id in class_ids.items():
+                # Find all points in this cluster
+                cluster_mask = point_cloud.cluster_labels == cluster_id
+
+                # Assign the predicted class (or unclassified if -1)
+                if predicted_class_id == -1:
+                    point_class_ids[cluster_mask] = unclassified_id
+                else:
+                    point_class_ids[cluster_mask] = predicted_class_id
+
             # Create class colors
             class_colors = {}
             for class_name in class_mapping_extended.values():
@@ -317,7 +332,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
             # Create FeatureClasses object
             feature_classes = FeatureClasses(
-                class_ids=class_ids,
+                labels=point_class_ids,
                 class_mapping=class_mapping_extended,
                 class_colors=class_colors
             )
@@ -385,9 +400,9 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             cluster_class_counts = {}
             for cluster_id in clusters_to_classify:
                 cluster_mask = point_cloud.cluster_labels == cluster_id
-                cluster_points_classes = class_ids[cluster_mask]
+                cluster_points_classes = point_class_ids[cluster_mask]
                 if len(cluster_points_classes) > 0:
-                    # Take the most common class (should be unanimous)
+                    # Take the most common class (should be unanimous for each cluster)
                     unique_classes, counts = np.unique(cluster_points_classes, return_counts=True)
                     cluster_class = unique_classes[np.argmax(counts)]
                     if cluster_class in class_mapping_extended:
@@ -398,9 +413,9 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             print(f"\n{'='*80}")
             print(f"Classification Complete!")
             print(f"{'='*80}")
-            print(f"Processed: {stats['processed']} clusters")
+            print(f"Classified: {stats['classified']} clusters")
             print(f"Skipped (too small): {stats['skipped_small']} clusters")
-            print(f"Unclassified (low confidence): {stats['unclassified_low_confidence']} clusters")
+            print(f"Unclassified (low confidence): {stats['skipped_low_confidence']} clusters")
             print(f"\nCluster classification results:")
             for class_name, count in sorted(cluster_class_counts.items()):
                 print(f"  {class_name}: {count} cluster(s)")
@@ -408,9 +423,9 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
             # Show summary message
             summary_msg = f"Classification completed successfully!\n\n"
-            summary_msg += f"Processed: {stats['processed']} clusters\n"
+            summary_msg += f"Classified: {stats['classified']} clusters\n"
             summary_msg += f"Skipped (too small): {stats['skipped_small']} clusters\n"
-            summary_msg += f"Unclassified (low confidence): {stats['unclassified_low_confidence']} clusters\n\n"
+            summary_msg += f"Unclassified (low confidence): {stats['skipped_low_confidence']} clusters\n\n"
             summary_msg += "Cluster classification results:\n"
             for class_name, count in sorted(cluster_class_counts.items()):
                 summary_msg += f"  {class_name}: {count} cluster(s)\n"
