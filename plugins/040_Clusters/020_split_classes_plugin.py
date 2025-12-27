@@ -2,13 +2,15 @@
 Plugin for splitting FeatureClasses into separate class branches.
 
 Workflow:
-1. User runs PointNet classification (creates FeatureClasses branch)
+1. User creates/imports FeatureClasses (via ML classification, SemanticKITTI import, etc.)
 2. User selects the FeatureClasses branch
 3. User runs this plugin
-4. Plugin analyzes classes and shows selection dialog
+4. Plugin analyzes classes and shows selection dialog with counts (clusters or points)
 5. Plugin creates a "Classes" container branch
 6. For each selected class, creates a lightweight ClassReference branch
 7. All class branches are unchecked (invisible) by default for performance
+
+Note: Works with both clustered data (shows cluster counts) and non-clustered data (shows point counts).
 """
 
 import numpy as np
@@ -30,13 +32,14 @@ from core.data_node import DataNode
 class ClassSelectionDialog(QDialog):
     """Dialog for selecting which classes to split into branches."""
 
-    def __init__(self, parent, class_info: List[Tuple[int, str, int]]):
+    def __init__(self, parent, class_info: List[Tuple[int, str, int]], count_type: str = "clusters"):
         """
         Initialize the dialog.
 
         Args:
             parent: Parent widget
-            class_info: List of (class_id, class_name, cluster_count) tuples
+            class_info: List of (class_id, class_name, count) tuples
+            count_type: Either "clusters" or "points" to indicate what is being counted
         """
         super().__init__(parent)
         self.setWindowTitle("Split Classes")
@@ -44,6 +47,7 @@ class ClassSelectionDialog(QDialog):
         self.setMinimumWidth(400)
 
         self.class_info = class_info
+        self.count_type = count_type
         self.list_widget = None
 
         self._setup_ui()
@@ -62,13 +66,14 @@ class ClassSelectionDialog(QDialog):
         self.list_widget.setMinimumHeight(300)
 
         # Add each class as a checkable item
-        for class_id, class_name, cluster_count in self.class_info:
-            item = QListWidgetItem(f"{class_name} ({cluster_count} clusters)")
+        suffix = "cls" if self.count_type == "clusters" else "pts"
+        for class_id, class_name, count in self.class_info:
+            item = QListWidgetItem(f"{class_name} ({count:,} {suffix})")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)  # All selected by default
 
             # Store class info in item data
-            item.setData(Qt.UserRole, (class_id, class_name, cluster_count))
+            item.setData(Qt.UserRole, (class_id, class_name, count))
 
             self.list_widget.addItem(item)
 
@@ -221,18 +226,16 @@ class SplitClassesPlugin(ActionPlugin):
             # Reconstruct the branch to get the point cloud with cluster_labels
             point_cloud = data_manager.reconstruct_branch(selected_uid)
 
-            if not hasattr(point_cloud, 'cluster_labels') or point_cloud.cluster_labels is None:
-                QMessageBox.warning(
-                    main_window,
-                    "No Cluster Labels",
-                    "Cannot count clusters - the point cloud has no cluster_labels.\n\n"
-                    "This typically means the classification was not done on clustered data."
-                )
-                return
+            # Check if cluster_labels exist and are not empty
+            if not hasattr(point_cloud, 'cluster_labels'):
+                cluster_labels = None
+            else:
+                cluster_labels = point_cloud.cluster_labels
+                # Handle both None, empty list [], and empty array
+                if cluster_labels is None or (hasattr(cluster_labels, '__len__') and len(cluster_labels) == 0):
+                    cluster_labels = None
 
-            cluster_labels = point_cloud.cluster_labels
-
-            # Analyze classes and count clusters (not points!)
+            # Analyze classes and count clusters (if available) or points
             unique_class_ids = np.unique(feature_classes.labels)
             class_info = []
 
@@ -242,21 +245,24 @@ class SplitClassesPlugin(ActionPlugin):
                 # Find points of this class
                 class_mask = (feature_classes.labels == class_id)
 
-                # Get cluster IDs for points of this class
-                class_cluster_ids = cluster_labels[class_mask]
+                if cluster_labels is not None:
+                    # Count unique clusters (excluding noise -1)
+                    class_cluster_ids = cluster_labels[class_mask]
+                    unique_clusters = np.unique(class_cluster_ids)
+                    unique_clusters = unique_clusters[unique_clusters != -1]  # Exclude noise
+                    count = len(unique_clusters)
+                else:
+                    # Count points instead
+                    count = np.sum(class_mask)
 
-                # Count unique clusters (excluding noise -1)
-                unique_clusters = np.unique(class_cluster_ids)
-                unique_clusters = unique_clusters[unique_clusters != -1]  # Exclude noise
-                cluster_count = len(unique_clusters)
-
-                class_info.append((int(class_id), class_name, cluster_count))
+                class_info.append((int(class_id), class_name, count))
 
             # Sort by class name
             class_info.sort(key=lambda x: x[1])
 
             # Show selection dialog
-            dialog = ClassSelectionDialog(main_window, class_info)
+            count_type = "clusters" if cluster_labels is not None else "points"
+            dialog = ClassSelectionDialog(main_window, class_info, count_type)
             if dialog.exec_() != QDialog.Accepted:
                 return  # User cancelled
 
@@ -307,7 +313,8 @@ class SplitClassesPlugin(ActionPlugin):
 
             # Create class branches for selected classes
             created_branches = []
-            for class_id, class_name, cluster_count in selected_classes:
+            suffix = "cls" if count_type == "clusters" else "pts"
+            for class_id, class_name, count in selected_classes:
                 # Get color for this class
                 color = feature_classes.class_colors.get(class_name, np.array([0.5, 0.5, 0.5]))
 
@@ -318,8 +325,8 @@ class SplitClassesPlugin(ActionPlugin):
                     color=color
                 )
 
-                # Create DataNode with cluster count in name
-                branch_name = f"{class_name} ({cluster_count})"
+                # Create DataNode with count in name (clusters or points)
+                branch_name = f"{class_name} ({count:,} {suffix})"
                 class_node = DataNode(
                     params=branch_name,
                     data=class_reference,

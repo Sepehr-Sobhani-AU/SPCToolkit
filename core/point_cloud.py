@@ -469,7 +469,8 @@ class PointCloud:
             else:
                 # Return an empty PointCloud instance with (1, 3) dimension as
                 # PointCloud constructor needs (n, 3) ndarray for points
-                return PointCloud(np.empty((1, 3)))
+                # Use float32 to match the expected dtype
+                return PointCloud(np.empty((1, 3), dtype=np.float32))
         else:
             try:
                 # Try to use GPU acceleration with CuPy
@@ -482,7 +483,7 @@ class PointCloud:
                     # Apply mask on GPU
                     if hasattr(self, 'points') and len(self.points) > 0:
                         cp_points = cp.asarray(self.points)
-                        self.points = cp.asnumpy(cp_points[cp_mask])
+                        self.points = cp.asnumpy(cp_points[cp_mask]).astype(self.points.dtype)
 
                     # Update OBB dimensions after modifying points
                     self._update_obb_dim()
@@ -490,11 +491,11 @@ class PointCloud:
                     # Apply mask to other attributes if they exist
                     if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
                         cp_colors = cp.asarray(self.colors)
-                        self.colors = cp.asnumpy(cp_colors[cp_mask])
+                        self.colors = cp.asnumpy(cp_colors[cp_mask]).astype(self.colors.dtype)
 
                     if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
                         cp_normals = cp.asarray(self.normals)
-                        self.normals = cp.asnumpy(cp_normals[cp_mask])
+                        self.normals = cp.asnumpy(cp_normals[cp_mask]).astype(self.normals.dtype)
 
                     if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
                         cp_intensity = cp.asarray(self.intensity)
@@ -524,18 +525,18 @@ class PointCloud:
 
                     if subset.points is not None and len(subset.points) > 0:
                         cp_points = cp.asarray(subset.points)
-                        subset.points = cp.asnumpy(cp_points[cp_mask])
+                        subset.points = cp.asnumpy(cp_points[cp_mask]).astype(subset.points.dtype)
 
                     # Update OBB dimensions
                     subset._update_obb_dim()
 
                     if subset.colors is not None and subset.colors.shape[0] > 0:
                         cp_colors = cp.asarray(subset.colors)
-                        subset.colors = cp.asnumpy(cp_colors[cp_mask])
+                        subset.colors = cp.asnumpy(cp_colors[cp_mask]).astype(subset.colors.dtype)
 
                     if subset.normals is not None and subset.normals.shape[0] > 0:
                         cp_normals = cp.asarray(subset.normals)
-                        subset.normals = cp.asnumpy(cp_normals[cp_mask])
+                        subset.normals = cp.asnumpy(cp_normals[cp_mask]).astype(subset.normals.dtype)
 
                     if hasattr(subset, 'intensity') and hasattr(subset.intensity, 'shape') and subset.intensity.shape[
                         0] > 0:

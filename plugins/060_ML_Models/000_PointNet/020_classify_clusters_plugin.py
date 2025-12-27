@@ -303,7 +303,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
             # Create class mapping with Unclassified
             class_mapping_extended = {int(k): v for k, v in class_mapping.items()}
-            unclassified_id = len(class_mapping_extended)
+            unclassified_id = max(class_mapping_extended.keys()) + 1 if class_mapping_extended else 0
             class_mapping_extended[unclassified_id] = "Unclassified"
 
             # Convert cluster-based class_ids dict to per-point array

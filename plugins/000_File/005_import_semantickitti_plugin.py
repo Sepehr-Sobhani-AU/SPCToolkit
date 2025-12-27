@@ -17,6 +17,7 @@ from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
+from core.feature_classes import FeatureClasses
 
 
 # SemanticKITTI semantic class colors (RGB 0-255)
@@ -54,6 +55,42 @@ SEMANTICKITTI_COLORS = {
     257: (250, 80, 100),   # moving-bus
     258: (180, 30, 80),    # moving-other-vehicle
     259: (255, 0, 0),      # moving-on-rails
+}
+
+# SemanticKITTI semantic class names
+SEMANTICKITTI_CLASS_NAMES = {
+    0: "unlabeled",
+    1: "outlier",
+    10: "car",
+    11: "bicycle",
+    13: "bus",
+    15: "motorcycle",
+    18: "truck",
+    20: "other-vehicle",
+    30: "person",
+    31: "bicyclist",
+    32: "motorcyclist",
+    40: "road",
+    44: "parking",
+    48: "sidewalk",
+    49: "other-ground",
+    50: "building",
+    51: "fence",
+    52: "other-structure",
+    60: "lane-marking",
+    70: "vegetation",
+    71: "trunk",
+    72: "terrain",
+    80: "pole",
+    81: "traffic-sign",
+    99: "other-object",
+    252: "moving-car",
+    253: "moving-bicyclist",
+    254: "moving-person",
+    255: "moving-motorcyclist",
+    256: "moving-truck",
+    257: "moving-bus",
+    258: "moving-other-vehicle",
 }
 
 
@@ -313,6 +350,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                             T_combined = poses[frame_num]
                         points = self._apply_pose(points, T_combined)
 
+                # Convert KITTI coordinate system (X forward, Y left, Z up)
+                # to viewer coordinate system (X forward, Y up, Z right)
+                # Rotation: 90 degrees around X axis (counter-clockwise)
+                # New: [X, Y, Z] = [X_old, Z_old, -Y_old]
+                points = points[:, [0, 2, 1]]  # Swap Y and Z
+                points[:, 2] = -points[:, 2]   # Negate new Z (was Y)
+
                 # Translate to origin for float32 precision
                 min_bound = points.min(axis=0)
                 points_translated = (points - min_bound).astype(np.float32)
@@ -325,13 +369,9 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     if label_path:
                         semantic_labels, instance_ids = self._load_labels(label_path)
 
-                # Determine colors
-                if semantic_labels is not None:
-                    colors = self._labels_to_colors(semantic_labels)
-                else:
-                    # Use intensity as grayscale
-                    intensity_norm = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-6)
-                    colors = np.column_stack([intensity_norm] * 3).astype(np.float32)
+                # Always use intensity for PointCloud colors
+                intensity_norm = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-6)
+                colors = np.column_stack([intensity_norm] * 3).astype(np.float32)
 
                 # Create PointCloud
                 filename = os.path.basename(file_path)
@@ -339,15 +379,17 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 point_cloud.name = filename
                 point_cloud.translation = min_bound
 
-                # Add attributes
+                # Add intensity attribute
                 point_cloud.add_attribute('intensity', intensity)
-                if semantic_labels is not None:
-                    point_cloud.add_attribute('semantic_label', semantic_labels)
-                if instance_ids is not None:
-                    point_cloud.add_attribute('instance_id', instance_ids)
 
-                # Add to data manager
-                self._add_to_data_manager(point_cloud)
+                # Add PointCloud to data manager and get UID
+                pc_uid = self._add_to_data_manager(point_cloud)
+
+                # If labels loaded, create FeatureClasses as child
+                if semantic_labels is not None:
+                    feature_classes = self._create_feature_classes(semantic_labels)
+                    self._add_feature_classes_to_data_manager(feature_classes, pc_uid, filename)
+
                 success_count += 1
 
             except Exception as e:
@@ -421,6 +463,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     T_combined = poses[frame_num]
                 points_transformed = self._apply_pose(points, T_combined)
 
+                # Convert KITTI coordinate system (X forward, Y left, Z up)
+                # to viewer coordinate system (X forward, Y up, Z right)
+                # Rotation: 90 degrees around X axis (counter-clockwise)
+                # New: [X, Y, Z] = [X_old, Z_old, -Y_old]
+                points_transformed = points_transformed[:, [0, 2, 1]]  # Swap Y and Z
+                points_transformed[:, 2] = -points_transformed[:, 2]   # Negate new Z (was Y)
+
                 # Accumulate
                 all_points.append(points_transformed)
                 all_intensity.append(intensity)
@@ -456,40 +505,35 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         min_bound = merged_points.min(axis=0)
         points_translated = (merged_points - min_bound).astype(np.float32)
 
-        # Determine colors
+        # Always use intensity for PointCloud colors
+        intensity_norm = (merged_intensity - merged_intensity.min()) / (merged_intensity.max() - merged_intensity.min() + 1e-6)
+        colors = np.column_stack([intensity_norm] * 3).astype(np.float32)
+
+        # Concatenate labels if loaded
+        merged_semantic = None
         if all_semantic:
             merged_semantic = np.concatenate(all_semantic)
-            merged_instance = np.concatenate(all_instance)
-            colors = self._labels_to_colors(merged_semantic)
-        else:
-            # Use intensity as grayscale
-            intensity_norm = (merged_intensity - merged_intensity.min()) / (merged_intensity.max() - merged_intensity.min() + 1e-6)
-            colors = np.column_stack([intensity_norm] * 3).astype(np.float32)
-            merged_semantic = None
-            merged_instance = None
 
-        # Create merged name
-        first_frame = self._extract_frame_number(os.path.basename(file_paths[0]))
-        last_frame = self._extract_frame_number(os.path.basename(file_paths[-1]))
-        merged_name = f"merged_{first_frame:06d}-{last_frame:06d}.bin"
-
-        # Create PointCloud
+        # Create PointCloud with standard name
         point_cloud = PointCloud(points_translated, colors=colors)
-        point_cloud.name = merged_name
+        point_cloud.name = "SemanticKITTI"
         point_cloud.translation = min_bound
 
-        # Add attributes
+        # Add intensity attribute
         point_cloud.add_attribute('intensity', merged_intensity)
-        if merged_semantic is not None:
-            point_cloud.add_attribute('semantic_label', merged_semantic)
-        if merged_instance is not None:
-            point_cloud.add_attribute('instance_id', merged_instance)
 
-        # Add to data manager
-        self._add_to_data_manager(point_cloud)
+        # Add PointCloud to data manager and get UID
+        pc_uid = self._add_to_data_manager(point_cloud)
+
+        # If labels loaded, create FeatureClasses as child
+        if merged_semantic is not None:
+            feature_classes = self._create_feature_classes(merged_semantic)
+            self._add_feature_classes_to_data_manager(feature_classes, pc_uid, "SemanticKITTI")
 
         # Show summary
-        message = f"Merged {len(file_paths) - len(failed_files)} scans into '{merged_name}'"
+        first_frame = self._extract_frame_number(os.path.basename(file_paths[0]))
+        last_frame = self._extract_frame_number(os.path.basename(file_paths[-1]))
+        message = f"Merged {len(file_paths) - len(failed_files)} scans (frames {first_frame:06d}-{last_frame:06d}) into 'SemanticKITTI'"
         message += f"\nTotal points: {len(points_translated):,}"
         if failed_files:
             message += f"\n\n{len(failed_files)} files failed:\n"
@@ -497,12 +541,81 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 message += f"- {filename}: {error}\n"
         QMessageBox.information(main_window, "Merge Complete", message)
 
-    def _add_to_data_manager(self, point_cloud: PointCloud) -> None:
+    def _create_feature_classes(self, semantic_labels: np.ndarray) -> FeatureClasses:
+        """
+        Create FeatureClasses object from semantic labels.
+
+        Args:
+            semantic_labels: Array of semantic class IDs (SemanticKITTI format)
+
+        Returns:
+            FeatureClasses object with original SemanticKITTI label IDs
+        """
+        # Get unique labels present in data
+        unique_labels = np.unique(semantic_labels)
+
+        # Build class mapping using ORIGINAL label IDs (no remapping)
+        class_mapping = {}
+        class_colors = {}
+        for label in unique_labels:
+            original_id = int(label)
+            class_name = SEMANTICKITTI_CLASS_NAMES.get(original_id, f"class_{original_id}")
+            class_mapping[original_id] = class_name
+            rgb = np.array(SEMANTICKITTI_COLORS.get(original_id, (128, 128, 128))) / 255.0
+            class_colors[class_name] = rgb
+
+        return FeatureClasses(
+            labels=semantic_labels.astype(np.int32),
+            class_mapping=class_mapping,
+            class_colors=class_colors
+        )
+
+    def _add_feature_classes_to_data_manager(self, feature_classes: FeatureClasses,
+                                              parent_uid: str, parent_name: str) -> None:
+        """
+        Add FeatureClasses as child node to data manager and tree widget.
+
+        Args:
+            feature_classes: The FeatureClasses object to add
+            parent_uid: UID of parent PointCloud node
+            parent_name: Name of parent PointCloud (for display)
+        """
+        data_manager = global_variables.global_data_manager
+        data_nodes = global_variables.global_data_nodes
+        tree_widget = global_variables.global_tree_structure_widget
+
+        # Create DataNode for FeatureClasses (use standard name to match classification workflow)
+        fc_node = DataNode(
+            params="feature_classes",
+            data=feature_classes,
+            data_type="feature_classes",
+            parent_uid=parent_uid,
+            depends_on=[parent_uid],
+            tags=[]
+        )
+
+        # Calculate memory size (labels array + dicts)
+        labels_size = feature_classes.labels.nbytes
+        # Format as MB
+        size_mb = labels_size / (1024 * 1024)
+        fc_node.memory_size = f"{size_mb:.2f} MB"
+
+        # Add to data nodes collection
+        fc_uid = data_nodes.add_node(fc_node)
+
+        # Update tree widget as child of PointCloud (use standard name)
+        tree_widget.add_branch(str(fc_uid), str(parent_uid), "feature_classes", is_root=False)
+        tree_widget.update_cache_tooltip(str(fc_uid), fc_node.memory_size)
+
+    def _add_to_data_manager(self, point_cloud: PointCloud) -> str:
         """
         Add loaded point cloud to data manager and tree widget.
 
         Args:
             point_cloud: The PointCloud object to add
+
+        Returns:
+            UID of the created DataNode
         """
         data_manager = global_variables.global_data_manager
         data_nodes = global_variables.global_data_nodes
@@ -527,3 +640,5 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         # Update tree widget (root nodes are always cached)
         tree_widget.add_branch(str(uid), "", point_cloud.name, is_root=True)
         tree_widget.update_cache_tooltip(str(uid), data_node.memory_size)
+
+        return uid

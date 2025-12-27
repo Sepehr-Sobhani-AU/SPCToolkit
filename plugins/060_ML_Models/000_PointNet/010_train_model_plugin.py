@@ -287,7 +287,7 @@ class TrainPointNetPlugin(ActionPlugin):
                 print(f"\nModel will use {num_points} points per sample (randomly sampled during training)")
 
                 # Show data info
-                class_counts = {class_mapping[i]: np.sum(labels == i) for i in range(num_classes)}
+                class_counts = {class_mapping[i]: np.sum(labels == i) for i in class_mapping.keys()}
                 info_msg = f"Loaded {num_samples} samples from {num_classes} classes:\n"
                 for class_name, count in class_counts.items():
                     info_msg += f"  {class_name}: {count} samples\n"
