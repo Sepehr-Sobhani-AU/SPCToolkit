@@ -120,6 +120,14 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 "default": False,
                 "label": "Apply Poses",
                 "description": "Transform points to world coordinates using poses.txt"
+            },
+            "max_distance": {
+                "type": "float",
+                "default": 30.0,
+                "min": 0.0,
+                "max": 120.0,
+                "label": "Max Distance (m)",
+                "description": "Keep points within this distance from scanner (0 = unlimited)"
             }
         }
 
@@ -308,10 +316,12 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         """
         load_labels = params.get("load_labels", True)
         apply_poses = params.get("apply_poses", False)
+        max_distance = params.get("max_distance", 30.0)
 
         # Load poses and calibration if needed
         poses = None
         Tr_velo_to_cam = None
+        trajectory_min_bound = None
         if apply_poses:
             poses_path = self._get_poses_path(file_paths[0])
             if poses_path:
@@ -321,6 +331,10 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 calib_path = self._get_calib_path(file_paths[0])
                 if calib_path:
                     Tr_velo_to_cam = self._load_calib(calib_path)
+
+                # Calculate consistent origin from trajectory
+                scanner_positions = np.array([pose[:3, 3] for pose in poses])
+                trajectory_min_bound = scanner_positions.min(axis=0)
             else:
                 QMessageBox.warning(
                     main_window,
@@ -336,8 +350,30 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             try:
                 # Load .bin file
                 data = np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
-                points = data[:, :3]  # x, y, z
+                points = data[:, :3].astype(np.float64)  # Convert to float64 for transformation precision
                 intensity = data[:, 3]  # remission/intensity
+
+                # Load labels BEFORE filtering
+                semantic_labels = None
+                instance_ids = None
+                if load_labels:
+                    label_path = self._get_label_path(file_path)
+                    if label_path:
+                        semantic_labels, instance_ids = self._load_labels(label_path)
+
+                # Apply distance filter if requested
+                original_count = len(points)
+                if max_distance > 0:
+                    distances = np.linalg.norm(points, axis=1)
+                    mask = distances <= max_distance
+                    points = points[mask]
+                    intensity = intensity[mask]
+                    if semantic_labels is not None:
+                        semantic_labels = semantic_labels[mask]
+                        instance_ids = instance_ids[mask]
+
+                    filtered_count = len(points)
+                    print(f"  {os.path.basename(file_path)}: {original_count:,} → {filtered_count:,} points ({100 * filtered_count / original_count:.1f}%)")
 
                 # Apply pose if requested
                 if apply_poses and poses:
@@ -354,22 +390,22 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 # to viewer coordinate system (X forward, Y up, Z right)
                 # Rotation: 90 degrees around X axis (counter-clockwise)
                 # New: [X, Y, Z] = [X_old, Z_old, -Y_old]
-                points = points[:, [0, 2, 1]]  # Swap Y and Z
-                points[:, 2] = -points[:, 2]   # Negate new Z (was Y)
+                # Create new array to avoid in-place modification issues
+                points_converted = np.column_stack([
+                    points[:, 0],   # X unchanged
+                    points[:, 2],   # Y = Z_old
+                    -points[:, 1]   # Z = -Y_old
+                ])
 
                 # Translate to origin for float32 precision
-                min_bound = points.min(axis=0)
-                points_translated = (points - min_bound).astype(np.float32)
+                # Use trajectory-based origin if poses were applied, otherwise use point cloud bounds
+                if trajectory_min_bound is not None:
+                    min_bound = trajectory_min_bound
+                else:
+                    min_bound = points_converted.min(axis=0)
+                points_translated = (points_converted - min_bound).astype(np.float32)
 
-                # Load labels if requested
-                semantic_labels = None
-                instance_ids = None
-                if load_labels:
-                    label_path = self._get_label_path(file_path)
-                    if label_path:
-                        semantic_labels, instance_ids = self._load_labels(label_path)
-
-                # Always use intensity for PointCloud colors
+                # Always use intensity for PointCloud colors (labels already loaded and filtered above)
                 intensity_norm = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-6)
                 colors = np.column_stack([intensity_norm] * 3).astype(np.float32)
 
@@ -417,6 +453,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             main_window: Main application window
         """
         load_labels = params.get("load_labels", True)
+        max_distance = params.get("max_distance", 30.0)
 
         # Load poses (mandatory for merge)
         poses_path = self._get_poses_path(file_paths[0])
@@ -436,6 +473,11 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         if calib_path:
             Tr_velo_to_cam = self._load_calib(calib_path)
 
+        # Calculate consistent origin from trajectory (scanner positions)
+        # This ensures all imports of same sequence align, regardless of filtering
+        scanner_positions = np.array([pose[:3, 3] for pose in poses])
+        trajectory_min_bound = scanner_positions.min(axis=0)
+
         # Lists to accumulate data
         all_points = []
         all_intensity = []
@@ -444,12 +486,42 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
         failed_files = []
 
-        for file_path in file_paths:
+        print(f"\nMerging {len(file_paths)} scans...")
+        progress_interval = max(1, len(file_paths) // 20)  # Show progress every 5%
+
+        for idx, file_path in enumerate(file_paths):
+            # Show progress
+            if idx % progress_interval == 0:
+                print(f"Processing scan {idx + 1}/{len(file_paths)} ({100 * idx / len(file_paths):.0f}%)")
+
             try:
                 # Load .bin file
                 data = np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
-                points = data[:, :3]
+                points = data[:, :3].astype(np.float64)  # Convert to float64 for transformation precision
                 intensity = data[:, 3]
+
+                # Load labels BEFORE filtering (so we can filter them too)
+                semantic_labels = None
+                instance_labels = None
+                if load_labels:
+                    label_path = self._get_label_path(file_path)
+                    if label_path:
+                        semantic_labels, instance_labels = self._load_labels(label_path)
+
+                # Apply distance filter if requested
+                original_count = len(points)
+                if max_distance > 0:
+                    distances = np.linalg.norm(points, axis=1)
+                    mask = distances <= max_distance
+                    points = points[mask]
+                    intensity = intensity[mask]
+                    if semantic_labels is not None:
+                        semantic_labels = semantic_labels[mask]
+                        instance_labels = instance_labels[mask]
+
+                    filtered_count = len(points)
+                    if idx % progress_interval == 0:
+                        print(f"  Filtered: {original_count:,} → {filtered_count:,} points ({100 * filtered_count / original_count:.1f}%)")
 
                 # Apply pose transformation (mandatory)
                 frame_num = self._extract_frame_number(os.path.basename(file_path))
@@ -467,22 +539,24 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 # to viewer coordinate system (X forward, Y up, Z right)
                 # Rotation: 90 degrees around X axis (counter-clockwise)
                 # New: [X, Y, Z] = [X_old, Z_old, -Y_old]
-                points_transformed = points_transformed[:, [0, 2, 1]]  # Swap Y and Z
-                points_transformed[:, 2] = -points_transformed[:, 2]   # Negate new Z (was Y)
+                # Create new array to avoid in-place modification issues
+                points_converted = np.column_stack([
+                    points_transformed[:, 0],   # X unchanged
+                    points_transformed[:, 2],   # Y = Z_old
+                    -points_transformed[:, 1]   # Z = -Y_old
+                ])
 
                 # Accumulate
-                all_points.append(points_transformed)
+                all_points.append(points_converted)
                 all_intensity.append(intensity)
 
-                # Load labels if requested
+                # Accumulate labels (already loaded and filtered above)
                 if load_labels:
-                    label_path = self._get_label_path(file_path)
-                    if label_path:
-                        semantic, instance = self._load_labels(label_path)
-                        all_semantic.append(semantic)
-                        all_instance.append(instance)
+                    if semantic_labels is not None:
+                        all_semantic.append(semantic_labels)
+                        all_instance.append(instance_labels)
                     else:
-                        # No labels for this file, use zeros
+                        # No labels for this file, use zeros (use filtered point count)
                         all_semantic.append(np.zeros(len(points), dtype=np.uint16))
                         all_instance.append(np.zeros(len(points), dtype=np.uint16))
 
@@ -497,13 +571,32 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             )
             return
 
+        print(f"\nMerging arrays from {len(all_points)} scans...")
+
         # Concatenate all data
-        merged_points = np.vstack(all_points)
-        merged_intensity = np.concatenate(all_intensity)
+        try:
+            merged_points = np.vstack(all_points)
+            merged_intensity = np.concatenate(all_intensity)
+            print(f"Merged {len(merged_points):,} points total")
+        except MemoryError as e:
+            QMessageBox.critical(
+                main_window,
+                "Memory Error",
+                f"Not enough memory to merge {len(all_points)} scans.\n\n"
+                f"Try importing as separate scans instead."
+            )
+            return
+        except Exception as e:
+            QMessageBox.critical(
+                main_window,
+                "Merge Failed",
+                f"Failed to merge point clouds:\n{str(e)}"
+            )
+            return
 
         # Translate to origin for float32 precision
-        min_bound = merged_points.min(axis=0)
-        points_translated = (merged_points - min_bound).astype(np.float32)
+        # Use trajectory-based origin for consistent alignment across different filters
+        points_translated = (merged_points - trajectory_min_bound).astype(np.float32)
 
         # Always use intensity for PointCloud colors
         intensity_norm = (merged_intensity - merged_intensity.min()) / (merged_intensity.max() - merged_intensity.min() + 1e-6)
@@ -517,7 +610,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         # Create PointCloud with standard name
         point_cloud = PointCloud(points_translated, colors=colors)
         point_cloud.name = "SemanticKITTI"
-        point_cloud.translation = min_bound
+        point_cloud.translation = trajectory_min_bound
 
         # Add intensity attribute
         point_cloud.add_attribute('intensity', merged_intensity)
