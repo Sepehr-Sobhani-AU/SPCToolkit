@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+import torch
 from scipy.spatial import KDTree
 
 
@@ -88,18 +88,16 @@ class EigenvalueUtils:
         cov_matrices = np.matmul(centered_knn_points_reshaped, centered_knn_points) / (k - 1)
 
         # Define the compute device based on configuration
-        device = '/CPU:0' if self.use_cpu else None
+        device = torch.device('cpu' if self.use_cpu else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
-        # Use the specified device for TensorFlow operations
-        with tf.device(device):
-            # Convert the NumPy array to a TensorFlow tensor
-            cov_matrices_tf = tf.convert_to_tensor(cov_matrices, dtype=tf.float32)
+        # Use PyTorch for batch eigenvalue computation
+        cov_matrices_torch = torch.from_numpy(cov_matrices.astype(np.float32)).to(device)
 
-            # Compute the eigenvalues and eigenvectors in batch
-            eigenvalues_tf, eigenvectors_tf = tf.linalg.eigh(cov_matrices_tf)
+        # Compute the eigenvalues in batch
+        eigenvalues_torch, _ = torch.linalg.eigh(cov_matrices_torch)
 
         # Convert the eigenvalues back to a NumPy array
-        eigenvalues = eigenvalues_tf.numpy()
+        eigenvalues = eigenvalues_torch.cpu().numpy()
 
         # Apply smoothing if requested
         if smooth:
@@ -157,16 +155,15 @@ class EigenvalueUtils:
             # Batch covariance matrix computation
             cov_matrices = np.matmul(centered_knn_points_reshaped, centered_knn_points) / (k - 1)
 
-            # Use CPU for TensorFlow operations
-            with tf.device('/CPU:0'):
-                # Convert the NumPy array to a TensorFlow tensor
-                cov_matrices_tf = tf.convert_to_tensor(cov_matrices, dtype=tf.float32)
+            # Use PyTorch for batch eigenvalue computation
+            device = torch.device('cpu' if self.use_cpu else ('cuda' if torch.cuda.is_available() else 'cpu'))
+            cov_matrices_torch = torch.from_numpy(cov_matrices.astype(np.float32)).to(device)
 
-                # Compute the eigenvalues in batch
-                eigenvalues_tf, _ = tf.linalg.eigh(cov_matrices_tf)
+            # Compute the eigenvalues in batch
+            eigenvalues_torch, _ = torch.linalg.eigh(cov_matrices_torch)
 
             # Convert to NumPy and store in the result array
-            batch_eigenvalues = eigenvalues_tf.numpy()
+            batch_eigenvalues = eigenvalues_torch.cpu().numpy()
             all_eigenvalues[start_idx:end_idx] = batch_eigenvalues
 
         # Combine all indices for later use

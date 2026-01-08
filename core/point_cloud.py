@@ -12,7 +12,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import open3d as o3d
-import tensorflow as tf
+import torch  # Used by eigenvalue_utils
 from scipy.stats import norm
 from scipy.spatial import KDTree
 import matplotlib.pyplot as plt

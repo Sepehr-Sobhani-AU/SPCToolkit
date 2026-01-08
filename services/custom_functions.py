@@ -13,7 +13,7 @@ import numpy as np
 # import cupy as cp
 import pandas as pd
 import open3d as o3d
-import tensorflow as tf
+import torch
 from scipy.stats import norm
 from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
@@ -159,16 +159,15 @@ def get_eigenvalues(data, k, smooth=True):
     cov_matrices = np.matmul(centered_knn_points_reshaped, centered_knn_points) / (
             k - 1)  # cov_matrices.shape is [num_points, 3, 3]
 
-    # Use CPU for TensorFlow operations
-    with tf.device('/CPU:0'):
-        # Convert the NumPy array to a TensorFlow tensor
-        cov_matrices_tf = tf.convert_to_tensor(cov_matrices, dtype=tf.float32)
+    # Use PyTorch for batch eigenvalue computation
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    cov_matrices_torch = torch.from_numpy(cov_matrices.astype(np.float32)).to(device)
 
-        # Compute the eigenvalues and eigenvectors in batch
-        eigenvalues_tf, eigenvectors_tf = tf.linalg.eigh(cov_matrices_tf)
+    # Compute the eigenvalues in batch
+    eigenvalues_torch, _ = torch.linalg.eigh(cov_matrices_torch)
 
-    # Convert the eigenvalues back to a NumPy array if needed
-    eigenvalues = eigenvalues_tf.numpy()
+    # Convert the eigenvalues back to a NumPy array
+    eigenvalues = eigenvalues_torch.cpu().numpy()
 
     if smooth:
         # Use advanced indexing to compute the mean eigenvalues across neighbors
@@ -958,14 +957,22 @@ def get_prediction(clusterPoints, model, NUM_POINTS, MIN_NUM_POINTS):
 
     # Reshape the points and convert them to a tensor
     points = points.reshape(1, NUM_POINTS, 3)
-    points = tf.convert_to_tensor(points, dtype=tf.float64)
+    points_tensor = torch.from_numpy(points).float()
+
+    # Move to GPU if available and model is on GPU
+    device = next(model.parameters()).device
+    points_tensor = points_tensor.to(device)
 
     # Make a prediction using the model
-    probabilities = model.predict(points)
+    model.eval()
+    with torch.no_grad():
+        logits = model(points_tensor)
+        probabilities = torch.softmax(logits, dim=-1).cpu().numpy()
+
     probability = np.max(probabilities)
 
     # Retrieve the predicted labels with the highest probability
-    prediction = tf.math.argmax(probabilities, -1)
+    prediction = np.argmax(probabilities, axis=-1)
 
     # Return the prediction and the maximum probability
     return prediction, probability

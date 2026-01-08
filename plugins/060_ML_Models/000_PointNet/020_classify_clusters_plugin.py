@@ -1,5 +1,5 @@
 """
-PointNet Cluster Classification Plugin
+PointNet Cluster Classification Plugin (PyTorch)
 
 Uses a trained PointNet model to automatically classify clusters in a Clusters branch.
 
@@ -34,7 +34,7 @@ from gui.dialogs.classification_progress_dialog import ClassificationProgressDia
 
 class ClassifyClustersMLPlugin(ActionPlugin):
     """
-    Action plugin for ML-based cluster classification using PointNet.
+    Action plugin for ML-based cluster classification using PointNet (PyTorch).
     """
 
     # Default class colors (RGB in [0, 1] range)
@@ -80,7 +80,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                 "type": "directory",
                 "default": self.last_params["model_directory"],
                 "label": "Model Directory",
-                "description": "Directory containing trained PointNet model files (pointnet_best.keras, class_mapping.json, training_metadata.json)"
+                "description": "Directory containing trained PointNet model files (pointnet_best.pt, class_mapping.json, training_metadata.json)"
             },
             "process_mode": {
                 "type": "choice",
@@ -168,8 +168,8 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             )
             return
 
-        # Check required files
-        required_files = ['pointnet_best.keras', 'class_mapping.json', 'training_metadata.json']
+        # Check required files (PyTorch format)
+        required_files = ['pointnet_best.pt', 'class_mapping.json', 'training_metadata.json']
         missing_files = [f for f in required_files if not os.path.exists(os.path.join(model_dir, f))]
 
         if missing_files:
@@ -177,7 +177,8 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                 main_window,
                 "Missing Model Files",
                 f"The following required files are missing from the model directory:\n" +
-                "\n".join(missing_files)
+                "\n".join(missing_files) +
+                "\n\nNote: PyTorch models use .pt extension (not .keras)"
             )
             return
 
@@ -191,7 +192,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             model, class_mapping, metadata = load_model_with_metadata(model_dir)
 
             print(f"\n{'='*80}")
-            print(f"PointNet Cluster Classification")
+            print(f"PointNet Cluster Classification (PyTorch)")
             print(f"{'='*80}")
             print(f"Model directory: {model_dir}")
             print(f"Model configuration:")
@@ -420,18 +421,6 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             for class_name, count in sorted(cluster_class_counts.items()):
                 print(f"  {class_name}: {count} cluster(s)")
             print(f"{'='*80}")
-
-            # Show summary message
-            summary_msg = f"Classification completed successfully!\n\n"
-            summary_msg += f"Classified: {stats['classified']} clusters\n"
-            summary_msg += f"Skipped (too small): {stats['skipped_small']} clusters\n"
-            summary_msg += f"Unclassified (low confidence): {stats['skipped_low_confidence']} clusters\n\n"
-            summary_msg += "Cluster classification results:\n"
-            for class_name, count in sorted(cluster_class_counts.items()):
-                summary_msg += f"  {class_name}: {count} cluster(s)\n"
-
-            # Don't show message box automatically - user can close progress dialog
-            # QMessageBox.information(main_window, "Classification Complete", summary_msg)
 
         except Exception as e:
             import traceback

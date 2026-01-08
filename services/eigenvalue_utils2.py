@@ -1,15 +1,18 @@
-# services/eigenvalue_utils.py
+# services/eigenvalue_utils2.py
 """
-Utility functions for computing eigenvalues from point clouds.
+DEPRECATED: This file is a backup/older version.
+Please use eigenvalue_utils.py instead, which has been updated to use PyTorch.
 
-This module provides functionality for calculating and manipulating eigenvalues
-derived from the covariance matrix of local neighborhoods in point clouds.
+Utility functions for computing eigenvalues from point clouds.
 """
 
 import numpy as np
-import tensorflow as tf
+import torch  # Replaced TensorFlow - but this file is deprecated
 from scipy.spatial import KDTree
 from typing import Dict, Tuple, Optional, Union, List, Callable
+
+# NOTE: This file still contains TensorFlow-style code patterns but is not used.
+# Use eigenvalue_utils.py for the updated PyTorch implementation.
 
 
 class EigenvalueUtils:

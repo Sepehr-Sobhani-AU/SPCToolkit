@@ -1,6 +1,6 @@
 # train_pointnet.py
 """
-Training script for PointNet cluster classification model.
+Training script for PointNet cluster classification model (PyTorch).
 
 This script loads training data from a directory structure where:
 - Each subfolder represents a class (folder name = class name)
@@ -14,12 +14,90 @@ import os
 import argparse
 import json
 import numpy as np
+from datetime import datetime
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-import tensorflow as tf
-from tensorflow import keras
 
-from core.pointnet_model import PointNetClassifier
+from core.pointnet_model import PointNet, PointNetClassifier
+
+
+class PointCloudDataset(Dataset):
+    """
+    PyTorch Dataset for variable-size point cloud data.
+
+    Handles random sampling of points during training for data augmentation.
+    """
+
+    def __init__(self, data_list, labels, num_points, augment=False):
+        """
+        Args:
+            data_list: List of numpy arrays, each (num_points_i, num_features)
+            labels: Numpy array of labels (num_samples,)
+            num_points: Target number of points to sample
+            augment: Whether to apply data augmentation
+        """
+        self.data_list = data_list
+        self.labels = labels
+        self.num_points = num_points
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, idx):
+        points = self.data_list[idx]
+        label = self.labels[idx]
+
+        # Random sampling to fixed number of points
+        num_available = points.shape[0]
+        if num_available >= self.num_points:
+            # Random sample without replacement
+            indices = np.random.choice(num_available, self.num_points, replace=False)
+        else:
+            # Sample with replacement if not enough points
+            indices = np.random.choice(num_available, self.num_points, replace=True)
+
+        points = points[indices]
+
+        # Apply data augmentation if enabled
+        if self.augment:
+            points = self._augment(points)
+
+        return torch.FloatTensor(points), torch.LongTensor([label])[0]
+
+    def _augment(self, points):
+        """Apply random rotation around Z-axis and jitter."""
+        # Random rotation around Z-axis
+        theta = np.random.uniform(0, 2 * np.pi)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        rotation_matrix = np.array([
+            [cos_theta, -sin_theta, 0],
+            [sin_theta, cos_theta, 0],
+            [0, 0, 1]
+        ], dtype=np.float32)
+
+        # Apply rotation only to XYZ (first 3 features)
+        xyz = points[:, :3]
+        other_features = points[:, 3:]
+
+        rotated_xyz = xyz @ rotation_matrix.T
+
+        # Add small random jitter
+        jitter = np.random.normal(0, 0.01, rotated_xyz.shape).astype(np.float32)
+        rotated_xyz = rotated_xyz + jitter
+
+        # Recombine
+        augmented_points = np.concatenate([rotated_xyz, other_features], axis=1)
+
+        return augmented_points
 
 
 def load_training_data(data_dir, verbose=True):
@@ -41,7 +119,7 @@ def load_training_data(data_dir, verbose=True):
 
     Returns:
         Tuple of (data, labels, class_mapping, metadata)
-        - data: numpy array (n_samples, num_points, num_features)
+        - data: list of numpy arrays (each: num_points_i, num_features)
         - labels: numpy array (n_samples,) with integer class IDs
         - class_mapping: dict {class_id: class_name}
         - metadata: dict with dataset information
@@ -99,7 +177,7 @@ def load_training_data(data_dir, verbose=True):
         for npy_file in npy_files:
             filepath = os.path.join(class_dir, npy_file)
             try:
-                sample = np.load(filepath)
+                sample = np.load(filepath).astype(np.float32)
                 all_data.append(sample)
                 all_labels.append(class_id)
                 class_counts[class_name] += 1
@@ -109,9 +187,7 @@ def load_training_data(data_dir, verbose=True):
     if len(all_data) == 0:
         raise ValueError("No valid samples loaded!")
 
-    # NOTE: Data samples may have variable sizes (from min_points to max 20K)
-    # Keep as list of arrays instead of stacking into single array
-    labels = np.array(all_labels, dtype=np.int32)
+    labels = np.array(all_labels, dtype=np.int64)
 
     if verbose:
         print(f"\nLoaded {len(all_data)} samples:")
@@ -132,75 +208,74 @@ def load_training_data(data_dir, verbose=True):
     return all_data, labels, class_mapping, metadata
 
 
-def create_random_sample_fn(num_points):
-    """
-    Create function to randomly subsample point cloud to fixed number of points.
+def train_one_epoch(model, train_loader, optimizer, criterion, device, class_weights=None):
+    """Train for one epoch."""
+    model.train()
+    total_loss = 0.0
+    correct = 0
+    total = 0
 
-    This provides implicit data augmentation by sampling different subsets each epoch.
+    for batch_data, batch_labels in train_loader:
+        batch_data = batch_data.to(device)
+        batch_labels = batch_labels.to(device)
 
-    Args:
-        num_points: Target number of points (e.g., 1024)
+        optimizer.zero_grad()
 
-    Returns:
-        Function that takes (points, label) and returns (sampled_points, label)
-    """
-    def random_sample(points, label):
-        # Get current number of points
-        current_num_points = tf.shape(points)[0]
+        # Forward pass
+        logits = model(batch_data)
 
-        # Randomly sample num_points indices
-        indices = tf.random.shuffle(tf.range(current_num_points))[:num_points]
+        # Apply class weights if provided
+        if class_weights is not None:
+            weights = class_weights[batch_labels]
+            loss = F.cross_entropy(logits, batch_labels, reduction='none')
+            loss = (loss * weights).mean()
+        else:
+            loss = criterion(logits, batch_labels)
 
-        # Gather points at those indices
-        sampled_points = tf.gather(points, indices)
+        # Backward pass
+        loss.backward()
+        optimizer.step()
 
-        return sampled_points, label
+        # Statistics
+        total_loss += loss.item() * batch_data.size(0)
+        predictions = torch.argmax(logits, dim=1)
+        correct += (predictions == batch_labels).sum().item()
+        total += batch_data.size(0)
 
-    return random_sample
+    avg_loss = total_loss / total
+    accuracy = correct / total
+
+    return avg_loss, accuracy
 
 
-def create_augmentation_fn():
-    """
-    Create data augmentation function for point clouds.
+def validate(model, val_loader, criterion, device):
+    """Validate the model."""
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
 
-    Applies random rotations around Z-axis and random jitter.
+    with torch.no_grad():
+        for batch_data, batch_labels in val_loader:
+            batch_data = batch_data.to(device)
+            batch_labels = batch_labels.to(device)
 
-    Returns:
-        Function that takes (points, label) and returns augmented (points, label)
-    """
-    def augment(points, label):
-        # Random rotation around Z-axis
-        theta = tf.random.uniform([], 0, 2 * np.pi)
-        cos_theta = tf.cos(theta)
-        sin_theta = tf.sin(theta)
+            logits = model(batch_data)
+            loss = criterion(logits, batch_labels)
 
-        # Rotation matrix around Z-axis
-        rotation_matrix = tf.stack([
-            [cos_theta, -sin_theta, 0],
-            [sin_theta, cos_theta, 0],
-            [0, 0, 1]
-        ])
+            total_loss += loss.item() * batch_data.size(0)
+            predictions = torch.argmax(logits, dim=1)
+            correct += (predictions == batch_labels).sum().item()
+            total += batch_data.size(0)
 
-        # Apply rotation only to XYZ (first 3 features)
-        xyz = points[:, :3]
-        other_features = points[:, 3:]
+    avg_loss = total_loss / total
+    accuracy = correct / total
 
-        rotated_xyz = tf.matmul(xyz, rotation_matrix)
-
-        # Add small random jitter
-        jitter = tf.random.normal(tf.shape(rotated_xyz), mean=0.0, stddev=0.01)
-        rotated_xyz = rotated_xyz + jitter
-
-        # Recombine
-        augmented_points = tf.concat([rotated_xyz, other_features], axis=1)
-
-        return augmented_points, label
-
-    return augment
+    return avg_loss, accuracy
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train PointNet cluster classification model')
+    parser = argparse.ArgumentParser(description='Train PointNet cluster classification model (PyTorch)')
     parser.add_argument('--data_dir', type=str, default='training_data',
                         help='Directory containing training data (default: training_data)')
     parser.add_argument('--output_dir', type=str, default='models',
@@ -215,22 +290,39 @@ def main():
                         help='Validation split ratio (default: 0.2)')
     parser.add_argument('--use_tnet', action='store_true', default=True,
                         help='Use T-Net transformations (default: True)')
+    parser.add_argument('--no_tnet', action='store_true', default=False,
+                        help='Disable T-Net transformations')
     parser.add_argument('--augment', action='store_true', default=False,
                         help='Apply data augmentation (default: False)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='Number of data loading workers (default: 4)')
+    parser.add_argument('--patience', type=int, default=20,
+                        help='Early stopping patience (default: 20)')
 
     args = parser.parse_args()
 
+    # Handle tnet flag
+    use_tnet = args.use_tnet and not args.no_tnet
+
     # Set random seeds
     np.random.seed(args.seed)
-    tf.random.set_seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+
+    # Device setup
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print("=" * 80)
-    print("PointNet Cluster Classification Training")
+    print("PointNet Cluster Classification Training (PyTorch)")
     print("=" * 80)
+    print(f"Device: {device}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    # Load training data (returns list of variable-size arrays)
+    # Load training data
     print("\n[1/6] Loading training data...")
     data, labels, class_mapping, metadata = load_training_data(args.data_dir, verbose=True)
 
@@ -238,17 +330,15 @@ def main():
     num_features = data[0].shape[1]
     num_classes = len(class_mapping)
 
-    # Determine num_points (model input size) from metadata or calculate
+    # Determine num_points from metadata or data
     if metadata and 'processing' in metadata and 'sampling' in metadata['processing']:
-        # Use min_points from metadata as model input size
         num_points = metadata['processing']['sampling'].get('min_points_per_sample', 1024)
     else:
-        # Fallback: use minimum from data
         num_points = min(sample.shape[0] for sample in data)
 
     print(f"\nModel will use {num_points} points per sample (randomly sampled during training)")
 
-    # Split train/validation indices
+    # Split train/validation
     print(f"\n[2/6] Splitting data (validation ratio: {args.val_split})...")
     train_indices, val_indices = train_test_split(
         np.arange(num_samples),
@@ -265,154 +355,192 @@ def main():
     print(f"  Training samples: {len(X_train)}")
     print(f"  Validation samples: {len(X_val)}")
 
-    # Compute class weights for imbalanced datasets
+    # Compute class weights
     class_weights_array = compute_class_weight(
         'balanced',
         classes=np.unique(y_train),
         y=y_train
     )
-    class_weights = {i: weight for i, weight in enumerate(class_weights_array)}
+    class_weights = torch.FloatTensor(class_weights_array).to(device)
 
     print(f"\n  Class weights (for imbalanced data):")
-    for class_id, weight in class_weights.items():
+    for class_id, weight in enumerate(class_weights_array):
         print(f"    {class_mapping[class_id]}: {weight:.3f}")
 
-    # Create model
-    print(f"\n[3/6] Creating PointNet model...")
-    print(f"  Input shape: ({num_points}, {num_features})")
-    print(f"  Output classes: {num_classes}")
-    print(f"  Use T-Net: {args.use_tnet}")
-
-    classifier = PointNetClassifier(
-        num_points=num_points,
-        num_features=num_features,
-        num_classes=num_classes,
-        use_tnet=args.use_tnet
-    )
-    classifier.class_mapping = class_mapping
-
-    classifier.compile_model(learning_rate=args.learning_rate)
-
-    # Print model summary
-    classifier.summary()
-
-    # Setup callbacks
-    print(f"\n[4/6] Setting up training callbacks...")
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    model_checkpoint = keras.callbacks.ModelCheckpoint(
-        os.path.join(args.output_dir, 'pointnet_best.keras'),
-        monitor='val_sparse_categorical_accuracy',
-        save_best_only=True,
-        mode='max',
-        verbose=1
-    )
-
-    early_stopping = keras.callbacks.EarlyStopping(
-        monitor='val_sparse_categorical_accuracy',
-        patience=20,
-        mode='max',
-        verbose=1,
-        restore_best_weights=True
-    )
-
-    reduce_lr = keras.callbacks.ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=10,
-        min_lr=1e-6,
-        verbose=1
-    )
-
-    callbacks = [model_checkpoint, early_stopping, reduce_lr]
-
-    # Create TensorFlow datasets with random sampling
-    print(f"\n[5/6] Creating training datasets...")
+    # Create datasets and dataloaders
+    print(f"\n[3/6] Creating data loaders...")
     print(f"  Random sampling: ENABLED (samples {num_points} points per sample each epoch)")
     print(f"  Data augmentation: {'ENABLED' if args.augment else 'DISABLED'}")
 
-    # Create random sampling function
-    random_sample_fn = create_random_sample_fn(num_points)
+    train_dataset = PointCloudDataset(X_train, y_train, num_points, augment=args.augment)
+    val_dataset = PointCloudDataset(X_val, y_val, num_points, augment=False)
 
-    # Create generator functions for variable-size data
-    def train_generator():
-        for sample, label in zip(X_train, y_train):
-            yield sample, label
-
-    def val_generator():
-        for sample, label in zip(X_val, y_val):
-            yield sample, label
-
-    # Create training dataset using from_generator (handles variable-size arrays)
-    train_dataset = tf.data.Dataset.from_generator(
-        train_generator,
-        output_signature=(
-            tf.TensorSpec(shape=(None, num_features), dtype=tf.float32),
-            tf.TensorSpec(shape=(), dtype=tf.int32)
-        )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=False
     )
-    train_dataset = train_dataset.shuffle(buffer_size=len(X_train), seed=args.seed)
-    train_dataset = train_dataset.map(random_sample_fn, num_parallel_calls=tf.data.AUTOTUNE)
 
-    if args.augment:
-        augment_fn = create_augmentation_fn()
-        train_dataset = train_dataset.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
-
-    train_dataset = train_dataset.batch(args.batch_size)
-    train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
-
-    # Create validation dataset using from_generator
-    val_dataset = tf.data.Dataset.from_generator(
-        val_generator,
-        output_signature=(
-            tf.TensorSpec(shape=(None, num_features), dtype=tf.float32),
-            tf.TensorSpec(shape=(), dtype=tf.int32)
-        )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True
     )
-    val_dataset = val_dataset.map(random_sample_fn, num_parallel_calls=tf.data.AUTOTUNE)
-    val_dataset = val_dataset.batch(args.batch_size)
-    val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
 
-    # Train model
-    print(f"\n[6/6] Training model...")
+    # Create model
+    print(f"\n[4/6] Creating PointNet model...")
+    print(f"  Input shape: ({num_points}, {num_features})")
+    print(f"  Output classes: {num_classes}")
+    print(f"  Use T-Net: {use_tnet}")
+
+    model = PointNet(
+        num_points=num_points,
+        num_features=num_features,
+        num_classes=num_classes,
+        use_tnet=use_tnet
+    ).to(device)
+
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable parameters: {trainable_params:,}")
+
+    # Setup optimizer, scheduler, criterion
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=10, verbose=True
+    )
+    criterion = nn.CrossEntropyLoss()
+
+    # Create output directory with run ID
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = Path(args.output_dir) / f"run_pytorch_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    best_model_path = run_dir / "pointnet_best.pt"
+    final_model_path = run_dir / "pointnet_final.pt"
+
+    # Training loop
+    print(f"\n[5/6] Training model...")
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.learning_rate}")
+    print(f"  Output directory: {run_dir}")
     print("-" * 80)
 
-    history = classifier.model.fit(
-        train_dataset,
-        validation_data=val_dataset,
-        epochs=args.epochs,
-        callbacks=callbacks,
-        class_weight=class_weights,
-        verbose=1
-    )
+    history = {
+        'train_loss': [], 'train_acc': [],
+        'val_loss': [], 'val_acc': [],
+        'lr': []
+    }
+
+    best_val_acc = 0.0
+    epochs_without_improvement = 0
+
+    for epoch in range(args.epochs):
+        # Train
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, optimizer, criterion, device, class_weights
+        )
+
+        # Validate
+        val_loss, val_acc = validate(model, val_loader, criterion, device)
+
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+
+        # Update history
+        history['train_loss'].append(train_loss)
+        history['train_acc'].append(train_acc)
+        history['val_loss'].append(val_loss)
+        history['val_acc'].append(val_acc)
+        history['lr'].append(current_lr)
+
+        # Print progress
+        print(f"Epoch {epoch+1:3d}/{args.epochs} - "
+              f"loss: {train_loss:.4f} - acc: {train_acc:.4f} - "
+              f"val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f} - "
+              f"lr: {current_lr:.6f}")
+
+        # Check for improvement
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            epochs_without_improvement = 0
+
+            # Save best model
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_acc': val_acc,
+                'val_loss': val_loss,
+                'class_mapping': class_mapping,
+                'num_points': num_points,
+                'num_features': num_features,
+                'num_classes': num_classes,
+                'use_tnet': use_tnet
+            }, best_model_path)
+            print(f"  -> Saved best model (val_acc: {val_acc:.5f})")
+        else:
+            epochs_without_improvement += 1
+
+        # Update scheduler
+        scheduler.step(val_acc)
+
+        # Early stopping
+        if epochs_without_improvement >= args.patience:
+            print(f"\nEarly stopping triggered after {epoch+1} epochs")
+            break
 
     # Save final model
-    print(f"\n[7/7] Saving final model...")
-    final_model_path = os.path.join(args.output_dir, 'pointnet_final.keras')
-    classifier.save(final_model_path)
+    print(f"\n[6/6] Saving final model...")
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_acc': val_acc,
+        'val_loss': val_loss,
+        'class_mapping': class_mapping,
+        'num_points': num_points,
+        'num_features': num_features,
+        'num_classes': num_classes,
+        'use_tnet': use_tnet,
+        'history': history
+    }, final_model_path)
+    print(f"Final model saved to {final_model_path}")
 
     # Save class mapping
-    mapping_path = os.path.join(args.output_dir, 'class_mapping.json')
+    mapping_path = run_dir / "class_mapping.json"
     with open(mapping_path, 'w') as f:
-        json.dump(class_mapping, f, indent=2)
+        # Convert int keys to strings for JSON
+        json.dump({str(k): v for k, v in class_mapping.items()}, f, indent=2)
     print(f"Class mapping saved to {mapping_path}")
 
     # Save training metadata
     training_metadata = {
+        'framework': 'PyTorch',
+        'pytorch_version': torch.__version__,
+        'cuda_available': torch.cuda.is_available(),
+        'gpu_name': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         'num_points': int(num_points),
         'num_features': int(num_features),
         'num_classes': int(num_classes),
-        'class_mapping': class_mapping,
+        'class_mapping': {str(k): v for k, v in class_mapping.items()},
         'training_samples': int(len(X_train)),
         'validation_samples': int(len(X_val)),
-        'epochs_completed': len(history.history['loss']),
-        'best_val_accuracy': float(max(history.history['val_sparse_categorical_accuracy'])),
-        'final_val_accuracy': float(history.history['val_sparse_categorical_accuracy'][-1]),
-        'use_tnet': args.use_tnet,
+        'epochs_completed': epoch + 1,
+        'best_val_accuracy': float(best_val_acc),
+        'final_val_accuracy': float(val_acc),
+        'use_tnet': use_tnet,
         'data_augmentation': args.augment,
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
         'random_sampling': {
             'enabled': True,
             'num_points': int(num_points),
@@ -421,22 +549,29 @@ def main():
         'source_metadata': metadata
     }
 
-    metadata_path = os.path.join(args.output_dir, 'training_metadata.json')
+    metadata_path = run_dir / "training_metadata.json"
     with open(metadata_path, 'w') as f:
         json.dump(training_metadata, f, indent=2)
     print(f"Training metadata saved to {metadata_path}")
+
+    # Save training history
+    history_path = run_dir / "training_history.json"
+    with open(history_path, 'w') as f:
+        json.dump(history, f, indent=2)
+    print(f"Training history saved to {history_path}")
 
     # Print final results
     print("\n" + "=" * 80)
     print("Training Complete!")
     print("=" * 80)
-    print(f"Best validation accuracy: {training_metadata['best_val_accuracy']:.4f}")
-    print(f"Final validation accuracy: {training_metadata['final_val_accuracy']:.4f}")
-    print(f"Models saved to: {args.output_dir}/")
-    print(f"  - Best model: pointnet_best.keras")
-    print(f"  - Final model: pointnet_final.keras")
+    print(f"Best validation accuracy: {best_val_acc:.4f}")
+    print(f"Final validation accuracy: {val_acc:.4f}")
+    print(f"Models saved to: {run_dir}/")
+    print(f"  - Best model: pointnet_best.pt")
+    print(f"  - Final model: pointnet_final.pt")
     print(f"  - Class mapping: class_mapping.json")
     print(f"  - Metadata: training_metadata.json")
+    print(f"  - History: training_history.json")
     print("=" * 80)
 
 

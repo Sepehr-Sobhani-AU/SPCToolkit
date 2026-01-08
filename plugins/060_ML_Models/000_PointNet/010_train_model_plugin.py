@@ -1,5 +1,5 @@
 """
-Train PointNet Model Plugin
+Train PointNet Model Plugin (PyTorch)
 
 Trains a PointNet model for cluster classification using training data from a specified directory.
 The directory should contain subfolders where each subfolder name is a class label and contains .npy files.
@@ -8,21 +8,76 @@ The directory should contain subfolders where each subfolder name is a class lab
 import os
 import json
 import csv
+import time
 import numpy as np
 from typing import Dict, Any
 from datetime import datetime
 from PyQt5.QtWidgets import QMessageBox
+from PyQt5 import QtWidgets
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-import tensorflow as tf
-from tensorflow import keras
 
-from PyQt5 import QtWidgets
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.pointnet_model import PointNetClassifier
+from core.pointnet_model import PointNet
 from gui.dialogs.training_progress_window import TrainingProgressWindow
+
+
+class PointCloudDataset(Dataset):
+    """PyTorch Dataset for variable-size point cloud data with random sampling."""
+
+    def __init__(self, data_list, labels, num_points, augment=False):
+        self.data_list = data_list
+        self.labels = labels
+        self.num_points = num_points
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, idx):
+        points = self.data_list[idx]
+        label = self.labels[idx]
+
+        # Random sampling to fixed number of points
+        num_available = points.shape[0]
+        if num_available >= self.num_points:
+            indices = np.random.choice(num_available, self.num_points, replace=False)
+        else:
+            indices = np.random.choice(num_available, self.num_points, replace=True)
+
+        points = points[indices]
+
+        if self.augment:
+            points = self._augment(points)
+
+        return torch.FloatTensor(points), torch.LongTensor([label])[0]
+
+    def _augment(self, points):
+        """Apply random rotation around Z-axis and jitter."""
+        theta = np.random.uniform(0, 2 * np.pi)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        rotation_matrix = np.array([
+            [cos_theta, -sin_theta, 0],
+            [sin_theta, cos_theta, 0],
+            [0, 0, 1]
+        ], dtype=np.float32)
+
+        xyz = points[:, :3]
+        other_features = points[:, 3:]
+
+        rotated_xyz = xyz @ rotation_matrix.T
+        jitter = np.random.normal(0, 0.01, rotated_xyz.shape).astype(np.float32)
+        rotated_xyz = rotated_xyz + jitter
+
+        return np.concatenate([rotated_xyz, other_features], axis=1)
 
 
 class TrainPointNetPlugin(ActionPlugin):
@@ -47,24 +102,14 @@ class TrainPointNetPlugin(ActionPlugin):
         return "train_pointnet_model"
 
     def _get_next_run_number(self, output_dir: str) -> int:
-        """
-        Get the next run number by scanning existing folders.
-
-        Args:
-            output_dir: Base output directory
-
-        Returns:
-            Next sequential run number
-        """
+        """Get the next run number by scanning existing folders."""
         if not os.path.exists(output_dir):
             return 1
 
-        # Find all folders matching run_XXX pattern
         run_numbers = []
         for item in os.listdir(output_dir):
             if os.path.isdir(os.path.join(output_dir, item)) and item.startswith('run_'):
                 try:
-                    # Extract number from run_001, run_002, etc.
                     parts = item.split('_')
                     if len(parts) >= 2:
                         run_num = int(parts[1])
@@ -75,16 +120,9 @@ class TrainPointNetPlugin(ActionPlugin):
         return max(run_numbers) + 1 if run_numbers else 1
 
     def _write_to_tracking_csv(self, output_dir: str, training_data: Dict[str, Any]):
-        """
-        Write training results to central tracking CSV file.
-
-        Args:
-            output_dir: Base output directory
-            training_data: Dictionary containing all training information
-        """
+        """Write training results to central tracking CSV file."""
         csv_path = os.path.join(output_dir, 'training_history.csv')
 
-        # Define CSV columns
         fieldnames = [
             'folder_name', 'timestamp', 'run_number', 'epochs', 'batch_size',
             'learning_rate', 'val_split', 'use_tnet', 'early_stopping_patience',
@@ -93,18 +131,12 @@ class TrainPointNetPlugin(ActionPlugin):
             'num_classes', 'was_cancelled'
         ]
 
-        # Check if file exists to determine if we need to write header
         file_exists = os.path.exists(csv_path)
 
-        # Write to CSV
         with open(csv_path, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-            # Write header if new file
             if not file_exists:
                 writer.writeheader()
-
-            # Write data row
             writer.writerow(training_data)
 
     def get_parameters(self) -> Dict[str, Any]:
@@ -174,18 +206,12 @@ class TrainPointNetPlugin(ActionPlugin):
                 "min": 1,
                 "max": 100,
                 "label": "Training Repetitions",
-                "description": "Number of times to train with different random initializations (to find best result)"
+                "description": "Number of times to train with different random initializations"
             }
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
-        """
-        Execute the training process.
-
-        Args:
-            main_window: The main application window
-            params: Parameters from the dialog
-        """
+        """Execute the training process."""
         # Get parameters
         data_dir = params['training_data_dir'].strip()
         output_dir = params['output_dir'].strip()
@@ -197,7 +223,7 @@ class TrainPointNetPlugin(ActionPlugin):
         early_stopping_patience = int(params['early_stopping_patience'])
         repetitions = int(params['repetitions'])
 
-        # Store parameters for next time (session persistence)
+        # Store parameters for next time
         TrainPointNetPlugin.last_params = {
             "training_data_dir": data_dir,
             "output_dir": output_dir,
@@ -219,20 +245,24 @@ class TrainPointNetPlugin(ActionPlugin):
             )
             return
 
+        # Setup device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         # Track results from all repetitions
         all_run_results = []
         best_overall_accuracy = 0.0
         best_overall_run = None
 
-        # Get starting run number for this session
         base_run_number = self._get_next_run_number(output_dir)
 
         print(f"\n{'='*80}")
         print(f"Starting {repetitions} training run(s) with different random initializations")
         print(f"Starting from run #{base_run_number}")
+        print(f"Device: {device}")
+        if torch.cuda.is_available():
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"{'='*80}")
 
-        # Loop through repetitions
         for rep_index in range(repetitions):
             run_number = base_run_number + rep_index
 
@@ -240,66 +270,53 @@ class TrainPointNetPlugin(ActionPlugin):
             print(f"TRAINING RUN #{run_number} ({rep_index + 1}/{repetitions})")
             print(f"{'='*80}")
 
-            # Set random seed using current timestamp for full randomness
-            import time
-            random_seed = int(time.time() * 1000) % (2**32)  # Use milliseconds, keep within 32-bit range
+            # Set random seed
+            random_seed = int(time.time() * 1000) % (2**32)
             np.random.seed(random_seed)
-            tf.random.set_seed(random_seed)
+            torch.manual_seed(random_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(random_seed)
             print(f"Random seed: {random_seed}")
 
-            # Small delay to ensure different seeds for consecutive runs
             time.sleep(0.01)
 
-            # Create unique output directory with simple naming
-            # Format: run_XXX_YYYYMMDD_HHMMSS
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             folder_name = f"run_{run_number:03d}_{timestamp}"
-
-            # Combine base output dir with unique folder
             unique_output_dir = os.path.join(output_dir, folder_name)
             os.makedirs(unique_output_dir, exist_ok=True)
 
             print(f"Model will be saved to: {unique_output_dir}")
 
             try:
-                # Disable UI during training
                 main_window.disable_menus()
                 main_window.disable_tree()
-
-                # Show progress overlay
                 main_window.tree_overlay.show_processing("Loading training data...")
 
-                # Load training data (returns list of variable-size arrays)
+                # Load training data
                 data, labels, class_mapping, metadata = self.load_training_data(data_dir)
 
                 num_samples = len(data)
                 num_features = data[0].shape[1]
                 num_classes = len(class_mapping)
 
-                # Determine num_points (model input size) from metadata or calculate
                 if metadata and 'processing' in metadata and 'sampling' in metadata['processing']:
-                    # Use min_points from metadata as model input size
                     num_points = metadata['processing']['sampling'].get('min_points_per_sample', 1024)
                 else:
-                    # Fallback: use minimum from data
                     num_points = min(sample.shape[0] for sample in data)
 
-                print(f"\nModel will use {num_points} points per sample (randomly sampled during training)")
+                print(f"\nModel will use {num_points} points per sample")
 
-                # Show data info
                 class_counts = {class_mapping[i]: np.sum(labels == i) for i in class_mapping.keys()}
                 info_msg = f"Loaded {num_samples} samples from {num_classes} classes:\n"
                 for class_name, count in class_counts.items():
                     info_msg += f"  {class_name}: {count} samples\n"
-                info_msg += f"\nShape: Variable size up to 20K points, {num_features} features"
-                info_msg += f"\nModel input: {num_points} points (randomly sampled each epoch)"
 
                 print("\n" + "="*80)
-                print("PointNet Training Started")
+                print("PointNet Training Started (PyTorch)")
                 print("="*80)
                 print(info_msg)
 
-                # Split train/validation indices
+                # Split train/validation
                 main_window.tree_overlay.show_processing(f"Splitting data ({val_split*100:.0f}% validation)...")
 
                 train_indices, val_indices = train_test_split(
@@ -323,181 +340,204 @@ class TrainPointNetPlugin(ActionPlugin):
                     classes=np.unique(y_train),
                     y=y_train
                 )
-                class_weights = {i: weight for i, weight in enumerate(class_weights_array)}
+                class_weights = torch.FloatTensor(class_weights_array).to(device)
 
                 print("\nClass weights:")
-                for class_id, weight in class_weights.items():
+                for class_id, weight in enumerate(class_weights_array):
                     print(f"  {class_mapping[class_id]}: {weight:.3f}")
 
-                # Create model
+                # Create datasets and dataloaders
                 main_window.tree_overlay.show_processing("Creating PointNet model...")
+
+                train_dataset = PointCloudDataset(X_train, y_train, num_points, augment=False)
+                val_dataset = PointCloudDataset(X_val, y_val, num_points, augment=False)
+
+                train_loader = DataLoader(
+                    train_dataset, batch_size=batch_size, shuffle=True,
+                    num_workers=4, pin_memory=True, drop_last=False
+                )
+                val_loader = DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False,
+                    num_workers=4, pin_memory=True
+                )
 
                 print(f"\nModel configuration:")
                 print(f"  Input: ({num_points}, {num_features})")
                 print(f"  Classes: {num_classes}")
                 print(f"  T-Net: {use_tnet}")
 
-                classifier = PointNetClassifier(
+                # Create model
+                model = PointNet(
                     num_points=num_points,
                     num_features=num_features,
                     num_classes=num_classes,
                     use_tnet=use_tnet
-                )
-                classifier.class_mapping = class_mapping
-                classifier.compile_model(learning_rate=learning_rate)
+                ).to(device)
 
-                # Setup callbacks
-                model_checkpoint = keras.callbacks.ModelCheckpoint(
-                    os.path.join(unique_output_dir, 'pointnet_best.keras'),
-                    monitor='val_sparse_categorical_accuracy',
-                    save_best_only=True,
-                    mode='max',
-                    verbose=1
-                )
+                total_params = sum(p.numel() for p in model.parameters())
+                print(f"  Total parameters: {total_params:,}")
 
-                early_stopping = keras.callbacks.EarlyStopping(
-                    monitor='val_sparse_categorical_accuracy',
-                    patience=early_stopping_patience,
-                    mode='max',
-                    verbose=1,
-                    restore_best_weights=True
+                # Setup optimizer and scheduler
+                optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='max', factor=0.5, patience=10, verbose=True
                 )
+                criterion = nn.CrossEntropyLoss()
 
-                reduce_lr = keras.callbacks.ReduceLROnPlateau(
-                    monitor='val_loss',
-                    factor=0.5,
-                    patience=10,
-                    min_lr=1e-8,
-                    verbose=1
-                )
-
-                # Create training progress window
+                # Create progress window
                 progress_window = TrainingProgressWindow(parent=main_window, total_epochs=epochs)
-
-                # Update window title to show run number if multiple runs
                 if repetitions > 1:
                     progress_window.setWindowTitle(f"PointNet Training Progress - Run #{run_number} ({rep_index + 1}/{repetitions})")
-
                 progress_window.show()
                 progress_window.training_started()
 
-                # Center the window on screen
                 screen_geometry = QtWidgets.QApplication.desktop().screenGeometry()
                 x = (screen_geometry.width() - progress_window.width()) // 2
                 y = (screen_geometry.height() - progress_window.height()) // 2
                 progress_window.move(x, y)
 
-                # Custom callback to update progress window and handle cancellation
-                class ProgressWindowCallback(keras.callbacks.Callback):
-                    def __init__(self, progress_window):
-                        super().__init__()
-                        self.progress_window = progress_window
-
-                    def on_epoch_end(self, epoch, logs=None):
-                        train_loss = logs.get('loss', 0)
-                        train_acc = logs.get('sparse_categorical_accuracy', 0)
-                        val_loss = logs.get('val_loss', 0)
-                        val_acc = logs.get('val_sparse_categorical_accuracy', 0)
-
-                        # Get current learning rate
-                        from tensorflow.keras import backend as K
-                        current_lr = float(K.get_value(self.model.optimizer.learning_rate))
-
-                        self.progress_window.update_epoch(
-                            epoch + 1,  # 1-indexed
-                            train_loss,
-                            train_acc,
-                            val_loss,
-                            val_acc,
-                            learning_rate=current_lr
-                        )
-
-                        # Check if user requested cancellation
-                        if self.progress_window.training_cancelled:
-                            print("\nUser requested training cancellation. Stopping...")
-                            self.model.stop_training = True
-
-                progress_callback = ProgressWindowCallback(progress_window)
-                callbacks = [model_checkpoint, early_stopping, reduce_lr, progress_callback]
-
-                # Create TensorFlow datasets with random sampling
-                main_window.tree_overlay.show_processing("Creating training datasets...")
-
                 print(f"\nTraining configuration:")
                 print(f"  Epochs: {epochs}")
                 print(f"  Batch size: {batch_size}")
                 print(f"  Learning rate: {learning_rate}")
-                print(f"  Random sampling: ENABLED (samples {num_points} points per sample each epoch)")
                 print("-"*80)
 
-                # Create random sampling function
-                def create_random_sample_fn(num_points_target):
-                    def random_sample(points, label):
-                        # Get current number of points
-                        current_num_points = tf.shape(points)[0]
+                # Training loop
+                main_window.tree_overlay.show_processing("Training model...")
 
-                        # Randomly sample num_points_target indices
-                        indices = tf.random.shuffle(tf.range(current_num_points))[:num_points_target]
+                history = {'loss': [], 'acc': [], 'val_loss': [], 'val_acc': []}
+                best_val_acc = 0.0
+                best_model_state = None
+                epochs_without_improvement = 0
+                was_cancelled = False
 
-                        # Gather points at those indices
-                        sampled_points = tf.gather(points, indices)
+                for epoch in range(epochs):
+                    # Check cancellation
+                    if progress_window.training_cancelled:
+                        print("\nUser requested training cancellation. Stopping...")
+                        was_cancelled = True
+                        break
 
-                        return sampled_points, label
-                    return random_sample
+                    # Training phase
+                    model.train()
+                    train_loss = 0.0
+                    train_correct = 0
+                    train_total = 0
 
-                random_sample_fn = create_random_sample_fn(num_points)
+                    for batch_data, batch_labels in train_loader:
+                        batch_data = batch_data.to(device)
+                        batch_labels = batch_labels.to(device)
 
-                # Create generator functions for variable-size data
-                def train_generator():
-                    for sample, label in zip(X_train, y_train):
-                        yield sample, label
+                        optimizer.zero_grad()
+                        logits = model(batch_data)
 
-                def val_generator():
-                    for sample, label in zip(X_val, y_val):
-                        yield sample, label
+                        # Apply class weights
+                        weights = class_weights[batch_labels]
+                        loss = F.cross_entropy(logits, batch_labels, reduction='none')
+                        loss = (loss * weights).mean()
 
-                # Create training dataset using from_generator (handles variable-size arrays)
-                train_dataset = tf.data.Dataset.from_generator(
-                    train_generator,
-                    output_signature=(
-                        tf.TensorSpec(shape=(None, num_features), dtype=tf.float32),
-                        tf.TensorSpec(shape=(), dtype=tf.int32)
+                        loss.backward()
+                        optimizer.step()
+
+                        train_loss += loss.item() * batch_data.size(0)
+                        predictions = torch.argmax(logits, dim=1)
+                        train_correct += (predictions == batch_labels).sum().item()
+                        train_total += batch_data.size(0)
+
+                    train_loss /= train_total
+                    train_acc = train_correct / train_total
+
+                    # Validation phase
+                    model.eval()
+                    val_loss = 0.0
+                    val_correct = 0
+                    val_total = 0
+
+                    with torch.no_grad():
+                        for batch_data, batch_labels in val_loader:
+                            batch_data = batch_data.to(device)
+                            batch_labels = batch_labels.to(device)
+
+                            logits = model(batch_data)
+                            loss = criterion(logits, batch_labels)
+
+                            val_loss += loss.item() * batch_data.size(0)
+                            predictions = torch.argmax(logits, dim=1)
+                            val_correct += (predictions == batch_labels).sum().item()
+                            val_total += batch_data.size(0)
+
+                    val_loss /= val_total
+                    val_acc = val_correct / val_total
+
+                    # Update history
+                    history['loss'].append(train_loss)
+                    history['acc'].append(train_acc)
+                    history['val_loss'].append(val_loss)
+                    history['val_acc'].append(val_acc)
+
+                    # Get current learning rate
+                    current_lr = optimizer.param_groups[0]['lr']
+
+                    # Update progress window
+                    progress_window.update_epoch(
+                        epoch + 1,
+                        train_loss,
+                        train_acc,
+                        val_loss,
+                        val_acc,
+                        learning_rate=current_lr
                     )
-                )
-                train_dataset = train_dataset.shuffle(buffer_size=len(X_train), seed=42)
-                train_dataset = train_dataset.map(random_sample_fn, num_parallel_calls=tf.data.AUTOTUNE)
-                train_dataset = train_dataset.batch(batch_size)
-                train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
 
-                # Create validation dataset using from_generator
-                val_dataset = tf.data.Dataset.from_generator(
-                    val_generator,
-                    output_signature=(
-                        tf.TensorSpec(shape=(None, num_features), dtype=tf.float32),
-                        tf.TensorSpec(shape=(), dtype=tf.int32)
-                    )
-                )
-                val_dataset = val_dataset.map(random_sample_fn, num_parallel_calls=tf.data.AUTOTUNE)
-                val_dataset = val_dataset.batch(batch_size)
-                val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
+                    print(f"Epoch {epoch+1:3d}/{epochs} - "
+                          f"loss: {train_loss:.4f} - acc: {train_acc:.4f} - "
+                          f"val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f} - "
+                          f"lr: {current_lr:.6f}")
 
-                # Train model
-                main_window.tree_overlay.show_processing(f"Training model...")
+                    # Check for improvement
+                    if val_acc > best_val_acc:
+                        best_val_acc = val_acc
+                        best_model_state = model.state_dict().copy()
+                        epochs_without_improvement = 0
+                        print(f"  -> New best model (val_acc: {val_acc:.5f})")
 
-                history = classifier.model.fit(
-                    train_dataset,
-                    validation_data=val_dataset,
-                    epochs=epochs,
-                    callbacks=callbacks,
-                    class_weight=class_weights,
-                    verbose=1
-                )
+                        # Save best model
+                        torch.save({
+                            'epoch': epoch,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'val_acc': val_acc,
+                            'class_mapping': class_mapping,
+                            'num_points': num_points,
+                            'num_features': num_features,
+                            'num_classes': num_classes,
+                            'use_tnet': use_tnet
+                        }, os.path.join(unique_output_dir, 'pointnet_best.pt'))
+                    else:
+                        epochs_without_improvement += 1
+
+                    # Update scheduler
+                    scheduler.step(val_acc)
+
+                    # Early stopping
+                    if epochs_without_improvement >= early_stopping_patience:
+                        print(f"\nEarly stopping triggered after {epoch+1} epochs")
+                        break
 
                 # Save final model
                 main_window.tree_overlay.show_processing("Saving model...")
 
-                final_model_path = os.path.join(unique_output_dir, 'pointnet_final.keras')
-                classifier.save(final_model_path)
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_acc': val_acc,
+                    'class_mapping': class_mapping,
+                    'num_points': num_points,
+                    'num_features': num_features,
+                    'num_classes': num_classes,
+                    'use_tnet': use_tnet,
+                    'history': history
+                }, os.path.join(unique_output_dir, 'pointnet_final.pt'))
 
                 # Save class mapping
                 mapping_path = os.path.join(unique_output_dir, 'class_mapping.json')
@@ -506,6 +546,8 @@ class TrainPointNetPlugin(ActionPlugin):
 
                 # Save training metadata
                 training_metadata = {
+                    'framework': 'PyTorch',
+                    'pytorch_version': torch.__version__,
                     'folder_name': folder_name,
                     'timestamp': timestamp,
                     'num_points': int(num_points),
@@ -514,9 +556,9 @@ class TrainPointNetPlugin(ActionPlugin):
                     'class_mapping': class_mapping,
                     'training_samples': int(len(X_train)),
                     'validation_samples': int(len(X_val)),
-                    'epochs_completed': len(history.history['loss']),
-                    'best_val_accuracy': float(max(history.history['val_sparse_categorical_accuracy'])),
-                    'final_val_accuracy': float(history.history['val_sparse_categorical_accuracy'][-1]),
+                    'epochs_completed': len(history['loss']),
+                    'best_val_accuracy': float(best_val_acc),
+                    'final_val_accuracy': float(history['val_acc'][-1]) if history['val_acc'] else 0.0,
                     'use_tnet': use_tnet,
                     'learning_rate': learning_rate,
                     'batch_size': batch_size,
@@ -528,7 +570,7 @@ class TrainPointNetPlugin(ActionPlugin):
                     'random_sampling': {
                         'enabled': True,
                         'num_points': int(num_points),
-                        'note': 'Each epoch randomly samples different subsets of points from variable-size training data'
+                        'note': 'Each epoch randomly samples different subsets of points'
                     },
                     'source_metadata': metadata
                 }
@@ -537,74 +579,61 @@ class TrainPointNetPlugin(ActionPlugin):
                 with open(metadata_path, 'w') as f:
                     json.dump(training_metadata, f, indent=2)
 
-                # Check if training was cancelled
-                was_cancelled = progress_window.training_cancelled
+                # Mark training as completed
+                progress_window.training_completed(best_val_acc, cancelled=was_cancelled)
 
-                # Mark training as completed in progress window
-                progress_window.training_completed(
-                    training_metadata['best_val_accuracy'],
-                    cancelled=was_cancelled
-                )
-
-                # Close the progress window immediately after completion
                 try:
                     progress_window.close()
-                    print(f"\nProgress window for Run #{run_number} closed.")
                 except:
-                    pass  # Ignore errors if window already closed
+                    pass
 
-                # Print results
                 print("\n" + "="*80)
                 if was_cancelled:
                     print("Training Cancelled by User")
                 else:
                     print("Training Complete!")
                 print("="*80)
-                print(f"Best validation accuracy: {training_metadata['best_val_accuracy']:.4f}")
+                print(f"Best validation accuracy: {best_val_acc:.4f}")
                 print(f"Epochs completed: {training_metadata['epochs_completed']}")
                 print(f"Models saved to: {unique_output_dir}/")
                 print("="*80)
 
-                # Show completion message (only for single run, summary shown for multiple)
                 if repetitions == 1:
                     if was_cancelled:
                         QMessageBox.information(
                             main_window,
                             "Training Cancelled",
                             f"Training was cancelled by user.\n\n"
-                            f"Best validation accuracy: {training_metadata['best_val_accuracy']:.2%}\n"
+                            f"Best validation accuracy: {best_val_acc:.2%}\n"
                             f"Epochs completed: {training_metadata['epochs_completed']}\n\n"
-                            f"Best model saved to:\n{unique_output_dir}/\n\n"
-                            f"Training logged to: training_history.csv"
+                            f"Best model saved to:\n{unique_output_dir}/"
                         )
                     else:
                         QMessageBox.information(
                             main_window,
                             "Training Complete",
                             f"PointNet training completed successfully!\n\n"
-                            f"Best validation accuracy: {training_metadata['best_val_accuracy']:.2%}\n"
+                            f"Best validation accuracy: {best_val_acc:.2%}\n"
                             f"Epochs completed: {training_metadata['epochs_completed']}\n\n"
-                            f"Models saved to:\n{unique_output_dir}/\n\n"
-                            f"Training logged to: training_history.csv"
+                            f"Models saved to:\n{unique_output_dir}/"
                         )
 
-                # Track this run's results
+                # Track results
                 run_result = {
                     'run_number': run_number,
                     'random_seed': random_seed,
-                    'best_val_accuracy': training_metadata['best_val_accuracy'],
+                    'best_val_accuracy': best_val_acc,
                     'epochs_completed': training_metadata['epochs_completed'],
                     'output_dir': unique_output_dir,
                     'was_cancelled': was_cancelled
                 }
                 all_run_results.append(run_result)
 
-                # Update best overall
-                if training_metadata['best_val_accuracy'] > best_overall_accuracy:
-                    best_overall_accuracy = training_metadata['best_val_accuracy']
+                if best_val_acc > best_overall_accuracy:
+                    best_overall_accuracy = best_val_acc
                     best_overall_run = run_number
 
-                # Write to central tracking CSV
+                # Write to tracking CSV
                 csv_data = {
                     'folder_name': folder_name,
                     'timestamp': timestamp,
@@ -617,7 +646,7 @@ class TrainPointNetPlugin(ActionPlugin):
                     'early_stopping_patience': early_stopping_patience,
                     'repetitions': repetitions,
                     'random_seed': random_seed,
-                    'best_val_acc': training_metadata['best_val_accuracy'],
+                    'best_val_acc': best_val_acc,
                     'final_val_acc': training_metadata['final_val_accuracy'],
                     'epochs_completed': training_metadata['epochs_completed'],
                     'training_samples': training_metadata['training_samples'],
@@ -626,14 +655,12 @@ class TrainPointNetPlugin(ActionPlugin):
                     'was_cancelled': was_cancelled
                 }
                 self._write_to_tracking_csv(output_dir, csv_data)
-                print(f"Training results logged to: {os.path.join(output_dir, 'training_history.csv')}")
 
             except Exception as e:
                 import traceback
                 error_msg = traceback.format_exc()
                 print(f"\nERROR during training run {run_number}:\n{error_msg}")
 
-                # Mark progress window as complete so it can be closed
                 try:
                     if 'progress_window' in locals():
                         progress_window.training_complete = True
@@ -646,75 +673,43 @@ class TrainPointNetPlugin(ActionPlugin):
                 QMessageBox.critical(
                     main_window,
                     f"Training Error (Run {run_number}/{repetitions})",
-                    f"An error occurred during training run {run_number}:\n\n{str(e)}\n\n"
-                    f"See console for full traceback."
+                    f"An error occurred during training:\n\n{str(e)}"
                 )
 
             finally:
-                # Re-enable UI
                 main_window.tree_overlay.hide_processing()
                 main_window.enable_menus()
                 main_window.enable_tree()
 
-        # Print summary of all runs
+        # Print summary
         if repetitions > 1 and len(all_run_results) > 0:
             print(f"\n{'='*80}")
             print(f"TRAINING SUMMARY - {len(all_run_results)} RUN(S) COMPLETED")
             print(f"{'='*80}")
             for result in all_run_results:
                 status = "CANCELLED" if result['was_cancelled'] else "COMPLETE"
-                best_marker = " ⭐ BEST" if result['run_number'] == best_overall_run else ""
-                print(f"Run #{result['run_number']}: {result['best_val_accuracy']:.2%} ({result['epochs_completed']} epochs) [{status}]{best_marker}")
-                print(f"  Seed: {result['random_seed']}")
-                print(f"  Path: {result['output_dir']}")
-            print(f"\nBest run: #{best_overall_run} with {best_overall_accuracy:.2%} validation accuracy")
-            print(f"\nAll results saved to: {os.path.join(output_dir, 'training_history.csv')}")
+                best_marker = " <- BEST" if result['run_number'] == best_overall_run else ""
+                print(f"Run #{result['run_number']}: {result['best_val_accuracy']:.2%} [{status}]{best_marker}")
+            print(f"\nBest run: #{best_overall_run} with {best_overall_accuracy:.2%}")
             print(f"{'='*80}")
 
-            # Show summary message box
             summary_msg = f"Completed {len(all_run_results)} training run(s)\n\n"
             summary_msg += f"BEST RESULT: Run #{best_overall_run} - {best_overall_accuracy:.2%}\n\n"
-            summary_msg += "All runs:\n"
             for result in all_run_results:
                 status = "✓" if not result['was_cancelled'] else "✗"
                 best_marker = " <- BEST" if result['run_number'] == best_overall_run else ""
                 summary_msg += f"{status} Run #{result['run_number']}: {result['best_val_accuracy']:.2%}{best_marker}\n"
-            summary_msg += f"\nTracking file: training_history.csv\n"
-            summary_msg += f"\nAll training windows have been closed automatically."
 
-            QMessageBox.information(
-                main_window,
-                "Training Runs Complete",
-                summary_msg
-            )
+            QMessageBox.information(main_window, "Training Runs Complete", summary_msg)
 
     def load_training_data(self, data_dir):
-        """
-        Load training data from directory structure.
-
-        Expected structure:
-            data_dir/
-                ClassA/
-                    sample1.npy
-                    sample2.npy
-                ClassB/
-                    sample1.npy
-                metadata.json (optional)
-
-        Args:
-            data_dir: Root directory containing class subdirectories
-
-        Returns:
-            Tuple of (data, labels, class_mapping, metadata)
-        """
-        # Try to load metadata
+        """Load training data from directory structure."""
         metadata_path = os.path.join(data_dir, 'metadata.json')
         metadata = None
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
 
-        # Find all class directories
         class_dirs = []
         for item in os.listdir(data_dir):
             item_path = os.path.join(data_dir, item)
@@ -724,20 +719,14 @@ class TrainPointNetPlugin(ActionPlugin):
         if len(class_dirs) == 0:
             raise ValueError(f"No class directories found in {data_dir}")
 
-        # Sort class names for consistent ordering
         class_dirs = sorted(class_dirs)
-
-        # Create class mapping
         class_mapping = {i: class_name for i, class_name in enumerate(class_dirs)}
 
-        # Load all samples
         all_data = []
         all_labels = []
 
         for class_id, class_name in class_mapping.items():
             class_dir = os.path.join(data_dir, class_name)
-
-            # Find all .npy files
             npy_files = [f for f in os.listdir(class_dir) if f.endswith('.npy')]
 
             if len(npy_files) == 0:
@@ -747,7 +736,7 @@ class TrainPointNetPlugin(ActionPlugin):
             for npy_file in npy_files:
                 filepath = os.path.join(class_dir, npy_file)
                 try:
-                    sample = np.load(filepath)
+                    sample = np.load(filepath).astype(np.float32)
                     all_data.append(sample)
                     all_labels.append(class_id)
                 except Exception as e:
@@ -756,18 +745,12 @@ class TrainPointNetPlugin(ActionPlugin):
         if len(all_data) == 0:
             raise ValueError("No valid samples loaded!")
 
-        # NOTE: Data samples may have variable sizes (from min_points to max 20K)
-        # Keep as list of arrays instead of stacking into single array
-        labels = np.array(all_labels, dtype=np.int32)
+        labels = np.array(all_labels, dtype=np.int64)
 
-        # Print info about loaded data
         point_counts = [sample.shape[0] for sample in all_data]
         num_features = all_data[0].shape[1]
         print(f"\nLoaded {len(all_data)} samples:")
         print(f"  num_features: {num_features}")
-        print(f"  num_points per sample:")
-        print(f"    min: {min(point_counts)}")
-        print(f"    max: {max(point_counts)}")
-        print(f"    mean: {np.mean(point_counts):.1f}")
+        print(f"  num_points: min={min(point_counts)}, max={max(point_counts)}, mean={np.mean(point_counts):.1f}")
 
         return all_data, labels, class_mapping, metadata
