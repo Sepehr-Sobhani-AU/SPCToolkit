@@ -350,7 +350,21 @@ For large point clouds, use `BatchProcessor` (services/batch_processor.py) which
 
 ### GPU Acceleration
 
-PointCloud methods (especially `get_subset()`) automatically use CuPy for GPU acceleration when available, falling back to NumPy if not installed.
+**CRITICAL**: Always maximize GPU usage. Never accept CPU fallbacks when GPU is available.
+
+**User Preference**: The user has an NVIDIA RTX 3080 Laptop GPU (8GB VRAM) and wants ALL computationally intensive operations to use GPU acceleration. When writing or modifying code:
+- Always prefer GPU implementations over CPU
+- Use CuPy instead of NumPy for array operations when possible
+- Use TensorFlow with GPU for ML operations
+- Use Open3D GPU methods when available
+- Never silently fall back to CPU - if GPU fails, report the issue
+
+**GPU Libraries in Use:**
+- CuPy: GPU-accelerated NumPy operations
+- TensorFlow: ML operations on GPU
+- Open3D: Some 3D operations support GPU
+
+PointCloud methods (especially `get_subset()`) automatically use CuPy for GPU acceleration when available.
 
 ### Coplanar Point Handling
 

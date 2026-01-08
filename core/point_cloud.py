@@ -208,7 +208,7 @@ class PointCloud:
             augmented_distToGround += noise[:, 2]
             self.distToGround = augmented_distToGround
 
-    def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False, use_sklearn=False):
+    def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False, use_sklearn=False, use_gpu='auto'):
         """
         Apply DBSCAN clustering to the points in the cluster.
 
@@ -221,35 +221,78 @@ class PointCloud:
                                          Default is False.
         - use_sklearn (bool): If True, uses scikit-learn's DBSCAN implementation, which may be
                              more efficient for large point clouds. Default is False.
+        - use_gpu (str or bool): GPU acceleration mode. Options:
+                                 'auto' (default) - Automatically use GPU if cuML is available
+                                 True - Force GPU usage (raises error if cuML unavailable)
+                                 False - Disable GPU, use CPU only
 
         Returns:
         - labels (np.ndarray) or (np.ndarray, Clusters): An array of cluster labels, and optionally a Clusters object.
         """
+        import time
+
         if len(self.points) == 0:
             raise ValueError("The cluster has no points for DBSCAN clustering.")
 
-        if use_sklearn:
+        # Start timing
+        start_time = time.time()
+
+        # Try GPU acceleration with cuML first (if enabled)
+        if use_gpu == True or use_gpu == 'auto':
             try:
-                from sklearn.cluster import DBSCAN
-                import sklearn
+                labels = self._dbscan_cuml(eps, min_points)
+                # GPU succeeded, store labels and return
+                self.cluster_labels = labels
 
-                print(f"Using scikit-learn DBSCAN (version {sklearn.__version__})")
-                print(f"Processing {len(self.points)} points with eps={eps}, min_samples={min_points}")
+                if return_clusters_object:
+                    from core.clusters import Clusters
+                    clusters = Clusters(labels)
+                    clusters.set_random_color()
+                    return clusters
+                else:
+                    return labels
 
-                # Create and run the DBSCAN algorithm
-                db = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1)  # n_jobs=-1 uses all available cores
-                labels = db.fit_predict(self.points)
+            except ImportError as e:
+                if use_gpu == True:
+                    # User explicitly requested GPU, so raise error
+                    raise ImportError(f"GPU DBSCAN requested but cuML not available: {e}")
+                else:
+                    # Auto mode: silently fall back to CPU
+                    pass  # Continue to CPU implementations below
 
-                print(f"DBSCAN completed. Found {len(set(labels)) - (1 if -1 in labels else 0)} clusters")
-            except ImportError:
-                print("scikit-learn not found. Falling back to Open3D implementation.")
-                return self._dbscan_open3d(eps, min_points, return_clusters_object)
-        else:
-            # Use the original Open3D implementation
+        # CPU implementations - always try scikit-learn first (fastest CPU option)
+        try:
+            from sklearn.cluster import DBSCAN
+            import sklearn
+
+            print(f"Using scikit-learn DBSCAN (version {sklearn.__version__})")
+            print(f"Processing {len(self.points):,} points with eps={eps}, min_samples={min_points}")
+
+            # Create and run the DBSCAN algorithm
+            db = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1)  # n_jobs=-1 uses all available cores
+            labels = db.fit_predict(self.points)
+
+        except ImportError:
+            # scikit-learn not available, fall back to Open3D
+            print("scikit-learn not available. Using Open3D DBSCAN.")
             labels = self._dbscan_open3d(eps, min_points, return_clusters_object)
 
         # Store the DBSCAN labels
         self.cluster_labels = labels
+
+        # Calculate and report elapsed time
+        elapsed_time = time.time() - start_time
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_noise = list(labels).count(-1)
+
+        print(f"\n{'='*60}")
+        print(f"DBSCAN COMPLETED")
+        print(f"{'='*60}")
+        print(f"  Total points:     {len(self.points):,}")
+        print(f"  Clusters found:   {n_clusters}")
+        print(f"  Noise points:     {n_noise:,} ({100*n_noise/len(self.points):.1f}%)")
+        print(f"  Processing time:  {elapsed_time:.2f} seconds")
+        print(f"{'='*60}\n")
 
         if return_clusters_object:
             # Create and return Clusters object
@@ -260,6 +303,43 @@ class PointCloud:
             return clusters
         else:
             return labels
+
+    def _dbscan_cuml(self, eps, min_points):
+        """
+        Internal method to perform GPU-accelerated DBSCAN using cuML (RAPIDS).
+
+        Parameters:
+        - eps (float): Epsilon parameter for DBSCAN.
+        - min_points (int): Minimum points parameter for DBSCAN.
+
+        Returns:
+        - labels (np.ndarray): An array of cluster labels.
+
+        Raises:
+        - ImportError: If cuML is not available.
+        """
+        try:
+            from cuml.cluster import DBSCAN as cumlDBSCAN
+            import cupy as cp
+            import cuml
+
+            print(f"Using GPU-accelerated cuML DBSCAN (version {cuml.__version__})")
+            print(f"Processing {len(self.points):,} points with eps={eps}, min_samples={min_points}")
+
+            # Transfer data to GPU
+            points_gpu = cp.asarray(self.points, dtype=cp.float32)
+
+            # Create and run GPU DBSCAN
+            db = cumlDBSCAN(eps=eps, min_samples=min_points)
+            labels_gpu = db.fit_predict(points_gpu)
+
+            # Transfer results back to CPU as numpy array
+            labels = cp.asnumpy(labels_gpu).astype(np.int32)
+
+            return labels
+
+        except ImportError as e:
+            raise ImportError(f"cuML not available for GPU DBSCAN: {e}")
 
     def _dbscan_open3d(self, eps, min_points, return_clusters_object=False):
         """
@@ -274,7 +354,7 @@ class PointCloud:
         - labels (np.ndarray): An array of cluster labels.
         """
         print(f"Using Open3D DBSCAN")
-        print(f"Processing {len(self.points)} points with eps={eps}, min_points={min_points}")
+        print(f"Processing {len(self.points):,} points with eps={eps}, min_points={min_points}")
 
         # Convert points to Open3D point cloud and perform DBSCAN
         pcd = o3d.geometry.PointCloud()
@@ -284,7 +364,6 @@ class PointCloud:
         with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
             labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=True))
 
-        print(f"DBSCAN completed. Found {len(set(labels)) - (1 if -1 in labels else 0)} clusters")
         return labels
 
     def density_downsample(self, voxel_size):

@@ -70,6 +70,13 @@ class DBSCANPlugin(Plugin):
                 "max": 1000000,
                 "label": "Target Batch Size",
                 "description": "Target number of points per batch for processing (smaller values use less memory)"
+            },
+            "use_gpu": {
+                "type": "choice",
+                "options": ["Auto", "Force GPU", "CPU Only"],
+                "default": "Auto",
+                "label": "GPU Acceleration",
+                "description": "Auto: Use GPU if cuML available, Force GPU: Require GPU, CPU Only: Disable GPU"
             }
         }
 
@@ -101,11 +108,29 @@ class DBSCANPlugin(Plugin):
         min_samples = params["min_samples"]
         target_batch_size = params.get("target_batch_size", 25000)
 
+        # Convert GPU mode string to parameter value
+        gpu_mode = params.get("use_gpu", "Auto")
+        if gpu_mode == "Force GPU":
+            use_gpu = True
+        elif gpu_mode == "CPU Only":
+            use_gpu = False
+        else:  # "Auto"
+            use_gpu = 'auto'
+
         # Fixed batch overlap at 10% - this is a programmer decision, not exposed to users
         BATCH_OVERLAP = 0.1
 
-        print(f"Starting batch-processed DBSCAN on {len(points)} points")
-        print(f"Using epsilon={eps}, min_samples={min_samples}, batch_size={target_batch_size}")
+        import time
+        start_time = time.time()
+
+        print(f"\n{'='*60}")
+        print(f"Starting batch-processed DBSCAN")
+        print(f"{'='*60}")
+        print(f"  Total points:     {len(points):,}")
+        print(f"  Parameters:       eps={eps}, min_samples={min_samples}")
+        print(f"  Batch size:       {target_batch_size:,}")
+        print(f"  GPU mode:         {gpu_mode}")
+        print(f"{'='*60}\n")
 
         # Define progress callback for reporting progress
         def progress_callback(current, total, stage_name):
@@ -118,8 +143,8 @@ class DBSCANPlugin(Plugin):
             """Wrapper for DBSCAN to use with batch processor"""
             # Create a temporary point cloud for this batch
             batch_pc = PointCloud(points=batch_points)
-            # Run DBSCAN on the batch
-            return batch_pc.dbscan(eps=eps, min_points=min_points)
+            # Run DBSCAN on the batch with GPU acceleration if enabled
+            return batch_pc.dbscan(eps=eps, min_points=min_points, use_gpu=use_gpu)
 
         # Create a batch processor with appropriate spatial grid settings
         batch_processor = BatchProcessor(
@@ -139,6 +164,21 @@ class DBSCANPlugin(Plugin):
         # Create a Clusters object and set random colors
         clusters = Clusters(cluster_labels)
         clusters.set_random_color()
+
+        # Calculate and report elapsed time
+        elapsed_time = time.time() - start_time
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = list(cluster_labels).count(-1)
+
+        print(f"\n{'='*60}")
+        print(f"BATCH PROCESSING COMPLETED")
+        print(f"{'='*60}")
+        print(f"  Total points:      {len(points):,}")
+        print(f"  Clusters found:    {n_clusters}")
+        print(f"  Noise points:      {n_noise:,} ({100*n_noise/len(points):.1f}%)")
+        print(f"  Total time:        {elapsed_time:.2f} seconds")
+        print(f"  Points/second:     {len(points)/elapsed_time:,.0f}")
+        print(f"{'='*60}\n")
 
         # Return results, type, and dependencies
         dependencies = [data_node.uid]

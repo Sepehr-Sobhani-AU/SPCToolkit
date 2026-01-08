@@ -1,0 +1,3 @@
+rmdir: failed to remove '/S': No such file or directory
+rmdir: failed to remove '/Q': No such file or directory
+rmdir: failed to remove 'C:\Users\Sepeh\.conda\envs\PointCloudRecnos3913\Lib\site-packages\~upy-cuda117': No such file or directory
