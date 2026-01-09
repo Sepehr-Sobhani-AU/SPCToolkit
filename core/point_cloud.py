@@ -212,6 +212,9 @@ class PointCloud:
         """
         Apply DBSCAN clustering to the points in the cluster.
 
+        Uses the backend registry to automatically select the best available backend
+        (cuML GPU, scikit-learn CPU, or Open3D CPU) based on system hardware.
+
         Parameters:
         - eps (float): The maximum distance between two samples for one to be considered
                        as in the neighborhood of the other. Default is 0.05.
@@ -219,48 +222,73 @@ class PointCloud:
                             as a core point. Default is 10.
         - return_clusters_object (bool): If True, returns a Clusters object containing the DBSCAN result.
                                          Default is False.
-        - use_sklearn (bool): If True, uses scikit-learn's DBSCAN implementation, which may be
-                             more efficient for large point clouds. Default is False.
-        - use_gpu (str or bool): GPU acceleration mode. Options:
-                                 'auto' (default) - Automatically use GPU if cuML is available
-                                 True - Force GPU usage (raises error if cuML unavailable)
-                                 False - Disable GPU, use CPU only
+        - use_sklearn (bool): Deprecated - backend is now selected automatically.
+        - use_gpu (str or bool): Deprecated - backend is now selected automatically based on
+                                 hardware detection at startup.
 
         Returns:
         - labels (np.ndarray) or (np.ndarray, Clusters): An array of cluster labels, and optionally a Clusters object.
         """
-        import time
+        from config.config import global_variables
 
         if len(self.points) == 0:
             raise ValueError("The cluster has no points for DBSCAN clustering.")
 
-        # Start timing
+        # Get DBSCAN backend from registry (automatically selects best available)
+        backend_registry = global_variables.global_backend_registry
+
+        if backend_registry is not None:
+            # Use the backend registry system
+            dbscan_backend = backend_registry.get_dbscan()
+            labels = dbscan_backend.run(self.points, eps, min_points)
+        else:
+            # Fallback if registry not initialized (e.g., during testing)
+            labels = self._dbscan_fallback(eps, min_points, use_gpu)
+
+        # Store the DBSCAN labels
+        self.cluster_labels = labels
+
+        if return_clusters_object:
+            from core.clusters import Clusters
+            clusters = Clusters(labels)
+            clusters.set_random_color()
+            return clusters
+        else:
+            return labels
+
+    def _dbscan_fallback(self, eps, min_points, use_gpu='auto'):
+        """
+        Fallback DBSCAN implementation when backend registry is not available.
+
+        This is used during testing or if the registry is not initialized.
+        """
+        import time
         start_time = time.time()
 
         # Try GPU acceleration with cuML first (if enabled)
         if use_gpu == True or use_gpu == 'auto':
             try:
-                labels = self._dbscan_cuml(eps, min_points)
-                # GPU succeeded, store labels and return
-                self.cluster_labels = labels
+                from cuml.cluster import DBSCAN as cumlDBSCAN
+                import cupy as cp
+                import cuml
 
-                if return_clusters_object:
-                    from core.clusters import Clusters
-                    clusters = Clusters(labels)
-                    clusters.set_random_color()
-                    return clusters
-                else:
-                    return labels
+                print(f"Using GPU-accelerated cuML DBSCAN (version {cuml.__version__})")
+                print(f"Processing {len(self.points):,} points with eps={eps}, min_samples={min_points}")
+
+                points_gpu = cp.asarray(self.points, dtype=cp.float32)
+                db = cumlDBSCAN(eps=eps, min_samples=min_points)
+                labels_gpu = db.fit_predict(points_gpu)
+                labels = cp.asnumpy(labels_gpu).astype(np.int32)
+
+                self._print_dbscan_results(labels, start_time, "cuML GPU")
+                return labels
 
             except ImportError as e:
                 if use_gpu == True:
-                    # User explicitly requested GPU, so raise error
                     raise ImportError(f"GPU DBSCAN requested but cuML not available: {e}")
-                else:
-                    # Auto mode: silently fall back to CPU
-                    pass  # Continue to CPU implementations below
+                # Auto mode: silently fall back to CPU
 
-        # CPU implementations - always try scikit-learn first (fastest CPU option)
+        # CPU implementations
         try:
             from sklearn.cluster import DBSCAN
             import sklearn
@@ -268,103 +296,41 @@ class PointCloud:
             print(f"Using scikit-learn DBSCAN (version {sklearn.__version__})")
             print(f"Processing {len(self.points):,} points with eps={eps}, min_samples={min_points}")
 
-            # Create and run the DBSCAN algorithm
-            db = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1)  # n_jobs=-1 uses all available cores
+            db = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1)
             labels = db.fit_predict(self.points)
 
+            self._print_dbscan_results(labels, start_time, "scikit-learn CPU")
+            return labels
+
         except ImportError:
-            # scikit-learn not available, fall back to Open3D
+            # Fall back to Open3D
             print("scikit-learn not available. Using Open3D DBSCAN.")
-            labels = self._dbscan_open3d(eps, min_points, return_clusters_object)
+            print(f"Processing {len(self.points):,} points with eps={eps}, min_points={min_points}")
 
-        # Store the DBSCAN labels
-        self.cluster_labels = labels
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(self.points)
 
-        # Calculate and report elapsed time
+            with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug):
+                labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=True))
+
+            self._print_dbscan_results(labels, start_time, "Open3D CPU")
+            return labels
+
+    def _print_dbscan_results(self, labels, start_time, backend_name):
+        """Print DBSCAN results summary."""
+        import time
         elapsed_time = time.time() - start_time
         n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-        n_noise = list(labels).count(-1)
+        n_noise = np.sum(labels == -1)
 
         print(f"\n{'='*60}")
-        print(f"DBSCAN COMPLETED")
+        print(f"DBSCAN COMPLETED ({backend_name})")
         print(f"{'='*60}")
         print(f"  Total points:     {len(self.points):,}")
         print(f"  Clusters found:   {n_clusters}")
         print(f"  Noise points:     {n_noise:,} ({100*n_noise/len(self.points):.1f}%)")
         print(f"  Processing time:  {elapsed_time:.2f} seconds")
         print(f"{'='*60}\n")
-
-        if return_clusters_object:
-            # Create and return Clusters object
-            from core.clusters import Clusters
-            clusters = Clusters(labels)
-            # Optionally set random colors for visualization
-            clusters.set_random_color()
-            return clusters
-        else:
-            return labels
-
-    def _dbscan_cuml(self, eps, min_points):
-        """
-        Internal method to perform GPU-accelerated DBSCAN using cuML (RAPIDS).
-
-        Parameters:
-        - eps (float): Epsilon parameter for DBSCAN.
-        - min_points (int): Minimum points parameter for DBSCAN.
-
-        Returns:
-        - labels (np.ndarray): An array of cluster labels.
-
-        Raises:
-        - ImportError: If cuML is not available.
-        """
-        try:
-            from cuml.cluster import DBSCAN as cumlDBSCAN
-            import cupy as cp
-            import cuml
-
-            print(f"Using GPU-accelerated cuML DBSCAN (version {cuml.__version__})")
-            print(f"Processing {len(self.points):,} points with eps={eps}, min_samples={min_points}")
-
-            # Transfer data to GPU
-            points_gpu = cp.asarray(self.points, dtype=cp.float32)
-
-            # Create and run GPU DBSCAN
-            db = cumlDBSCAN(eps=eps, min_samples=min_points)
-            labels_gpu = db.fit_predict(points_gpu)
-
-            # Transfer results back to CPU as numpy array
-            labels = cp.asnumpy(labels_gpu).astype(np.int32)
-
-            return labels
-
-        except ImportError as e:
-            raise ImportError(f"cuML not available for GPU DBSCAN: {e}")
-
-    def _dbscan_open3d(self, eps, min_points, return_clusters_object=False):
-        """
-        Internal method to perform DBSCAN using Open3D implementation.
-
-        Parameters:
-        - eps (float): Epsilon parameter for DBSCAN.
-        - min_points (int): Minimum points parameter for DBSCAN.
-        - return_clusters_object (bool): Not used in this method, kept for API consistency.
-
-        Returns:
-        - labels (np.ndarray): An array of cluster labels.
-        """
-        print(f"Using Open3D DBSCAN")
-        print(f"Processing {len(self.points):,} points with eps={eps}, min_points={min_points}")
-
-        # Convert points to Open3D point cloud and perform DBSCAN
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(self.points)
-
-        # Use VerbosityContextManager to control console output
-        with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
-            labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=True))
-
-        return labels
 
     def density_downsample(self, voxel_size):
         """
@@ -520,7 +486,7 @@ class PointCloud:
     def get_subset(self, mask, inplace=False):
         """
         Extracts a subset based on a mask, either by modifying the current point cloud or returning a new one.
-        Uses GPU acceleration when CuPy is available for improved performance.
+        Uses the backend registry to automatically select GPU (CuPy) or CPU (NumPy) acceleration.
 
         Parameters:
         - mask (np.ndarray): A boolean array where True values indicate points to include in the subset.
@@ -529,9 +495,10 @@ class PointCloud:
         Returns:
         - PointCloud: A new PointCloud instance containing the subset if inplace is False.
         """
+        from config.config import global_variables
+
         # Check if mask selects enough points (at least 4)
         if not np.count_nonzero(mask) >= 4:
-            # Handle the case where the mask filters out all points
             print("Not enough points found for subset.")
             if inplace:
                 self.points = np.array([])
@@ -546,161 +513,70 @@ class PointCloud:
                 self.feature = []
                 self.metadata = {}
             else:
-                # Return an empty PointCloud instance with (1, 3) dimension as
-                # PointCloud constructor needs (n, 3) ndarray for points
-                # Use float32 to match the expected dtype
                 return PointCloud(np.empty((1, 3), dtype=np.float32))
+            return
+
+        # Get masking backend from registry
+        backend_registry = global_variables.global_backend_registry
+        if backend_registry is not None:
+            masking_backend = backend_registry.get_masking()
         else:
-            try:
-                # Try to use GPU acceleration with CuPy
-                import cupy as cp
+            masking_backend = None
 
-                if inplace:
-                    # Transfer data to GPU
-                    cp_mask = cp.asarray(mask)
+        if inplace:
+            self._apply_mask_inplace(mask, masking_backend)
+        else:
+            subset = copy.deepcopy(self)
+            subset._apply_mask_inplace(mask, masking_backend)
+            return subset
 
-                    # Apply mask on GPU
-                    if hasattr(self, 'points') and len(self.points) > 0:
-                        cp_points = cp.asarray(self.points)
-                        self.points = cp.asnumpy(cp_points[cp_mask]).astype(self.points.dtype)
+    def _apply_mask_inplace(self, mask, masking_backend=None):
+        """
+        Apply mask to all point cloud attributes in-place.
 
-                    # Update OBB dimensions after modifying points
-                    self._update_obb_dim()
+        Args:
+            mask: Boolean mask array
+            masking_backend: MaskingBackend instance or None for fallback
+        """
+        # Helper function to apply mask to an array
+        def apply_mask(array):
+            if masking_backend is not None:
+                return masking_backend.apply_mask_to_array(array, mask)
+            else:
+                return array[mask]
 
-                    # Apply mask to other attributes if they exist
-                    if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
-                        cp_colors = cp.asarray(self.colors)
-                        self.colors = cp.asnumpy(cp_colors[cp_mask]).astype(self.colors.dtype)
+        # Apply mask to points
+        if hasattr(self, 'points') and len(self.points) > 0:
+            original_dtype = self.points.dtype
+            self.points = apply_mask(self.points).astype(original_dtype)
 
-                    if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
-                        cp_normals = cp.asarray(self.normals)
-                        self.normals = cp.asnumpy(cp_normals[cp_mask]).astype(self.normals.dtype)
+        # Update OBB dimensions
+        self._update_obb_dim()
 
-                    if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
-                        cp_intensity = cp.asarray(self.intensity)
-                        self.intensity = cp.asnumpy(cp_intensity[cp_mask])
+        # Apply mask to colors
+        if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
+            original_dtype = self.colors.dtype
+            self.colors = apply_mask(self.colors).astype(original_dtype)
 
-                    if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and \
-                            self.distToGround.shape[0] > 0:
-                        cp_dist = cp.asarray(self.distToGround)
-                        self.distToGround = cp.asnumpy(cp_dist[cp_mask])
+        # Apply mask to normals
+        if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
+            original_dtype = self.normals.dtype
+            self.normals = apply_mask(self.normals).astype(original_dtype)
 
-                    # Process any custom attributes in the attributes dictionary
-                    for attr_name in list(self.attributes.keys()):
-                        attr_value = self.attributes[attr_name]
-                        if isinstance(attr_value, np.ndarray):
-                            if attr_value.shape[0] == len(mask):
-                                cp_attr = cp.asarray(attr_value)
-                                if cp_attr.ndim == 1:
-                                    self.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask])
-                                else:
-                                    self.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask, ...])
-                else:
-                    # Create a deep copy of the point cloud and apply the mask
-                    subset = copy.deepcopy(self)
+        # Apply mask to intensity
+        if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
+            self.intensity = apply_mask(self.intensity)
 
-                    # Transfer data to GPU and apply mask
-                    cp_mask = cp.asarray(mask)
+        # Apply mask to distToGround
+        if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0:
+            self.distToGround = apply_mask(self.distToGround)
 
-                    if subset.points is not None and len(subset.points) > 0:
-                        cp_points = cp.asarray(subset.points)
-                        subset.points = cp.asnumpy(cp_points[cp_mask]).astype(subset.points.dtype)
+        # Process custom attributes
+        for attr_name in list(self.attributes.keys()):
+            attr_value = self.attributes[attr_name]
+            if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                self.attributes[attr_name] = apply_mask(attr_value)
 
-                    # Update OBB dimensions
-                    subset._update_obb_dim()
-
-                    if subset.colors is not None and subset.colors.shape[0] > 0:
-                        cp_colors = cp.asarray(subset.colors)
-                        subset.colors = cp.asnumpy(cp_colors[cp_mask]).astype(subset.colors.dtype)
-
-                    if subset.normals is not None and subset.normals.shape[0] > 0:
-                        cp_normals = cp.asarray(subset.normals)
-                        subset.normals = cp.asnumpy(cp_normals[cp_mask]).astype(subset.normals.dtype)
-
-                    if hasattr(subset, 'intensity') and hasattr(subset.intensity, 'shape') and subset.intensity.shape[
-                        0] > 0:
-                        cp_intensity = cp.asarray(subset.intensity)
-                        subset.intensity = cp.asnumpy(cp_intensity[cp_mask])
-
-                    if hasattr(subset, 'distToGround') and hasattr(subset.distToGround, 'shape') and \
-                            subset.distToGround.shape[0] > 0:
-                        cp_dist = cp.asarray(subset.distToGround)
-                        subset.distToGround = cp.asnumpy(cp_dist[cp_mask])
-
-                    # Process any custom attributes in the attributes dictionary
-                    for attr_name in list(subset.attributes.keys()):
-                        attr_value = subset.attributes[attr_name]
-                        if isinstance(attr_value, np.ndarray):
-                            if attr_value.shape[0] == len(mask):
-                                cp_attr = cp.asarray(attr_value)
-                                if cp_attr.ndim == 1:
-                                    subset.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask])
-                                else:
-                                    subset.attributes[attr_name] = cp.asnumpy(cp_attr[cp_mask, ...])
-
-                    return subset
-
-            except (ImportError, ModuleNotFoundError):
-                # Fallback to CPU implementation if CuPy is not available
-                if inplace:
-                    # Modify the current point cloud's points and attributes in-place
-                    # Apply the mask to attributes of the point cloud
-                    self.points = self.points[mask]
-                    self._update_obb_dim()
-
-                    if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
-                        self.colors = self.colors[mask]
-
-                    if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
-                        self.normals = self.normals[mask]
-
-                    if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
-                        self.intensity = self.intensity[mask]
-
-                    if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and \
-                            self.distToGround.shape[0] > 0:
-                        self.distToGround = self.distToGround[mask]
-
-                    # Process any custom attributes in the attributes dictionary
-                    for attr_name in list(self.attributes.keys()):
-                        attr_value = self.attributes[attr_name]
-                        if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
-                            if attr_value.ndim == 1:
-                                self.attributes[attr_name] = attr_value[mask]
-                            else:
-                                self.attributes[attr_name] = attr_value[mask, ...]
-                else:
-                    # Create a deep copy of the point cloud and apply the mask
-                    subset = copy.deepcopy(self)
-
-                    # Apply the mask to attributes of the point cloud
-                    subset.points = subset.points[mask]
-                    subset._update_obb_dim()
-
-                    if subset.colors is not None and subset.colors.shape[0] > 0:
-                        subset.colors = subset.colors[mask]
-
-                    if subset.normals is not None and subset.normals.shape[0] > 0:
-                        subset.normals = subset.normals[mask]
-
-                    if hasattr(subset, 'intensity') and hasattr(subset.intensity, 'shape') and subset.intensity.shape[
-                        0] > 0:
-                        subset.intensity = subset.intensity[mask]
-
-                    if hasattr(subset, 'distToGround') and hasattr(subset.distToGround, 'shape') and \
-                            subset.distToGround.shape[0] > 0:
-                        subset.distToGround = subset.distToGround[mask]
-
-                    # Process any custom attributes in the attributes dictionary
-                    for attr_name in list(subset.attributes.keys()):
-                        attr_value = subset.attributes[attr_name]
-                        if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
-                            if attr_value.ndim == 1:
-                                subset.attributes[attr_name] = attr_value[mask]
-                            else:
-                                subset.attributes[attr_name] = attr_value[mask, ...]
-
-                    return subset
     def get_obb(self):
         """
         Calculates the 3D Oriented Bounding Box (OBB) for the cluster, aligned with the Z-axis.

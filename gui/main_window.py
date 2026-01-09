@@ -94,6 +94,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusbar = QtWidgets.QStatusBar(self)
         self.setStatusBar(self.statusbar)
 
+        # Create permanent hardware info label in status bar
+        self._hardware_status_label = QtWidgets.QLabel()
+        self.statusbar.addPermanentWidget(self._hardware_status_label)
+
+        # Display hardware info in status bar
+        self._update_status_bar_hardware_info()
+
+    def _update_status_bar_hardware_info(self):
+        """Update status bar with hardware and backend information."""
+        hardware = global_variables.global_hardware_info
+        registry = global_variables.global_backend_registry
+
+        if hardware is None or registry is None:
+            self._hardware_status_label.setText("Hardware detection not initialized")
+            return
+
+        # Build status message
+        if hardware.gpu_available:
+            gpu_info = f"GPU: {hardware.gpu_name} ({hardware.gpu_memory_mb} MB)"
+        else:
+            gpu_info = "GPU: None (CPU mode)"
+
+        scenario = registry.get_scenario()
+
+        # Color code the scenario
+        if scenario == "FULL_GPU":
+            scenario_color = "#28a745"  # Green
+        elif scenario == "PARTIAL_GPU":
+            scenario_color = "#ffc107"  # Yellow
+        else:
+            scenario_color = "#dc3545"  # Red
+
+        status_html = f'{gpu_info} | Mode: <span style="color: {scenario_color}; font-weight: bold;">{scenario}</span>'
+        self._hardware_status_label.setText(status_html)
+
     def setup_base_menus(self):
         """Set up the base menu structure for the application."""
         self.menubar = self.menuBar()
