@@ -174,7 +174,7 @@ class HardwareDetector:
         Determine the hardware scenario for backend selection.
 
         Returns:
-            str: "FULL_GPU", "PARTIAL_GPU", or "CPU_ONLY"
+            str: "FULL GPU", "PARTIAL GPU", or "CPU ONLY"
         """
         if cls._hardware_info is None:
             cls.detect()
@@ -182,11 +182,11 @@ class HardwareDetector:
         info = cls._hardware_info
 
         if info.nvidia_gpu and info.cuml_available:
-            return "FULL_GPU"
+            return "FULL GPU"
         elif info.nvidia_gpu:
-            return "PARTIAL_GPU"
+            return "PARTIAL GPU"
         else:
-            return "CPU_ONLY"
+            return "CPU ONLY"
 
     @classmethod
     def can_use_rapids(cls) -> bool:
@@ -213,3 +213,83 @@ class HardwareDetector:
     def reset(cls) -> None:
         """Reset cached hardware info (useful for testing)."""
         cls._hardware_info = None
+
+    @classmethod
+    def get_dynamic_stats(cls) -> dict:
+        """
+        Get real-time hardware statistics.
+
+        Returns:
+            dict with keys:
+                - ram_used_gb: RAM used in GB
+                - ram_total_gb: Total RAM in GB
+                - ram_percent: RAM usage percentage
+                - vram_used_mb: VRAM used in MB (0 if no GPU)
+                - vram_total_mb: Total VRAM in MB (0 if no GPU)
+                - vram_percent: VRAM usage percentage (0 if no GPU)
+                - gpu_utilization: GPU utilization percentage (0 if no GPU)
+                - gpu_temp_c: GPU temperature in Celsius (None if not available)
+        """
+        stats = {
+            'ram_used_gb': 0.0,
+            'ram_total_gb': 0.0,
+            'ram_percent': 0.0,
+            'vram_used_mb': 0,
+            'vram_total_mb': 0,
+            'vram_percent': 0.0,
+            'gpu_utilization': 0,
+            'gpu_temp_c': None,
+        }
+
+        # RAM statistics via psutil
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            stats['ram_used_gb'] = mem.used / (1024 ** 3)
+            stats['ram_total_gb'] = mem.total / (1024 ** 3)
+            stats['ram_percent'] = mem.percent
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"Error getting RAM stats: {e}")
+
+        # GPU statistics via pynvml (more reliable than PyTorch for utilization/temp)
+        if cls._hardware_info and cls._hardware_info.nvidia_gpu:
+            try:
+                import pynvml
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+
+                # VRAM
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                stats['vram_used_mb'] = mem_info.used // (1024 * 1024)
+                stats['vram_total_mb'] = mem_info.total // (1024 * 1024)
+                stats['vram_percent'] = (mem_info.used / mem_info.total) * 100
+
+                # GPU utilization
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                stats['gpu_utilization'] = util.gpu
+
+                # Temperature
+                try:
+                    temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                    stats['gpu_temp_c'] = temp
+                except Exception:
+                    pass
+
+                pynvml.nvmlShutdown()
+            except ImportError:
+                # Fall back to PyTorch for basic VRAM info
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        stats['vram_used_mb'] = torch.cuda.memory_allocated(0) // (1024 * 1024)
+                        stats['vram_total_mb'] = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
+                        if stats['vram_total_mb'] > 0:
+                            stats['vram_percent'] = (stats['vram_used_mb'] / stats['vram_total_mb']) * 100
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.debug(f"Error getting GPU stats via pynvml: {e}")
+
+        return stats

@@ -332,9 +332,16 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 if calib_path:
                     Tr_velo_to_cam = self._load_calib(calib_path)
 
-                # Calculate consistent origin from trajectory
+                # Calculate consistent origin from trajectory (in KITTI coords)
                 scanner_positions = np.array([pose[:3, 3] for pose in poses])
-                trajectory_min_bound = scanner_positions.min(axis=0)
+                trajectory_min_bound_kitti = scanner_positions.min(axis=0)
+
+                # Convert to viewer coordinates: [X, Y, Z] -> [X, Z, -Y]
+                trajectory_min_bound = np.array([
+                    trajectory_min_bound_kitti[0],   # X unchanged
+                    trajectory_min_bound_kitti[2],   # Y = Z_old
+                    -trajectory_min_bound_kitti[1]   # Z = -Y_old
+                ])
             else:
                 QMessageBox.warning(
                     main_window,
@@ -349,7 +356,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         for file_path in file_paths:
             try:
                 # Load .bin file
-                data = np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
+                raw_data = np.fromfile(file_path, dtype=np.float32)
+
+                if len(raw_data) % 4 != 0:
+                    failed_files.append((os.path.basename(file_path), "Invalid data size"))
+                    continue
+
+                data = raw_data.reshape(-1, 4)
                 points = data[:, :3].astype(np.float64)  # Convert to float64 for transformation precision
                 intensity = data[:, 3]  # remission/intensity
 
@@ -373,7 +386,6 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                         instance_ids = instance_ids[mask]
 
                     filtered_count = len(points)
-                    print(f"  {os.path.basename(file_path)}: {original_count:,} → {filtered_count:,} points ({100 * filtered_count / original_count:.1f}%)")
 
                 # Apply pose if requested
                 if apply_poses and poses:
@@ -476,7 +488,16 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         # Calculate consistent origin from trajectory (scanner positions)
         # This ensures all imports of same sequence align, regardless of filtering
         scanner_positions = np.array([pose[:3, 3] for pose in poses])
-        trajectory_min_bound = scanner_positions.min(axis=0)
+        trajectory_min_bound_kitti = scanner_positions.min(axis=0)
+
+        # Convert trajectory_min_bound from KITTI to viewer coordinates
+        # KITTI: X forward, Y left, Z up -> Viewer: X forward, Y up, Z right
+        # [X, Y, Z] -> [X, Z, -Y]
+        trajectory_min_bound = np.array([
+            trajectory_min_bound_kitti[0],   # X unchanged
+            trajectory_min_bound_kitti[2],   # Y = Z_old
+            -trajectory_min_bound_kitti[1]   # Z = -Y_old
+        ])
 
         # Lists to accumulate data
         all_points = []
@@ -486,14 +507,10 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
         failed_files = []
 
-        print(f"\nMerging {len(file_paths)} scans...")
+        # Merging scans
         progress_interval = max(1, len(file_paths) // 20)  # Show progress every 5%
 
         for idx, file_path in enumerate(file_paths):
-            # Show progress
-            if idx % progress_interval == 0:
-                print(f"Processing scan {idx + 1}/{len(file_paths)} ({100 * idx / len(file_paths):.0f}%)")
-
             try:
                 # Load .bin file
                 data = np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
@@ -521,7 +538,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
                     filtered_count = len(points)
                     if idx % progress_interval == 0:
-                        print(f"  Filtered: {original_count:,} → {filtered_count:,} points ({100 * filtered_count / original_count:.1f}%)")
+                        pass  # Filtered count logging
 
                 # Apply pose transformation (mandatory)
                 frame_num = self._extract_frame_number(os.path.basename(file_path))
@@ -571,13 +588,10 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             )
             return
 
-        print(f"\nMerging arrays from {len(all_points)} scans...")
-
         # Concatenate all data
         try:
             merged_points = np.vstack(all_points)
             merged_intensity = np.concatenate(all_intensity)
-            print(f"Merged {len(merged_points):,} points total")
         except MemoryError as e:
             QMessageBox.critical(
                 main_window,

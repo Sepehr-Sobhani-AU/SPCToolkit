@@ -33,9 +33,9 @@ class BackendRegistry:
     Selects and provides access to the best available backend for each algorithm.
 
     Three scenarios are supported:
-    - FULL_GPU: Linux + NVIDIA + RAPIDS (cuML, CuPy, PyTorch CUDA)
-    - PARTIAL_GPU: NVIDIA without RAPIDS (sklearn, CuPy, PyTorch CUDA)
-    - CPU_ONLY: No NVIDIA GPU (sklearn, NumPy, PyTorch CPU)
+    - FULL GPU: Linux + NVIDIA + RAPIDS (cuML, CuPy, PyTorch CUDA)
+    - PARTIAL GPU: NVIDIA without RAPIDS (sklearn, CuPy, PyTorch CUDA)
+    - CPU ONLY: No NVIDIA GPU (sklearn, NumPy, PyTorch CPU)
 
     Usage:
         registry = BackendRegistry(hardware_info)
@@ -59,17 +59,17 @@ class BackendRegistry:
 
         # Determine scenario
         if self.hardware.nvidia_gpu and self.hardware.cuml_available:
-            self.scenario = "FULL_GPU"  # Linux + NVIDIA + RAPIDS
-            logger.info("Backend scenario: FULL_GPU (Linux + NVIDIA + RAPIDS)")
+            self.scenario = "FULL GPU"  # Linux + NVIDIA + RAPIDS
+            logger.info("Backend scenario: FULL GPU (Linux + NVIDIA + RAPIDS)")
         elif self.hardware.nvidia_gpu:
-            self.scenario = "PARTIAL_GPU"  # NVIDIA but no RAPIDS (Windows or Linux)
-            logger.info("Backend scenario: PARTIAL_GPU (NVIDIA without RAPIDS)")
+            self.scenario = "PARTIAL GPU"  # NVIDIA but no RAPIDS (Windows or Linux)
+            logger.info("Backend scenario: PARTIAL GPU (NVIDIA without RAPIDS)")
         else:
-            self.scenario = "CPU_ONLY"  # No GPU / AMD / Intel
-            logger.info("Backend scenario: CPU_ONLY")
+            self.scenario = "CPU ONLY"  # No GPU / AMD / Intel
+            logger.info("Backend scenario: CPU ONLY")
 
         # DBSCAN: cuML (RAPIDS only) > sklearn
-        if self.scenario == "FULL_GPU":
+        if self.scenario == "FULL GPU":
             self._backends['dbscan'] = CuMLDBSCAN()
             logger.info("DBSCAN backend: cuML (GPU)")
         else:
@@ -77,7 +77,7 @@ class BackendRegistry:
             logger.info("DBSCAN backend: scikit-learn (CPU)")
 
         # KNN: cuML (RAPIDS only) > scipy
-        if self.scenario == "FULL_GPU":
+        if self.scenario == "FULL GPU":
             self._backends['knn'] = CuMLKNN()
             logger.info("KNN backend: cuML (GPU)")
         else:
@@ -85,7 +85,7 @@ class BackendRegistry:
             logger.info("KNN backend: scipy (CPU)")
 
         # Masking: CuPy (NVIDIA GPU) > NumPy
-        if self.scenario in ["FULL_GPU", "PARTIAL_GPU"] and self.hardware.cupy_available:
+        if self.scenario in ["FULL GPU", "PARTIAL GPU"] and self.hardware.cupy_available:
             self._backends['masking'] = CuPyMasking()
             logger.info("Masking backend: CuPy (GPU)")
         else:
@@ -93,7 +93,7 @@ class BackendRegistry:
             logger.info("Masking backend: NumPy (CPU)")
 
         # Eigenvalues: PyTorch CUDA (NVIDIA GPU) > PyTorch CPU
-        if self.scenario in ["FULL_GPU", "PARTIAL_GPU"] and self.hardware.pytorch_cuda:
+        if self.scenario in ["FULL GPU", "PARTIAL GPU"] and self.hardware.pytorch_cuda:
             self._backends['eigenvalue'] = PyTorchCUDAEigen()
             logger.info("Eigenvalue backend: PyTorch CUDA (GPU)")
         else:

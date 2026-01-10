@@ -12,6 +12,7 @@ from core.analysis_thread_manager import AnalysisThreadManager
 from services.file_manager import FileManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from plugins.plugin_manager import PluginManager
+from services.hardware_detector import HardwareDetector
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -94,15 +95,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusbar = QtWidgets.QStatusBar(self)
         self.setStatusBar(self.statusbar)
 
-        # Create permanent hardware info label in status bar
+        # Create permanent hardware info label in status bar (right-aligned)
         self._hardware_status_label = QtWidgets.QLabel()
+        self._hardware_status_label.setTextFormat(QtCore.Qt.RichText)
+        self._hardware_status_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.statusbar.addPermanentWidget(self._hardware_status_label)
+
+        # Create separate label for mode with tooltip
+        self._mode_label = QtWidgets.QLabel()
+        self._mode_label.setTextFormat(QtCore.Qt.RichText)
+        self._mode_label.setToolTip(
+            "<b>Backend Modes:</b><br><br>"
+            "<b style='color: #28a745;'>FULL GPU</b>: Linux + NVIDIA GPU + RAPIDS (cuML)<br>"
+            "All algorithms use GPU acceleration including DBSCAN and KNN.<br><br>"
+            "<b style='color: #ffc107;'>PARTIAL GPU</b>: NVIDIA GPU without RAPIDS<br>"
+            "PyTorch and CuPy use GPU, but DBSCAN/KNN use CPU (sklearn/scipy).<br><br>"
+            "<b style='color: #dc3545;'>CPU ONLY</b>: No compatible GPU detected<br>"
+            "All algorithms run on CPU."
+        )
+        self.statusbar.addPermanentWidget(self._mode_label)
 
         # Display hardware info in status bar
         self._update_status_bar_hardware_info()
 
+        # Set up timer for dynamic hardware stats update (every 2 seconds)
+        self._stats_timer = QtCore.QTimer(self)
+        self._stats_timer.timeout.connect(self._update_status_bar_hardware_info)
+        self._stats_timer.start(2000)  # Update every 2 seconds
+
     def _update_status_bar_hardware_info(self):
-        """Update status bar with hardware and backend information."""
+        """Update status bar with hardware and dynamic stats."""
         hardware = global_variables.global_hardware_info
         registry = global_variables.global_backend_registry
 
@@ -110,24 +132,63 @@ class MainWindow(QtWidgets.QMainWindow):
             self._hardware_status_label.setText("Hardware detection not initialized")
             return
 
-        # Build status message
+        # Get dynamic stats
+        stats = HardwareDetector.get_dynamic_stats()
+
+        # RAM info
+        ram_html = f"RAM: {stats['ram_used_gb']:.1f}/{stats['ram_total_gb']:.1f} GB ({stats['ram_percent']:.0f}%)"
+
+        # GPU info with dynamic stats
         if hardware.gpu_available:
-            gpu_info = f"GPU: {hardware.gpu_name} ({hardware.gpu_memory_mb} MB)"
+            gpu_name = hardware.gpu_name
+
+            # VRAM
+            vram_html = f"VRAM: {stats['vram_used_mb']}/{stats['vram_total_mb']} MB ({stats['vram_percent']:.0f}%)"
+
+            # GPU utilization with color coding
+            util = stats['gpu_utilization']
+            if util > 80:
+                util_color = "#dc3545"  # Red for high usage
+            elif util > 50:
+                util_color = "#ffc107"  # Yellow for medium
+            else:
+                util_color = "#28a745"  # Green for low
+
+            util_html = f'<span style="color: {util_color};">{util}%</span>'
+
+            # Temperature with color coding
+            temp = stats['gpu_temp_c']
+            if temp is not None:
+                if temp > 80:
+                    temp_color = "#dc3545"  # Red for hot
+                elif temp > 65:
+                    temp_color = "#ffc107"  # Yellow for warm
+                else:
+                    temp_color = "#28a745"  # Green for cool
+                temp_html = f'<span style="color: {temp_color};">{temp}°C</span>'
+            else:
+                temp_html = ""
+
+            # Build status (include temp only if available)
+            if temp is not None:
+                status_html = f'{gpu_name} | {vram_html} | {util_html} | {temp_html} | {ram_html}'
+            else:
+                status_html = f'{gpu_name} | {vram_html} | {util_html} | {ram_html}'
         else:
-            gpu_info = "GPU: None (CPU mode)"
+            # CPU only mode
+            status_html = f'{ram_html} | GPU: None'
 
+        self._hardware_status_label.setText(status_html)
+
+        # Update mode label separately (with tooltip)
         scenario = registry.get_scenario()
-
-        # Color code the scenario
-        if scenario == "FULL_GPU":
+        if scenario == "FULL GPU":
             scenario_color = "#28a745"  # Green
-        elif scenario == "PARTIAL_GPU":
+        elif scenario == "PARTIAL GPU":
             scenario_color = "#ffc107"  # Yellow
         else:
             scenario_color = "#dc3545"  # Red
-
-        status_html = f'{gpu_info} | Mode: <span style="color: {scenario_color}; font-weight: bold;">{scenario}</span>'
-        self._hardware_status_label.setText(status_html)
+        self._mode_label.setText(f'<span style="color: {scenario_color}; font-weight: bold;">{scenario}</span>')
 
     def setup_base_menus(self):
         """Set up the base menu structure for the application."""

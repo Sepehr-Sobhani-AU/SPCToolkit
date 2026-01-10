@@ -157,8 +157,6 @@ class PointCloud:
         # Store the attribute
         self.attributes[name] = values
 
-        print(f"Added attribute '{name}' with shape {values.shape} to point cloud")
-
     def get_attribute(self, name):
         """Get a per-point attribute by name."""
         return self.attributes.get(name)
@@ -989,33 +987,39 @@ class PointCloud:
         # Compute the OBB of the cluster
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(self.points[:, :3])
-        obb = pcd.get_oriented_bounding_box()
 
-        # Compute the OBB's three main axes
-        axis1 = obb.R[:, 0]
-        axis2 = obb.R[:, 1]
-        axis3 = obb.R[:, 2]
+        try:
+            obb = pcd.get_oriented_bounding_box()
 
-        # Project the axes onto world's Z-axis
-        proj1 = np.abs(np.dot(axis1, [0, 0, 1]))
-        proj2 = np.abs(np.dot(axis2, [0, 0, 1]))
-        proj3 = np.abs(np.dot(axis3, [0, 0, 1]))
+            # Compute the OBB's three main axes
+            axis1 = obb.R[:, 0]
+            axis2 = obb.R[:, 1]
+            axis3 = obb.R[:, 2]
 
-        # Determine the height along the axis with the largest projection onto Z-axis
-        if proj1 >= proj2 and proj1 >= proj3:
-            i = 0
-        elif proj2 >= proj1 and proj2 >= proj3:
-            i = 1
-        else:
-            i = 2
+            # Project the axes onto world's Z-axis
+            proj1 = np.abs(np.dot(axis1, [0, 0, 1]))
+            proj2 = np.abs(np.dot(axis2, [0, 0, 1]))
+            proj3 = np.abs(np.dot(axis3, [0, 0, 1]))
 
-        height = obb.extent[i]
-        length = max(np.delete(obb.extent, i))
-        width = min(np.delete(obb.extent, i))
+            # Determine the height along the axis with the largest projection onto Z-axis
+            if proj1 >= proj2 and proj1 >= proj3:
+                i = 0
+            elif proj2 >= proj1 and proj2 >= proj3:
+                i = 1
+            else:
+                i = 2
 
-        self.length = length
-        self.width = width
-        self.height = height
+            height = obb.extent[i]
+            length = max(np.delete(obb.extent, i))
+            width = min(np.delete(obb.extent, i))
+
+            self.length = length
+            self.width = width
+            self.height = height
+
+        except RuntimeError:
+            # OBB calculation failed (degenerate geometry) - use 2D bounding box fallback
+            self._update_2d_bbox()
 
     def _save_as_ply(self, file_name):
         """

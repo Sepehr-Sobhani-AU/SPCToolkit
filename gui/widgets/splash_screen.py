@@ -285,9 +285,9 @@ class SplashScreen(QWidget):
 
         # Mode with color coding
         mode_colors = {
-            "FULL_GPU": "#64ffda",      # Teal/green
-            "PARTIAL_GPU": "#ffd93d",   # Yellow
-            "CPU_ONLY": "#f56565"       # Red
+            "FULL GPU": "#64ffda",      # Teal/green
+            "PARTIAL GPU": "#ffd93d",   # Yellow
+            "CPU ONLY": "#f56565"       # Red
         }
         mode_color = mode_colors.get(mode, "#ccd6f6")
 
