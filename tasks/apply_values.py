@@ -38,8 +38,18 @@ class ApplyValues:
         Returns:
             PointCloud: The point cloud with values applied
         """
-        # Create a copy of the point cloud to avoid modifying the original
-        result_point_cloud = self.point_cloud.get_subset(np.ones(self.point_cloud.size, dtype=bool))
+        # Create shallow copy - shares array references (memory efficient)
+        # This is safe because we only add attributes
+        result_point_cloud = PointCloud(
+            points=self.point_cloud.points,
+            colors=self.point_cloud.colors,
+            normals=self.point_cloud.normals,
+            intensity=getattr(self.point_cloud, 'intensity', np.array([])),
+            distToGround=getattr(self.point_cloud, 'distToGround', np.array([])),
+            params=self.point_cloud.name,
+        )
+        # Copy attributes dictionary so we don't modify the original
+        result_point_cloud.attributes = self.point_cloud.attributes.copy()
 
         # Check if values is a multi-dimensional array
         if len(self.values.shape) > 1:
