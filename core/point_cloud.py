@@ -91,7 +91,10 @@ class PointCloud:
         self.height = 0
 
         # If cluster has no point in it, ignore calculating obb
-        if self.size > 3:
+        # Skip OBB for large point clouds (>10M) to avoid slow computation
+        if self.size > 10_000_000:
+            logger.debug(f"  Skipping OBB for large point cloud ({self.size:,} points)")
+        elif self.size > 3:
             # Check if points are coplanar (all have the same Z coordinate)
             # If so, skip OBB calculation as it will fail
             if not self._are_points_coplanar():
@@ -507,6 +510,8 @@ class PointCloud:
         Extracts a subset based on a mask, either by modifying the current point cloud or returning a new one.
         Uses the backend registry to automatically select GPU (CuPy) or CPU (NumPy) acceleration.
 
+        This method is memory-optimized: instead of deepcopy + mask, it creates filtered arrays directly.
+
         Parameters:
         - mask (np.ndarray): A boolean array where True values indicate points to include in the subset.
         - inplace (bool): If True, modifies the current point cloud in-place. Default is False.
@@ -545,9 +550,93 @@ class PointCloud:
         if inplace:
             self._apply_mask_inplace(mask, masking_backend)
         else:
-            subset = copy.deepcopy(self)
-            subset._apply_mask_inplace(mask, masking_backend)
-            return subset
+            # Memory-optimized: create new PointCloud with filtered arrays directly
+            # This avoids deepcopy which would duplicate all arrays before filtering
+            return self._create_masked_subset(mask, masking_backend)
+
+    def _create_masked_subset(self, mask, masking_backend=None):
+        """
+        Create a new PointCloud with masked data directly (no deepcopy).
+
+        This is more memory-efficient than deepcopy + inplace mask, as it only
+        allocates memory for the filtered arrays, not the full copy.
+
+        Args:
+            mask: Boolean mask array
+            masking_backend: MaskingBackend instance or None for fallback
+
+        Returns:
+            PointCloud: New point cloud with only masked points
+        """
+        logger.debug(f"_create_masked_subset() called, mask has {np.sum(mask):,} True values")
+
+        # Helper function to apply mask to an array
+        def apply_mask(array):
+            if array is None:
+                return None
+            if masking_backend is not None:
+                return masking_backend.apply_mask_to_array(array, mask)
+            else:
+                return array[mask]
+
+        # Apply mask to core arrays
+        new_points = apply_mask(self.points)
+        if new_points is not None:
+            new_points = new_points.astype(self.points.dtype)
+
+        new_colors = None
+        if self.colors is not None and len(self.colors) > 0:
+            new_colors = apply_mask(self.colors)
+            if new_colors is not None:
+                new_colors = new_colors.astype(self.colors.dtype)
+
+        new_normals = None
+        if self.normals is not None and len(self.normals) > 0:
+            new_normals = apply_mask(self.normals)
+            if new_normals is not None:
+                new_normals = new_normals.astype(self.normals.dtype)
+
+        # Apply mask to legacy attributes (intensity, distToGround)
+        new_intensity = np.array([])
+        if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
+            new_intensity = apply_mask(self.intensity)
+
+        new_dist_to_ground = np.array([])
+        if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0:
+            new_dist_to_ground = apply_mask(self.distToGround)
+
+        # Create new PointCloud with filtered data
+        subset = PointCloud(
+            points=new_points,
+            colors=new_colors,
+            normals=new_normals,
+            intensity=new_intensity,
+            distToGround=new_dist_to_ground,
+            params=self.name,
+            feature=self.feature.copy() if isinstance(self.feature, list) else self.feature,
+            metadata=self.metadata.copy() if isinstance(self.metadata, dict) else self.metadata
+        )
+
+        # Copy non-array attributes (shallow copy is fine for these)
+        subset.translation = self.translation.copy()
+        subset.uuid = self.uuid
+        subset.parent_uuid = self.parent_uuid
+        subset.child_uuid = self.child_uuid
+        subset.cluster_labels = self.cluster_labels.copy() if isinstance(self.cluster_labels, list) else self.cluster_labels
+        subset.prediction = self.prediction
+        subset.probability = self.probability
+        subset.model_weight = self.model_weight
+
+        # Apply mask to custom attributes
+        for attr_name, attr_value in self.attributes.items():
+            if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                subset.attributes[attr_name] = apply_mask(attr_value)
+            else:
+                # Non-array or different-sized attributes are copied by reference
+                subset.attributes[attr_name] = attr_value
+
+        logger.debug(f"_create_masked_subset() completed: {subset.size:,} points")
+        return subset
 
     def _apply_mask_inplace(self, mask, masking_backend=None):
         """
