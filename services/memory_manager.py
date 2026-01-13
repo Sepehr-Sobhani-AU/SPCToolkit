@@ -56,9 +56,13 @@ class MemoryManager:
         """
         Estimate RAM needed to render a given number of points.
 
-        Memory breakdown:
-        - If cached: only combined array needed (6 floats * 4 bytes per point)
-        - If not cached: points + colors + combined + 20% overhead
+        Memory breakdown (optimized pipeline - direct combined array):
+        - Base: combined array (6 floats * 4 bytes = 24 bytes per point)
+        - If cached: 10% overhead (direct assignment to viewer)
+        - If not cached: 20% overhead (reconstruction + filling)
+
+        The rendering pipeline now builds the combined array directly instead of
+        creating separate points/colors arrays, reducing peak memory by ~50%.
 
         Args:
             num_points: Number of points to render
@@ -68,20 +72,18 @@ class MemoryManager:
             Estimated memory requirement in MB
         """
         bytes_per_float = 4
-        floats_per_point_xyz = 3
+        floats_per_combined_point = 6  # xyz + rgb
+
+        # Base memory: single combined array (24 bytes per point)
+        combined_bytes = num_points * floats_per_combined_point * bytes_per_float
 
         if cached:
-            # Only need the combined array (6 floats per point: xyz + rgb)
-            combined_bytes = num_points * 6 * bytes_per_float
-            # Add 20% overhead for safety
-            total_bytes = combined_bytes * 1.2
+            # Cached: minimal overhead (direct assignment to viewer)
+            total_bytes = combined_bytes * 1.1
         else:
-            # Need: points array + colors array + combined array
-            points_bytes = num_points * floats_per_point_xyz * bytes_per_float
-            colors_bytes = num_points * floats_per_point_xyz * bytes_per_float
-            combined_bytes = num_points * 6 * bytes_per_float
-            # Add 20% overhead for intermediate operations
-            total_bytes = (points_bytes + colors_bytes + combined_bytes) * 1.2
+            # Not cached: additional overhead for reconstruction operations
+            # Reconstruction may create temporary PointCloud objects
+            total_bytes = combined_bytes * 1.2
 
         return int(total_bytes / (1024 * 1024))
 

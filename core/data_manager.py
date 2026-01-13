@@ -572,9 +572,9 @@ class DataManager(QObject):
                 self._revert_visibility(uid)
             return
 
-        # Pre-allocate arrays for efficient accumulation (no np.append)
-        all_points = np.empty((total_points, 3), dtype=np.float32)
-        all_colors = np.empty((total_points, 3), dtype=np.float32)
+        # Pre-allocate vertex array (position + color per vertex) for memory efficiency
+        # This avoids creating separate points/colors arrays that would double memory usage
+        vertices = np.empty((total_points, 6), dtype=np.float32)
         offset = 0
 
         # Process each visible branch
@@ -609,12 +609,12 @@ class DataManager(QObject):
 
                 self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
-                # Fill pre-allocated arrays (efficient - no copying)
-                all_points[offset:offset + n] = point_cloud.points
+                # Fill vertex array directly (xyz in columns 0-2, rgb in columns 3-5)
+                vertices[offset:offset + n, :3] = point_cloud.points
                 if point_cloud.colors is not None:
-                    all_colors[offset:offset + n] = point_cloud.colors
+                    vertices[offset:offset + n, 3:] = point_cloud.colors
                 else:
-                    all_colors[offset:offset + n] = 1.0  # White
+                    vertices[offset:offset + n, 3:] = 1.0  # White
                 offset += n
 
             except Exception as e:
@@ -622,9 +622,9 @@ class DataManager(QObject):
                 logger.error(traceback.format_exc())
                 continue
 
-        # Send to viewer
+        # Send vertex data directly to viewer (memory efficient - no intermediate arrays)
         logger.info(f"  Rendering {offset:,} points")
-        self.viewer_widget.set_points(all_points[:offset], all_colors[:offset])
+        self.viewer_widget.set_point_vertices(vertices[:offset])
         self.viewer_widget.update()
 
         if zoom_extent:

@@ -483,6 +483,71 @@ class PCDViewerWidget(QOpenGLWidget):
             logger.error(traceback.format_exc())
             raise
 
+    def set_point_vertices(self, vertices: np.ndarray):
+        """
+        Set point vertex data directly. More memory efficient than set_points().
+
+        This method accepts vertex data as an Nx6 array (position + color per vertex)
+        and assigns it directly without creating intermediate arrays.
+
+        Args:
+            vertices (numpy.ndarray): Nx6 array of point vertices where columns 0-2
+                are XYZ position and columns 3-5 are RGB color. Must be float32.
+
+        Raises:
+            AssertionError: If the array does not have shape Nx6 or is not float32.
+        """
+        from services.memory_manager import MemoryManager
+
+        logger.debug("PCDViewerWidget.set_point_vertices() called")
+
+        if vertices is None:
+            # Clear display and release memory
+            logger.debug("  Clearing display")
+            if self.vbo is not None:
+                try:
+                    self.vbo.delete()
+                except Exception as e:
+                    logger.warning(f"  Error deleting VBO: {e}")
+                self.vbo = None
+            self.points = None
+            MemoryManager.cleanup()
+            self.update()
+            return
+
+        # Validate input
+        logger.debug(f"  Vertices: {vertices.shape}, {vertices.nbytes / 1024 / 1024:.1f} MB")
+        if vertices.shape[1] != 6:
+            raise ValueError(f"Vertices must have shape Nx6, got {vertices.shape}")
+        if vertices.dtype != np.float32:
+            raise ValueError(f"Vertices must be float32, not {vertices.dtype}")
+
+        try:
+            # Release existing memory before assigning new array
+            if self.vbo is not None:
+                try:
+                    self.vbo.delete()
+                except Exception:
+                    pass
+                self.vbo = None
+            self.points = None
+            MemoryManager.cleanup()
+
+            # Direct assignment - no copying needed
+            self.points = vertices
+            logger.debug(f"  Assigned {len(vertices):,} point vertices directly")
+
+            self.update()
+            logger.debug("  set_point_vertices() completed")
+
+        except MemoryError as e:
+            logger.error(f"  MEMORY ERROR: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"  ERROR: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
     def draw_axis_symbol(self, position):
         """
         Draw the axis symbol at the specified position.
