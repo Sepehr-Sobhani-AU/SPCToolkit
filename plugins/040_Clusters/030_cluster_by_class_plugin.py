@@ -280,12 +280,17 @@ class ClusterByClassPlugin(ActionPlugin):
         )
 
         # Add Clusters node to tree
+        # Block signals for first add_branch to prevent double rendering
         clusters_uid = data_nodes.add_node(clusters_node)
-        tree_widget.add_branch(
-            str(clusters_uid),
-            str(selected_uid_uuid),
-            "cluster_labels"
-        )
+        tree_widget.blockSignals(True)
+        try:
+            tree_widget.add_branch(
+                str(clusters_uid),
+                str(selected_uid_uuid),
+                "cluster_labels"
+            )
+        finally:
+            tree_widget.blockSignals(False)
 
         # Create FeatureClasses object (preserves original class structure)
         # FeatureClasses.labels contains CLASS IDs (same as input FeatureClasses)
@@ -306,6 +311,7 @@ class ClusterByClassPlugin(ActionPlugin):
         )
 
         # Add FeatureClasses node to tree
+        # This triggers branch_added signal → single render for both branches
         feature_classes_uid = data_nodes.add_node(feature_classes_node)
         tree_widget.add_branch(
             str(feature_classes_uid),

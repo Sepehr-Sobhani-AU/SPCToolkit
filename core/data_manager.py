@@ -1,5 +1,8 @@
 # core/data_manager.py
 """Centralised manager for handling data operations, analysis, and interactions"""
+import logging
+import traceback
+
 from config.config import global_variables
 import uuid
 
@@ -17,6 +20,9 @@ from plugins.plugin_manager import PluginManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from gui.widgets.tree_structure_widget import TreeStructureWidget
 from gui.widgets.pcd_viewer_widget import PCDViewerWidget
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 
 class DataManager(QObject):
@@ -462,6 +468,9 @@ class DataManager(QObject):
         Args:
             visibility_status (dict): Dictionary of UUIDs to visibility states.
         """
+        logger.info("_on_branch_added() triggered")
+        logger.debug(f"  visibility_status has {len(visibility_status)} entries")
+
         # Get main window reference
         main_window = global_variables.global_main_window
 
@@ -472,12 +481,41 @@ class DataManager(QObject):
         main_window.disable_tree()
 
         try:
+            logger.debug("  Calling _render_visible_data()...")
             self._render_visible_data(visibility_status, zoom_extent=True)
+            logger.info("_on_branch_added() completed successfully")
+        except Exception as e:
+            logger.error(f"_on_branch_added() FAILED: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            raise
         finally:
             # Hide overlay and re-enable menus and tree
             main_window.tree_overlay.hide_processing()
             main_window.enable_menus()
             main_window.enable_tree()
+
+    def _get_node_point_count(self, node) -> int:
+        """Get point count from a node (cached or from data)."""
+        if node.is_cached and node.cached_point_cloud:
+            return node.cached_point_cloud.size
+        elif node.data:
+            if hasattr(node.data, 'size'):
+                return node.data.size
+            elif hasattr(node.data, 'labels'):
+                return len(node.data.labels)
+            elif hasattr(node.data, 'points'):
+                return len(node.data.points)
+        return 0
+
+    def _revert_visibility(self, uid: str):
+        """Revert visibility for a branch (uncheck in tree)."""
+        from PyQt5.QtCore import Qt
+        self.tree_widget.visibility_status[uid] = False
+        item = self.tree_widget.branches_dict.get(uid)
+        if item:
+            self.tree_widget.blockSignals(True)
+            item.setCheckState(0, Qt.Unchecked)
+            self.tree_widget.blockSignals(False)
 
     def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False):
         """
@@ -488,61 +526,111 @@ class DataManager(QObject):
             zoom_extent (bool): Whether to zoom to the extent of the visible data
         """
         import time
+        from PyQt5.QtWidgets import QMessageBox
+        from PyQt5.QtCore import Qt
+        from services.memory_manager import MemoryManager
 
-        points_to_show = np.empty((0, 3), dtype=np.float32)
-        colors_to_show = np.empty((0, 3), dtype=np.float32)
+        logger.debug("_render_visible_data() called")
+
         uids_to_show = [uid for uid, vis in visibility_status.items() if vis]
+        logger.debug(f"  Visible branches: {len(uids_to_show)}")
 
-        # TODO: Update to handle multiple data types, point clouds, derived data, etc.
-        if uids_to_show:
-            for uid in uids_to_show:
+        # Handle no visible branches
+        if not uids_to_show:
+            logger.debug("  No visible branches, clearing viewer")
+            self.viewer_widget.set_points(None)
+            self.viewer_widget.update()
+            return
+
+        # Estimate total points and check if all cached
+        total_points = 0
+        all_cached = True
+        for uid in uids_to_show:
+            try:
                 node = self.data_nodes.get_node(uuid.UUID(uid))
-                node_type = node.data_type
+                if node:
+                    if not (node.is_cached and node.cached_point_cloud):
+                        all_cached = False
+                    total_points += self._get_node_point_count(node)
+            except Exception:
+                pass
 
-                # Reconstruct the branch (will use cache if available)
+        logger.debug(f"  Total points: {total_points:,}, all_cached: {all_cached}")
+
+        # BLOCKING memory check using centralized MemoryManager
+        can_render, message = MemoryManager.can_render(total_points, cached=all_cached)
+        if not can_render:
+            logger.warning(f"  Blocked: {message}")
+            QMessageBox.warning(
+                None,
+                "Insufficient Memory",
+                f"Cannot render {total_points:,} points.\n\n{message}\n\n"
+                "Please hide some branches to free memory."
+            )
+            # Revert visibility for all branches
+            for uid in uids_to_show:
+                self._revert_visibility(uid)
+            return
+
+        # Pre-allocate arrays for efficient accumulation (no np.append)
+        all_points = np.empty((total_points, 3), dtype=np.float32)
+        all_colors = np.empty((total_points, 3), dtype=np.float32)
+        offset = 0
+
+        # Process each visible branch
+        for uid_idx, uid in enumerate(uids_to_show):
+            logger.debug(f"  Processing branch {uid_idx + 1}/{len(uids_to_show)}: {uid[:8]}...")
+            try:
+                node = self.data_nodes.get_node(uuid.UUID(uid))
+                if node is None:
+                    logger.warning(f"    Node not found: {uid}")
+                    continue
+
+                # Reconstruct the branch (uses cache if available)
                 point_cloud = self.reconstruct_branch(uid)
+                n = point_cloud.size
+                logger.debug(f"    Reconstructed: {n:,} points")
 
-                # Calculate memory usage for display (works for any point cloud)
+                # Calculate and store memory usage
                 memory_usage = self._calculate_point_cloud_memory(point_cloud)
-
-                # Store memory size in node (persists when project is saved)
                 node.memory_size = memory_usage
 
-                # Auto-cache visible branches since they're already in memory
-                # If not already cached, cache it now
+                # Auto-cache if not already cached
                 if not node.is_cached:
                     node.cached_point_cloud = point_cloud
                     node.is_cached = True
                     node.cache_timestamp = time.time()
-
-                    # Update UI to show cache checkbox as checked
-                    # Block signals to prevent triggering on_item_checked which would call cache_branch()
                     item = self.tree_widget.branches_dict.get(uid)
                     if item:
                         self.tree_widget.blockSignals(True)
                         item.setCheckState(1, Qt.Checked)
                         self.tree_widget.blockSignals(False)
+                    logger.debug(f"    [AUTO-CACHE] {node.params} ({memory_usage})")
 
-                    print(f"[AUTO-CACHE] Cached visible branch: {node.params} ({memory_usage})")
-
-                # Always display memory usage (whether cached or not)
                 self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
-                points_to_show = np.append(points_to_show, point_cloud.points, axis=0)
+                # Fill pre-allocated arrays (efficient - no copying)
+                all_points[offset:offset + n] = point_cloud.points
                 if point_cloud.colors is not None:
-                    colors_to_show = np.append(colors_to_show, point_cloud.colors, axis=0)
+                    all_colors[offset:offset + n] = point_cloud.colors
                 else:
-                    # If no colors are present, use white
-                    colors_to_show = np.append(colors_to_show, np.ones((point_cloud.size, 3), dtype=np.float32), axis=0)
+                    all_colors[offset:offset + n] = 1.0  # White
+                offset += n
 
-            self.viewer_widget.set_points(points=points_to_show, colors=colors_to_show)
-        else:
-            self.viewer_widget.set_points(None)
+            except Exception as e:
+                logger.error(f"    Error: {e}")
+                logger.error(traceback.format_exc())
+                continue
 
+        # Send to viewer
+        logger.info(f"  Rendering {offset:,} points")
+        self.viewer_widget.set_points(all_points[:offset], all_colors[:offset])
         self.viewer_widget.update()
 
         if zoom_extent:
             self.viewer_widget.zoom_to_extent()
+
+        logger.debug("_render_visible_data() completed")
     # def on_branch_deleted(self, uids: list[str]):
     #     """
     #     Handle branch deletion from the tree structure widget.

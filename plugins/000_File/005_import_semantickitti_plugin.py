@@ -10,6 +10,9 @@ This plugin imports SemanticKITTI .bin point cloud files with support for:
 
 from typing import Dict, Any, Optional, Tuple, List
 import os
+import logging
+import traceback
+import gc
 import numpy as np
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
@@ -18,6 +21,9 @@ from config.config import global_variables
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
 from core.feature_classes import FeatureClasses
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 
 # SemanticKITTI semantic class colors (RGB 0-255)
@@ -139,6 +145,10 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             main_window: The main application window
             params: Dictionary containing import options
         """
+        logger.info("=" * 60)
+        logger.info("SemanticKITTI Import Started")
+        logger.info(f"Parameters: {params}")
+
         # Multi-file selection dialog
         file_paths, _ = QFileDialog.getOpenFileNames(
             main_window,
@@ -148,15 +158,21 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         )
 
         if not file_paths:
+            logger.info("No files selected, aborting import")
             return
 
         # Sort files to maintain order (000000.bin, 000001.bin, etc.)
         file_paths = sorted(file_paths)
+        logger.info(f"Selected {len(file_paths)} files for import")
+        logger.info(f"First file: {file_paths[0]}")
+        logger.info(f"Last file: {file_paths[-1]}")
 
         # Import based on merge_scans option
         if params.get("merge_scans", False):
+            logger.info("Using MERGED import mode")
             self._import_merged(file_paths, params, main_window)
         else:
+            logger.info("Using SEPARATE import mode")
             self._import_separate(file_paths, params, main_window)
 
     # Helper methods for loading labels and poses
@@ -314,9 +330,16 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             params: Import parameters
             main_window: Main application window
         """
+        logger.info("-" * 40)
+        logger.info("_import_separate() started")
+
         load_labels = params.get("load_labels", True)
         apply_poses = params.get("apply_poses", False)
         max_distance = params.get("max_distance", 30.0)
+
+        logger.info(f"  load_labels: {load_labels}")
+        logger.info(f"  apply_poses: {apply_poses}")
+        logger.info(f"  max_distance: {max_distance}")
 
         # Load poses and calibration if needed
         poses = None
@@ -325,12 +348,15 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         if apply_poses:
             poses_path = self._get_poses_path(file_paths[0])
             if poses_path:
+                logger.info(f"Loading poses from: {poses_path}")
                 poses = self._load_poses(poses_path)
+                logger.info(f"Loaded {len(poses)} poses")
 
                 # Load calibration (velodyne to camera transform)
                 calib_path = self._get_calib_path(file_paths[0])
                 if calib_path:
                     Tr_velo_to_cam = self._load_calib(calib_path)
+                    logger.info("Loaded calibration matrix")
 
                 # Calculate consistent origin from trajectory (in KITTI coords)
                 scanner_positions = np.array([pose[:3, 3] for pose in poses])
@@ -342,7 +368,9 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     trajectory_min_bound_kitti[2],   # Y = Z_old
                     -trajectory_min_bound_kitti[1]   # Z = -Y_old
                 ])
+                logger.info(f"Trajectory min bound: {trajectory_min_bound}")
             else:
+                logger.warning("poses.txt not found")
                 QMessageBox.warning(
                     main_window,
                     "Poses Not Found",
@@ -352,19 +380,25 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
         success_count = 0
         failed_files = []
+        total_points_imported = 0
 
-        for file_path in file_paths:
+        for file_idx, file_path in enumerate(file_paths):
+            logger.info(f"--- Processing file {file_idx + 1}/{len(file_paths)}: {os.path.basename(file_path)} ---")
             try:
                 # Load .bin file
+                logger.debug(f"  Reading binary file...")
                 raw_data = np.fromfile(file_path, dtype=np.float32)
+                logger.debug(f"  Raw data size: {len(raw_data)} floats ({raw_data.nbytes / 1024 / 1024:.2f} MB)")
 
                 if len(raw_data) % 4 != 0:
+                    logger.error(f"  Invalid data size: {len(raw_data)} not divisible by 4")
                     failed_files.append((os.path.basename(file_path), "Invalid data size"))
                     continue
 
                 data = raw_data.reshape(-1, 4)
                 points = data[:, :3].astype(np.float64)  # Convert to float64 for transformation precision
                 intensity = data[:, 3]  # remission/intensity
+                logger.debug(f"  Loaded {len(points)} points")
 
                 # Load labels BEFORE filtering
                 semantic_labels = None
@@ -372,7 +406,9 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 if load_labels:
                     label_path = self._get_label_path(file_path)
                     if label_path:
+                        logger.debug(f"  Loading labels from: {label_path}")
                         semantic_labels, instance_ids = self._load_labels(label_path)
+                        logger.debug(f"  Loaded {len(semantic_labels)} labels")
 
                 # Apply distance filter if requested
                 original_count = len(points)
@@ -386,11 +422,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                         instance_ids = instance_ids[mask]
 
                     filtered_count = len(points)
+                    logger.debug(f"  Distance filter: {original_count} -> {filtered_count} points ({100*filtered_count/original_count:.1f}%)")
 
                 # Apply pose if requested
                 if apply_poses and poses:
                     frame_num = self._extract_frame_number(os.path.basename(file_path))
                     if frame_num < len(poses):
+                        logger.debug(f"  Applying pose transformation for frame {frame_num}")
                         # Compose calibration with pose: world = pose @ Tr @ velodyne
                         if Tr_velo_to_cam is not None:
                             T_combined = poses[frame_num] @ Tr_velo_to_cam
@@ -403,6 +441,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 # Rotation: 90 degrees around X axis (counter-clockwise)
                 # New: [X, Y, Z] = [X_old, Z_old, -Y_old]
                 # Create new array to avoid in-place modification issues
+                logger.debug(f"  Converting coordinate system...")
                 points_converted = np.column_stack([
                     points[:, 0],   # X unchanged
                     points[:, 2],   # Y = Z_old
@@ -416,34 +455,63 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 else:
                     min_bound = points_converted.min(axis=0)
                 points_translated = (points_converted - min_bound).astype(np.float32)
+                logger.debug(f"  Points array: {points_translated.shape}, {points_translated.nbytes / 1024 / 1024:.2f} MB")
 
                 # Always use intensity for PointCloud colors (labels already loaded and filtered above)
                 intensity_norm = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-6)
                 colors = np.column_stack([intensity_norm] * 3).astype(np.float32)
+                logger.debug(f"  Colors array: {colors.shape}, {colors.nbytes / 1024 / 1024:.2f} MB")
 
                 # Create PointCloud
+                logger.debug(f"  Creating PointCloud object...")
                 filename = os.path.basename(file_path)
                 point_cloud = PointCloud(points_translated, colors=colors)
                 point_cloud.name = filename
                 point_cloud.translation = min_bound
+                logger.debug(f"  PointCloud created with {point_cloud.size} points")
 
                 # Add intensity attribute
                 point_cloud.add_attribute('intensity', intensity)
 
                 # Add PointCloud to data manager and get UID
-                pc_uid = self._add_to_data_manager(point_cloud)
+                # Block signals if we have labels to add (prevents double render)
+                has_labels = semantic_labels is not None
+                logger.info(f"  Adding to DataManager (has_labels={has_labels})...")
+                pc_uid = self._add_to_data_manager(point_cloud, block_signals=has_labels)
+                logger.info(f"  Added with UID: {pc_uid}")
 
                 # If labels loaded, create FeatureClasses as child
-                if semantic_labels is not None:
+                # This triggers the single render for both branches
+                if has_labels:
+                    logger.debug(f"  Creating FeatureClasses...")
                     feature_classes = self._create_feature_classes(semantic_labels)
+                    logger.debug(f"  Adding FeatureClasses to DataManager...")
                     self._add_feature_classes_to_data_manager(feature_classes, pc_uid, filename)
 
                 success_count += 1
+                total_points_imported += len(points_translated)
+                logger.info(f"  SUCCESS: File {file_idx + 1} imported ({len(points_translated)} points)")
+
+                # Force garbage collection every 10 files to prevent memory buildup
+                if (file_idx + 1) % 10 == 0:
+                    logger.debug(f"  Running garbage collection...")
+                    gc.collect()
 
             except Exception as e:
+                logger.error(f"  FAILED: {os.path.basename(file_path)}")
+                logger.error(f"  Error: {str(e)}")
+                logger.error(f"  Traceback:\n{traceback.format_exc()}")
                 failed_files.append((os.path.basename(file_path), str(e)))
 
         # Show summary
+        logger.info("=" * 40)
+        logger.info(f"IMPORT COMPLETE: {success_count}/{len(file_paths)} files successful")
+        logger.info(f"Total points imported: {total_points_imported:,}")
+        if failed_files:
+            logger.warning(f"Failed files: {len(failed_files)}")
+            for filename, error in failed_files:
+                logger.warning(f"  - {filename}: {error}")
+
         message = f"Successfully imported {success_count} of {len(file_paths)} files."
         if failed_files:
             message += "\n\nFailed files:\n"
@@ -454,6 +522,9 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             QMessageBox.warning(main_window, "Import Complete", message)
         else:
             QMessageBox.information(main_window, "Import Complete", message)
+
+        logger.info("_import_separate() completed")
+        logger.info("=" * 60)
 
     def _import_merged(self, file_paths: List[str], params: Dict[str, Any], main_window) -> None:
         """
@@ -621,7 +692,49 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         if all_semantic:
             merged_semantic = np.concatenate(all_semantic)
 
+        # Check GPU memory before proceeding
+        total_points = len(points_translated)
+        data_size_mb = (points_translated.nbytes + colors.nbytes) / (1024 * 1024)
+        logger.info(f"Merged data: {total_points:,} points, {data_size_mb:.1f} MB")
+
+        try:
+            from services.hardware_detector import HardwareDetector
+
+            # Estimate GPU memory needed:
+            # - VBO: points + colors combined (~1.5x data size for overhead)
+            # - Masking operations during reconstruction: 3x data size
+            # - Labels if present: additional memory
+            vbo_required = data_size_mb * 1.5
+            masking_required = data_size_mb * 3
+            total_gpu_required = vbo_required + masking_required
+
+            free_gpu_mb = HardwareDetector.get_free_gpu_memory_mb()
+
+            if free_gpu_mb > 0:
+                logger.info(f"GPU memory: {free_gpu_mb} MB free, need ~{total_gpu_required:.0f} MB")
+
+                if total_gpu_required > free_gpu_mb:
+                    # Warn user but don't block - operations will fall back to CPU
+                    logger.warning(
+                        f"Large dataset may exceed GPU memory. "
+                        f"Operations will automatically fall back to CPU if needed."
+                    )
+                    QMessageBox.warning(
+                        main_window,
+                        "Large Dataset Warning",
+                        f"This dataset ({total_points:,} points, {data_size_mb:.0f} MB) "
+                        f"may exceed available GPU memory ({free_gpu_mb} MB free).\n\n"
+                        f"Operations will automatically fall back to CPU if needed, "
+                        f"but rendering may be slow or limited.\n\n"
+                        f"Consider importing fewer scans or using a larger max_distance filter."
+                    )
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Could not check GPU memory: {e}")
+
         # Create PointCloud with standard name
+        logger.info(f"Creating PointCloud with {total_points:,} points...")
         point_cloud = PointCloud(points_translated, colors=colors)
         point_cloud.name = "SemanticKITTI"
         point_cloud.translation = trajectory_min_bound
@@ -630,10 +743,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         point_cloud.add_attribute('intensity', merged_intensity)
 
         # Add PointCloud to data manager and get UID
-        pc_uid = self._add_to_data_manager(point_cloud)
+        # Block signals if we have labels to add (prevents double render)
+        has_labels = merged_semantic is not None
+        pc_uid = self._add_to_data_manager(point_cloud, block_signals=has_labels)
 
         # If labels loaded, create FeatureClasses as child
-        if merged_semantic is not None:
+        # This triggers the single render for both branches
+        if has_labels:
             feature_classes = self._create_feature_classes(merged_semantic)
             self._add_feature_classes_to_data_manager(feature_classes, pc_uid, "SemanticKITTI")
 
@@ -687,11 +803,14 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             parent_uid: UID of parent PointCloud node
             parent_name: Name of parent PointCloud (for display)
         """
+        logger.debug(f"    _add_feature_classes_to_data_manager() called for parent: {parent_name}")
+
         data_manager = global_variables.global_data_manager
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
         # Create DataNode for FeatureClasses (use standard name to match classification workflow)
+        logger.debug(f"    Creating FeatureClasses DataNode...")
         fc_node = DataNode(
             params="feature_classes",
             data=feature_classes,
@@ -706,29 +825,70 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         # Format as MB
         size_mb = labels_size / (1024 * 1024)
         fc_node.memory_size = f"{size_mb:.2f} MB"
+        logger.debug(f"    FeatureClasses memory size: {fc_node.memory_size}")
 
         # Add to data nodes collection
+        logger.debug(f"    Adding FeatureClasses to DataNodes collection...")
         fc_uid = data_nodes.add_node(fc_node)
+        logger.debug(f"    FeatureClasses added with UID: {fc_uid}")
 
-        # Update tree widget as child of PointCloud (use standard name)
-        tree_widget.add_branch(str(fc_uid), str(parent_uid), "feature_classes", is_root=False)
-        tree_widget.update_cache_tooltip(str(fc_uid), fc_node.memory_size)
+        # Hide parent BEFORE adding child (prevents rendering both when signal triggers)
+        # This prevents rendering both parent and child which doubles memory usage
+        from PyQt5.QtCore import Qt
 
-    def _add_to_data_manager(self, point_cloud: PointCloud) -> str:
+        parent_uid_str = str(parent_uid)
+        child_uid_str = str(fc_uid)
+
+        # Update parent visibility BEFORE adding child branch
+        if parent_uid_str in tree_widget.visibility_status:
+            tree_widget.visibility_status[parent_uid_str] = False
+        parent_item = tree_widget.branches_dict.get(parent_uid_str)
+        if parent_item:
+            parent_item.setCheckState(0, Qt.Unchecked)
+            logger.debug(f"    Parent branch visibility set to False BEFORE adding child")
+
+        # Now add the child branch (this triggers branch_added signal)
+        logger.debug(f"    Adding FeatureClasses branch to tree widget...")
+        try:
+            tree_widget.add_branch(str(fc_uid), str(parent_uid), "feature_classes", is_root=False)
+            tree_widget.update_cache_tooltip(str(fc_uid), fc_node.memory_size)
+            logger.debug(f"    FeatureClasses branch added to tree")
+
+        except Exception as e:
+            logger.error(f"    Error adding FeatureClasses to tree: {e}")
+            logger.error(f"    Traceback:\n{traceback.format_exc()}")
+            raise
+
+    def _add_to_data_manager(self, point_cloud: PointCloud, block_signals: bool = False) -> str:
         """
         Add loaded point cloud to data manager and tree widget.
 
         Args:
             point_cloud: The PointCloud object to add
+            block_signals: If True, block signals to prevent auto-render
+                          (use when adding child branches after this)
 
         Returns:
             UID of the created DataNode
         """
+        logger.debug(f"    _add_to_data_manager() called for: {point_cloud.name}")
+
         data_manager = global_variables.global_data_manager
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
+        if data_manager is None:
+            logger.error("    global_data_manager is None!")
+            raise RuntimeError("DataManager not initialized")
+        if data_nodes is None:
+            logger.error("    global_data_nodes is None!")
+            raise RuntimeError("DataNodes not initialized")
+        if tree_widget is None:
+            logger.error("    global_tree_structure_widget is None!")
+            raise RuntimeError("TreeStructureWidget not initialized")
+
         # Create DataNode
+        logger.debug(f"    Creating DataNode...")
         data_node = DataNode(
             params=point_cloud.name,
             data=point_cloud,
@@ -739,13 +899,32 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         )
 
         # Calculate memory size
+        logger.debug(f"    Calculating memory size...")
         data_node.memory_size = data_manager._calculate_point_cloud_memory(point_cloud)
+        logger.debug(f"    Memory size: {data_node.memory_size}")
 
         # Add to data nodes collection
+        logger.debug(f"    Adding to DataNodes collection...")
         uid = data_nodes.add_node(data_node)
+        logger.debug(f"    DataNode added with UID: {uid}")
 
         # Update tree widget (root nodes are always cached)
-        tree_widget.add_branch(str(uid), "", point_cloud.name, is_root=True)
-        tree_widget.update_cache_tooltip(str(uid), data_node.memory_size)
+        # Block signals if we're adding child branches after this to prevent double render
+        logger.debug(f"    Updating tree widget (block_signals={block_signals})...")
+        if block_signals:
+            tree_widget.blockSignals(True)
+        try:
+            tree_widget.add_branch(str(uid), "", point_cloud.name, is_root=True)
+            logger.debug(f"    Branch added to tree")
+            tree_widget.update_cache_tooltip(str(uid), data_node.memory_size)
+            logger.debug(f"    Cache tooltip updated")
+        except Exception as e:
+            logger.error(f"    Error adding branch to tree: {e}")
+            logger.error(f"    Traceback:\n{traceback.format_exc()}")
+            raise
+        finally:
+            if block_signals:
+                tree_widget.blockSignals(False)
 
+        logger.debug(f"    _add_to_data_manager() completed")
         return uid

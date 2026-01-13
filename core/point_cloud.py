@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 import warnings
+import logging
+import traceback
 # from importlib.metadata import version, PackageNotFoundError
 
 # Third-party imports
@@ -19,6 +21,9 @@ import matplotlib.pyplot as plt
 
 # Local application imports
 from services.eigenvalue_utils import EigenvalueUtils
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 
 class PointCloud:
@@ -52,9 +57,15 @@ class PointCloud:
 
     def __init__(self, points, colors=None, normals=None, **kwargs):
 
+        logger.debug(f"PointCloud.__init__() called")
+
         # Validation points
         if not isinstance(points, np.ndarray):
             raise ValueError("Points must be a numpy array with shape (n, 3)")
+
+        logger.debug(f"  Points shape: {points.shape}")
+        logger.debug(f"  Points dtype: {points.dtype}")
+        logger.debug(f"  Points memory: {points.nbytes / 1024 / 1024:.2f} MB")
 
         self.points = points
         self.colors = colors
@@ -64,6 +75,11 @@ class PointCloud:
         self.uuid = kwargs.get('uid', None)
         self.parent_uuid = kwargs.get('parent_uuid', None)
         self.child_uuid = kwargs.get('child_uuid', None)
+
+        if colors is not None:
+            logger.debug(f"  Colors shape: {colors.shape}, memory: {colors.nbytes / 1024 / 1024:.2f} MB")
+        if normals is not None:
+            logger.debug(f"  Normals shape: {normals.shape}, memory: {normals.nbytes / 1024 / 1024:.2f} MB")
 
         self.cluster_labels = []
         self.prediction = ''
@@ -79,12 +95,17 @@ class PointCloud:
             # Check if points are coplanar (all have the same Z coordinate)
             # If so, skip OBB calculation as it will fail
             if not self._are_points_coplanar():
+                logger.debug(f"  Calculating OBB...")
                 self._update_obb_dim()
             else:
                 # For coplanar points, calculate 2D bounding box manually
+                logger.debug(f"  Points are coplanar, using 2D bbox")
                 self._update_2d_bbox()
         else:
+            logger.debug(f"  Skipping OBB (too few points)")
             return
+
+        logger.debug(f"  PointCloud created: {self.size} points, name={self.name}")
 
         # ... rest of the __init__ code ...
 
@@ -536,6 +557,8 @@ class PointCloud:
             mask: Boolean mask array
             masking_backend: MaskingBackend instance or None for fallback
         """
+        logger.debug(f"_apply_mask_inplace() called, mask has {np.sum(mask):,} True values")
+
         # Helper function to apply mask to an array
         def apply_mask(array):
             if masking_backend is not None:
@@ -545,35 +568,54 @@ class PointCloud:
 
         # Apply mask to points
         if hasattr(self, 'points') and len(self.points) > 0:
+            logger.debug(f"  Applying mask to points ({len(self.points):,} points)...")
             original_dtype = self.points.dtype
             self.points = apply_mask(self.points).astype(original_dtype)
+            logger.debug(f"  Points masked: {len(self.points):,} points remaining")
 
-        # Update OBB dimensions
-        self._update_obb_dim()
+        # Update OBB dimensions - skip for large point clouds to avoid slow computation
+        if len(self.points) > 10_000_000:
+            logger.debug(f"  Skipping OBB update for large point cloud ({len(self.points):,} points)")
+        else:
+            logger.debug(f"  Updating OBB dimensions...")
+            self._update_obb_dim()
+            logger.debug(f"  OBB update complete")
 
         # Apply mask to colors
         if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
+            logger.debug(f"  Applying mask to colors...")
             original_dtype = self.colors.dtype
             self.colors = apply_mask(self.colors).astype(original_dtype)
+            logger.debug(f"  Colors masked")
 
         # Apply mask to normals
         if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
+            logger.debug(f"  Applying mask to normals...")
             original_dtype = self.normals.dtype
             self.normals = apply_mask(self.normals).astype(original_dtype)
+            logger.debug(f"  Normals masked")
 
         # Apply mask to intensity
         if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
+            logger.debug(f"  Applying mask to intensity...")
             self.intensity = apply_mask(self.intensity)
+            logger.debug(f"  Intensity masked")
 
         # Apply mask to distToGround
         if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0:
+            logger.debug(f"  Applying mask to distToGround...")
             self.distToGround = apply_mask(self.distToGround)
+            logger.debug(f"  distToGround masked")
 
         # Process custom attributes
+        logger.debug(f"  Processing {len(self.attributes)} custom attributes...")
         for attr_name in list(self.attributes.keys()):
             attr_value = self.attributes[attr_name]
             if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                logger.debug(f"    Masking attribute: {attr_name}")
                 self.attributes[attr_name] = apply_mask(attr_value)
+
+        logger.debug(f"_apply_mask_inplace() completed")
 
     def get_obb(self):
         """

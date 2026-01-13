@@ -125,70 +125,97 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_status_bar_hardware_info(self):
         """Update status bar with hardware and dynamic stats."""
-        hardware = global_variables.global_hardware_info
-        registry = global_variables.global_backend_registry
+        try:
+            hardware = global_variables.global_hardware_info
+            registry = global_variables.global_backend_registry
 
-        if hardware is None or registry is None:
-            self._hardware_status_label.setText("Hardware detection not initialized")
-            return
+            if hardware is None or registry is None:
+                self._hardware_status_label.setText("Hardware detection not initialized")
+                return
 
-        # Get dynamic stats
-        stats = HardwareDetector.get_dynamic_stats()
+            # Get all dynamic stats from single source (one pynvml call)
+            stats = HardwareDetector.get_dynamic_stats()
 
-        # RAM info
-        ram_html = f"RAM: {stats['ram_used_gb']:.1f}/{stats['ram_total_gb']:.1f} GB ({stats['ram_percent']:.0f}%)"
+            # Debug: print to console to verify updates
+            print(f"[StatusBar] RAM: {stats['ram_percent']:.0f}%, VRAM: {stats['vram_used_mb']}MB/{stats['vram_total_mb']}MB")
 
-        # GPU info with dynamic stats
-        if hardware.gpu_available:
-            gpu_name = hardware.gpu_name
+            # Calculate free memory from stats
+            ram_free_gb = stats['ram_total_gb'] - stats['ram_used_gb']
+            gpu_free_mb = stats['vram_total_mb'] - stats['vram_used_mb']
 
-            # VRAM
-            vram_html = f"VRAM: {stats['vram_used_mb']}/{stats['vram_total_mb']} MB ({stats['vram_percent']:.0f}%)"
-
-            # GPU utilization with color coding
-            util = stats['gpu_utilization']
-            if util > 80:
-                util_color = "#dc3545"  # Red for high usage
-            elif util > 50:
-                util_color = "#ffc107"  # Yellow for medium
+            # RAM info with color coding based on free memory
+            if ram_free_gb < 2:
+                ram_color = "#dc3545"  # Red - critically low
+            elif ram_free_gb < 4:
+                ram_color = "#ffc107"  # Yellow - getting low
             else:
-                util_color = "#28a745"  # Green for low
+                ram_color = "#28a745"  # Green - plenty free
 
-            util_html = f'<span style="color: {util_color};">{util}%</span>'
+            ram_html = f'RAM: <span style="color: {ram_color};">{ram_free_gb:.1f} GB free</span> ({stats["ram_percent"]:.0f}% used)'
 
-            # Temperature with color coding
-            temp = stats['gpu_temp_c']
-            if temp is not None:
-                if temp > 80:
-                    temp_color = "#dc3545"  # Red for hot
-                elif temp > 65:
-                    temp_color = "#ffc107"  # Yellow for warm
+            # GPU info with dynamic stats
+            if hardware.gpu_available:
+                gpu_name = hardware.gpu_name
+
+                # VRAM with color coding based on free memory
+                if gpu_free_mb < 1000:
+                    vram_color = "#dc3545"  # Red - critically low
+                elif gpu_free_mb < 2000:
+                    vram_color = "#ffc107"  # Yellow - getting low
                 else:
-                    temp_color = "#28a745"  # Green for cool
-                temp_html = f'<span style="color: {temp_color};">{temp}°C</span>'
+                    vram_color = "#28a745"  # Green - plenty free
+
+                vram_html = f'VRAM: <span style="color: {vram_color};">{gpu_free_mb:,} MB free</span> ({stats["vram_percent"]:.0f}% used)'
+
+                # GPU utilization with color coding
+                util = stats['gpu_utilization']
+                if util > 80:
+                    util_color = "#dc3545"  # Red for high usage
+                elif util > 50:
+                    util_color = "#ffc107"  # Yellow for medium
+                else:
+                    util_color = "#28a745"  # Green for low
+
+                util_html = f'GPU: <span style="color: {util_color};">{util}%</span>'
+
+                # Temperature with color coding
+                temp = stats['gpu_temp_c']
+                if temp is not None:
+                    if temp > 80:
+                        temp_color = "#dc3545"  # Red for hot
+                    elif temp > 65:
+                        temp_color = "#ffc107"  # Yellow for warm
+                    else:
+                        temp_color = "#28a745"  # Green for cool
+                    temp_html = f'<span style="color: {temp_color};">{temp}°C</span>'
+                else:
+                    temp_html = ""
+
+                # Build status (include temp only if available)
+                if temp is not None:
+                    status_html = f'{gpu_name} | {vram_html} | {util_html} | {temp_html} | {ram_html}'
+                else:
+                    status_html = f'{gpu_name} | {vram_html} | {util_html} | {ram_html}'
             else:
-                temp_html = ""
+                # CPU only mode
+                status_html = f'{ram_html} | GPU: None'
 
-            # Build status (include temp only if available)
-            if temp is not None:
-                status_html = f'{gpu_name} | {vram_html} | {util_html} | {temp_html} | {ram_html}'
+            self._hardware_status_label.setText(status_html)
+
+            # Update mode label separately (with tooltip)
+            scenario = registry.get_scenario()
+            if scenario == "FULL GPU":
+                scenario_color = "#28a745"  # Green
+            elif scenario == "PARTIAL GPU":
+                scenario_color = "#ffc107"  # Yellow
             else:
-                status_html = f'{gpu_name} | {vram_html} | {util_html} | {ram_html}'
-        else:
-            # CPU only mode
-            status_html = f'{ram_html} | GPU: None'
+                scenario_color = "#dc3545"  # Red
+            self._mode_label.setText(f'<span style="color: {scenario_color}; font-weight: bold;">{scenario}</span>')
 
-        self._hardware_status_label.setText(status_html)
-
-        # Update mode label separately (with tooltip)
-        scenario = registry.get_scenario()
-        if scenario == "FULL GPU":
-            scenario_color = "#28a745"  # Green
-        elif scenario == "PARTIAL GPU":
-            scenario_color = "#ffc107"  # Yellow
-        else:
-            scenario_color = "#dc3545"  # Red
-        self._mode_label.setText(f'<span style="color: {scenario_color}; font-weight: bold;">{scenario}</span>')
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error updating status bar: {e}")
+            self._hardware_status_label.setText(f"Status bar error: {e}")
 
     def setup_base_menus(self):
         """Set up the base menu structure for the application."""

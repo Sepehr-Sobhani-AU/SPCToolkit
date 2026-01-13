@@ -1,4 +1,6 @@
 import sys
+import logging
+import traceback
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
@@ -8,6 +10,9 @@ from OpenGL.GLU import gluNewQuadric, gluDeleteQuadric, gluQuadricDrawStyle
 from OpenGL.GLU import gluSphere
 from OpenGL.GLU import GLU_LINE, GLU_FILL
 from OpenGL.arrays import vbo
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 
 class PCDViewerWidget(QOpenGLWidget):
@@ -416,31 +421,67 @@ class PCDViewerWidget(QOpenGLWidget):
             AssertionError: If the `points` array does not have the correct shape or data type.
             AssertionError: If the `colors` array is provided but does not have the correct shape or data type.
         """
-        if points is not None:
-            assert points.shape[1] == 3, "Points array must have shape Nx3"
-            assert points.dtype == np.float32, f"Points array must be of type float32, not {points.dtype}"
-        else:
-            # Hide the point cloud if no points are provided
+        from services.memory_manager import MemoryManager
+
+        logger.debug("PCDViewerWidget.set_points() called")
+
+        if points is None:
+            # Clear display and release memory
+            logger.debug("  Clearing display")
+            if self.vbo is not None:
+                try:
+                    self.vbo.delete()
+                except Exception as e:
+                    logger.warning(f"  Error deleting VBO: {e}")
+                self.vbo = None
             self.points = None
+            MemoryManager.cleanup()
             self.update()
             return
 
+        # Validate inputs
+        logger.debug(f"  Points: {points.shape}, {points.nbytes / 1024 / 1024:.1f} MB")
+        assert points.shape[1] == 3, "Points array must have shape Nx3"
+        assert points.dtype == np.float32, f"Points array must be float32, not {points.dtype}"
+
         if colors is not None:
-            assert points.shape[0] == colors.shape[0], "Points and colors must have the same number of entries"
+            logger.debug(f"  Colors: {colors.shape}, {colors.nbytes / 1024 / 1024:.1f} MB")
+            assert colors.shape[0] == points.shape[0], "Points and colors must have same length"
             assert colors.shape[1] == 3, "Colors array must have shape Nx3"
-            assert colors.dtype == np.float32, "Colors array must be of type float32"
+            assert colors.dtype == np.float32, "Colors array must be float32"
         else:
-            # Set default colour 'white'
-            colors = np.ones_like(points).astype(np.float32)
+            logger.debug("  No colors provided, using white")
+            colors = np.ones_like(points, dtype=np.float32)
 
-        self.points = np.hstack((points, colors)).astype(np.float32)
+        try:
+            # Release existing memory before allocating new arrays
+            if self.vbo is not None:
+                try:
+                    self.vbo.delete()
+                except Exception:
+                    pass
+                self.vbo = None
+            self.points = None
+            MemoryManager.cleanup()
 
-        # Invalidate the existing VBO if it exists, as the points have changed
-        if self.vbo is not None:
-            self.vbo.delete()
-            self.vbo = None
+            # Create combined array (pre-allocated for efficiency)
+            num_points = len(points)
+            self.points = np.empty((num_points, 6), dtype=np.float32)
+            self.points[:, :3] = points
+            self.points[:, 3:] = colors
+            logger.debug(f"  Combined array: {self.points.shape}, {self.points.nbytes / 1024 / 1024:.1f} MB")
 
-        self.update()
+            self.update()
+            logger.debug("  set_points() completed")
+
+        except MemoryError as e:
+            logger.error(f"  MEMORY ERROR: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"  ERROR: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
 
     def draw_axis_symbol(self, position):
         """
@@ -545,42 +586,46 @@ class PCDViewerWidget(QOpenGLWidget):
 
     def render_point_cloud(self):
         """
-        Render the point cloud data.
-
-        This method is responsible for rendering the point cloud using OpenGL. It enables the necessary client states,
-        binds the vertex buffer object (VBO), and sets the appropriate pointers for vertex and colour data. After
-        rendering the points, the method disables the client states.
-
-        The point cloud is rendered as a series of GL_POINTS, and each point's colour is determined by the VBO data.
+        Render the point cloud data using OpenGL VBO.
         """
-
         if self.points is None:
             return
 
-        # Create and bind the VBO if it's not already created
-        if self.vbo is None:
-            self.vbo = vbo.VBO(self.points)
+        try:
+            # Create VBO if needed
+            if self.vbo is None:
+                num_points = len(self.points)
+                data_size_mb = self.points.nbytes / (1024 * 1024)
+                logger.debug(f"  Creating VBO: {num_points:,} points, {data_size_mb:.1f} MB")
+                self.vbo = vbo.VBO(self.points)
+                logger.debug("  VBO created")
 
-        glPointSize(self.point_size)
+            glPointSize(self.point_size)
 
-        # Enable client states
-        glEnableClientState(GL_VERTEX_ARRAY)
-        glEnableClientState(GL_COLOR_ARRAY)
+            # Enable client states
+            glEnableClientState(GL_VERTEX_ARRAY)
+            glEnableClientState(GL_COLOR_ARRAY)
 
-        # Bind the VBO
-        self.vbo.bind()
+            # Bind the VBO
+            self.vbo.bind()
 
-        # Set pointers to the VBO data
-        stride = 6 * self.points.itemsize
-        glVertexPointer(3, GL_FLOAT, stride, self.vbo)
-        glColorPointer(3, GL_FLOAT, stride, self.vbo + 12)
+            # Set pointers to the VBO data
+            stride = 6 * self.points.itemsize
+            glVertexPointer(3, GL_FLOAT, stride, self.vbo)
+            glColorPointer(3, GL_FLOAT, stride, self.vbo + 12)
 
-        # Draw all points
-        glDrawArrays(GL_POINTS, 0, len(self.points))
+            # Draw all points
+            glDrawArrays(GL_POINTS, 0, len(self.points))
 
-        # Disable client states
-        glDisableClientState(GL_VERTEX_ARRAY)
-        glDisableClientState(GL_COLOR_ARRAY)
+            # Disable client states
+            glDisableClientState(GL_VERTEX_ARRAY)
+            glDisableClientState(GL_COLOR_ARRAY)
+
+        except Exception as e:
+            logger.error(f"  ERROR in render_point_cloud(): {e}")
+            logger.error(f"  Points shape: {self.points.shape if self.points is not None else 'None'}")
+            logger.error(f"  Traceback:\n{traceback.format_exc()}")
+            raise
 
     def render_picked_points(self):
         """
@@ -1136,62 +1181,83 @@ class PCDViewerWidget(QOpenGLWidget):
 
         After adjusting parameters, the view is updated to reflect the changes.
         """
+        logger.debug("zoom_to_extent() called")
+
         # Check if points are available
         if self.points is None or len(self.points) == 0:
+            logger.debug("  No points to zoom to")
             return
 
-        # Calculate bounding box of visible points
-        min_bounds = np.min(self.points[:, :3], axis=0)
-        max_bounds = np.max(self.points[:, :3], axis=0)
+        logger.debug(f"  Processing {len(self.points)} points")
 
-        # Calculate center, size, and maximum extent
-        self.center = (min_bounds + max_bounds) / 2.0
-        self.size = max_bounds - min_bounds
-        self.max_extent = np.max(self.size)
+        try:
+            # Calculate bounding box of visible points
+            logger.debug("  Calculating bounding box...")
+            min_bounds = np.min(self.points[:, :3], axis=0)
+            max_bounds = np.max(self.points[:, :3], axis=0)
 
-        # Avoid division by zero for degenerate cases
-        if self.max_extent == 0:
-            self.max_extent = 1.0
+            # Calculate center, size, and maximum extent
+            self.center = (min_bounds + max_bounds) / 2.0
+            self.size = max_bounds - min_bounds
+            self.max_extent = np.max(self.size)
 
-        # Calculate optimal camera distance based on FOV and bounding box
-        half_fov_rad = np.radians(self.fov / 2)
-        self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # 20% padding
-        self.camera_distance = self.default_camera_distance
+            logger.debug(f"  Center: {self.center}")
+            logger.debug(f"  Size: {self.size}")
+            logger.debug(f"  Max extent: {self.max_extent}")
 
-        # Update panning offsets to align the center with the view
-        self.pan_x = -self.center[0]
-        self.pan_y = -self.center[1]
-        self.pan_z = -self.center[2]
+            # Avoid division by zero for degenerate cases
+            if self.max_extent == 0:
+                self.max_extent = 1.0
 
-        # Save these values as defaults for reset_view
-        self.default_pan_x = self.pan_x
-        self.default_pan_y = self.pan_y
-        self.default_pan_z = self.pan_z
+            # Calculate optimal camera distance based on FOV and bounding box
+            half_fov_rad = np.radians(self.fov / 2)
+            self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # 20% padding
+            self.camera_distance = self.default_camera_distance
 
-        # Reset rotation to default values (unless preserving rotation)
-        if not preserve_rotation:
-            self.rot_x = self.default_rot_x
-            self.rot_y = self.default_rot_y
-            self.rot_z = self.default_rot_z
+            logger.debug(f"  Camera distance: {self.camera_distance}")
 
-        # Reset zoom factor
-        self.zoom_factor = 1.0
-        self.default_zoom_factor = 1.0
+            # Update panning offsets to align the center with the view
+            self.pan_x = -self.center[0]
+            self.pan_y = -self.center[1]
+            self.pan_z = -self.center[2]
 
-        # Show axis briefly for orientation
-        self.show_axis = True
+            # Save these values as defaults for reset_view
+            self.default_pan_x = self.pan_x
+            self.default_pan_y = self.pan_y
+            self.default_pan_z = self.pan_z
 
-        # Update the view
-        self.update()
+            # Reset rotation to default values (unless preserving rotation)
+            if not preserve_rotation:
+                self.rot_x = self.default_rot_x
+                self.rot_y = self.default_rot_y
+                self.rot_z = self.default_rot_z
 
-        # Set a timer to hide the axis after a short time
-        if hasattr(self, 'axis_timer') and self.axis_timer is not None:
-            self.axis_timer.stop()
+            # Reset zoom factor
+            self.zoom_factor = 1.0
+            self.default_zoom_factor = 1.0
 
-        self.axis_timer = QTimer(self)
-        self.axis_timer.setSingleShot(True)
-        self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
-        self.axis_timer.start(500)  # 500ms delay
+            # Show axis briefly for orientation
+            self.show_axis = True
+
+            # Update the view
+            logger.debug("  Updating view...")
+            self.update()
+
+            # Set a timer to hide the axis after a short time
+            if hasattr(self, 'axis_timer') and self.axis_timer is not None:
+                self.axis_timer.stop()
+
+            self.axis_timer = QTimer(self)
+            self.axis_timer.setSingleShot(True)
+            self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
+            self.axis_timer.start(500)  # 500ms delay
+
+            logger.debug("  zoom_to_extent() completed")
+
+        except Exception as e:
+            logger.error(f"  ERROR in zoom_to_extent(): {e}")
+            logger.error(f"  Traceback:\n{traceback.format_exc()}")
+            raise
 
     def show_point_cloud(self, visible=True):
         """Show the point cloud by setting visibility to True and updating the view."""

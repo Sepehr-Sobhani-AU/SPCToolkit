@@ -1,5 +1,8 @@
+import logging
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QApplication
 from PyQt5.QtCore import pyqtSignal, Qt
+
+logger = logging.getLogger(__name__)
 
 
 class TreeStructureWidget(QTreeWidget):
@@ -26,6 +29,9 @@ class TreeStructureWidget(QTreeWidget):
         self.branches_dict = {}
         self.visibility_status = {}
 
+        # Track Ctrl key state for multi-selection
+        self._ctrl_held = False
+
         # Configure tree widget properties
         self.setColumnCount(2)  # Column 0: Branch name/visibility, Column 1: Cache
         self.setHeaderLabels(["Branch", "Cache"])
@@ -34,6 +40,20 @@ class TreeStructureWidget(QTreeWidget):
         # Connect signals
         self.itemChanged.connect(self.on_item_checked)
         self.itemSelectionChanged.connect(self.on_selection_changed)
+
+    def mousePressEvent(self, event):
+        """
+        Capture Ctrl modifier state at click time for multi-selection support.
+        """
+        try:
+            self._ctrl_held = bool(event.modifiers() & Qt.ControlModifier)
+            logger.debug(f"mousePressEvent: Ctrl held = {self._ctrl_held}")
+        except Exception as e:
+            logger.error(f"Error in mousePressEvent capturing Ctrl state: {e}")
+            self._ctrl_held = False
+
+        # Always call parent event handler
+        super().mousePressEvent(event)
 
     def add_branch(self, uuid: str, parent_uuid: str, name: str, is_root: bool = False):
         """
@@ -45,37 +65,57 @@ class TreeStructureWidget(QTreeWidget):
             name (str): Name of the branch.
             is_root (bool): Whether this is a root PointCloud node (always cached).
         """
-        # Create a new tree item for the branch
-        item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
-        item.setData(0, Qt.UserRole, uuid)
+        logger.debug(f"TreeStructureWidget.add_branch() called")
+        logger.debug(f"  uuid: {uuid[:8] if uuid else 'None'}...")
+        logger.debug(f"  parent_uuid: {parent_uuid[:8] if parent_uuid else 'None'}...")
+        logger.debug(f"  name: {name}")
+        logger.debug(f"  is_root: {is_root}")
+        logger.debug(f"  Total branches before: {len(self.branches_dict)}")
 
-        # Column 0: Visibility checkbox
-        item.setCheckState(0, Qt.Checked)
-        item.setFlags(item.flags() | Qt.ItemIsEditable)
+        try:
+            # Create a new tree item for the branch
+            item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
+            item.setData(0, Qt.UserRole, uuid)
 
-        # Column 1: Cache checkbox
-        if is_root:
-            # Root nodes are always "cached" (data is in memory)
-            item.setCheckState(1, Qt.Checked)
-            # Store that this is a root node (we'll prevent unchecking in on_item_checked)
-            item.setData(1, Qt.UserRole, "root_cached")
-        else:
-            item.setCheckState(1, Qt.Unchecked)
+            # Column 0: Visibility checkbox
+            item.setCheckState(0, Qt.Checked)
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
 
-        # If a parent UUID is provided, find the parent and add as a child
-        if parent_uuid and parent_uuid in self.branches_dict:
-            parent_item = self.branches_dict[parent_uuid]
-            parent_item.addChild(item)
-            parent_item.setExpanded(True)
-        else:
-            self.addTopLevelItem(item)
+            # Column 1: Cache checkbox
+            if is_root:
+                # Root nodes are always "cached" (data is in memory)
+                item.setCheckState(1, Qt.Checked)
+                # Store that this is a root node (we'll prevent unchecking in on_item_checked)
+                item.setData(1, Qt.UserRole, "root_cached")
+            else:
+                item.setCheckState(1, Qt.Unchecked)
 
-        # Update internal dictionaries
-        self.branches_dict[uuid] = item
-        self.visibility_status[uuid] = True
+            # If a parent UUID is provided, find the parent and add as a child
+            if parent_uuid and parent_uuid in self.branches_dict:
+                parent_item = self.branches_dict[parent_uuid]
+                parent_item.addChild(item)
+                parent_item.setExpanded(True)
+                logger.debug(f"  Added as child to parent: {parent_uuid[:8]}...")
+            else:
+                self.addTopLevelItem(item)
+                logger.debug(f"  Added as top-level item")
 
-        # Emit the visibility_status update signal
-        self.branch_added.emit(self.visibility_status)
+            # Update internal dictionaries
+            self.branches_dict[uuid] = item
+            self.visibility_status[uuid] = True
+
+            logger.debug(f"  Total branches after: {len(self.branches_dict)}")
+
+            # Emit the visibility_status update signal
+            logger.debug(f"  Emitting branch_added signal...")
+            self.branch_added.emit(self.visibility_status)
+            logger.debug(f"  branch_added signal emitted")
+
+        except Exception as e:
+            logger.error(f"  Error in add_branch(): {e}")
+            import traceback
+            logger.error(f"  Traceback:\n{traceback.format_exc()}")
+            raise
 
     # def remove_branch(self, uids: list[str]):
     #     """
@@ -99,6 +139,34 @@ class TreeStructureWidget(QTreeWidget):
     #             else:
     #                 self.takeTopLevelItem(self.indexOfTopLevelItem(item))
     #             del self.visibility_status[uid]
+
+    def remove_branch(self, uid: str) -> bool:
+        """
+        Remove a single branch from the tree widget UI.
+
+        Args:
+            uid (str): Unique identifier of the branch to remove.
+
+        Returns:
+            bool: True if the branch was removed, False if not found.
+        """
+        if uid not in self.branches_dict:
+            return False
+
+        item = self.branches_dict[uid]
+        parent = item.parent()
+
+        if parent:
+            parent.removeChild(item)
+        else:
+            index = self.indexOfTopLevelItem(item)
+            self.takeTopLevelItem(index)
+
+        del self.branches_dict[uid]
+        if uid in self.visibility_status:
+            del self.visibility_status[uid]
+
+        return True
 
     # def move_branch(self, uids: list[str], new_parent_uuid: str):
     #     """
@@ -177,28 +245,35 @@ class TreeStructureWidget(QTreeWidget):
                     else:
                         data_manager.uncache_branch(uid)
 
-    # TODO: Fix selecting multiple items using Ctrl key
     def on_selection_changed(self):
         """
         Handles item selection changes and emits the selected branches.
+
+        Uses _ctrl_held captured at mouse press time instead of checking
+        keyboard modifiers here (which may have changed by the time this is called).
         """
-        selected_items = self.selectedItems()
-        last_selected_item = selected_items[-1] if selected_items else None
+        try:
+            logger.debug(f"on_selection_changed: _ctrl_held = {self._ctrl_held}")
+            selected_items = self.selectedItems()
+            last_selected_item = selected_items[-1] if selected_items else None
 
-        if last_selected_item:
-            # Check if Ctrl is pressed
-            if not (QApplication.keyboardModifiers() & Qt.ControlModifier):
-                # Block signals to prevent recursive calls
-                self.blockSignals(True)
-                self.clearSelection()
-                last_selected_item.setSelected(True)
-                self.blockSignals(False)
+            if last_selected_item:
+                # Use stored Ctrl state from mousePressEvent for reliable multi-select
+                if not self._ctrl_held:
+                    # Single selection mode - clear others
+                    self.blockSignals(True)
+                    self.clearSelection()
+                    last_selected_item.setSelected(True)
+                    self.blockSignals(False)
 
-                # Update selected_items to reflect the new selection
-                selected_items = self.selectedItems()  # <-- Fix here
+                    # Update selected_items to reflect the new selection
+                    selected_items = self.selectedItems()
 
-        selected_uids = [item.data(0, Qt.UserRole) for item in selected_items if item.data(0, Qt.UserRole)]
-        self.branch_selection_changed.emit(selected_uids)
+            selected_uids = [item.data(0, Qt.UserRole) for item in selected_items if item.data(0, Qt.UserRole)]
+            logger.debug(f"on_selection_changed: emitting {len(selected_uids)} selected UIDs")
+            self.branch_selection_changed.emit(selected_uids)
+        except Exception as e:
+            logger.error(f"Error in on_selection_changed: {e}", exc_info=True)
 
     def get_all_items(self):
         """

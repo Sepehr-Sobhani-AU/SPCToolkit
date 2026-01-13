@@ -4,8 +4,12 @@ including methods for adding, retrieving, removing, and validating dependencies 
 """
 
 import uuid
+import logging
 from typing import Dict, List, Optional
 from core.data_node import DataNode
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 
 class DataNodes:
@@ -33,7 +37,15 @@ class DataNodes:
         Returns:
             UUID: The unique identifier of the added DataNode.
         """
+        logger.debug(f"DataNodes.add_node() called")
+        logger.debug(f"  Node UID: {node.uid}")
+        logger.debug(f"  Node type: {node.data_type}")
+        logger.debug(f"  Node params: {node.params}")
+        logger.debug(f"  Total nodes before: {len(self.data_nodes)}")
+
         self.data_nodes[node.uid] = node
+
+        logger.debug(f"  Total nodes after: {len(self.data_nodes)}")
         return node.uid
 
     def remove_node(self, uid: uuid.UUID) -> bool:

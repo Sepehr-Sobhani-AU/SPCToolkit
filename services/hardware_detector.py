@@ -44,6 +44,8 @@ class HardwareDetector:
     """
 
     _hardware_info: Optional[HardwareInfo] = None
+    _nvml_initialized: bool = False
+    _nvml_handle = None
 
     @classmethod
     def detect(cls) -> HardwareInfo:
@@ -213,6 +215,140 @@ class HardwareDetector:
     def reset(cls) -> None:
         """Reset cached hardware info (useful for testing)."""
         cls._hardware_info = None
+        cls._shutdown_nvml()
+
+    @classmethod
+    def _init_nvml(cls) -> bool:
+        """Initialize NVML once and keep handle for reuse."""
+        if cls._nvml_initialized:
+            return True
+
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            cls._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            cls._nvml_initialized = True
+            logger.debug("NVML initialized successfully")
+            return True
+        except ImportError:
+            logger.debug("pynvml not available")
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to initialize NVML: {e}")
+            return False
+
+    @classmethod
+    def _shutdown_nvml(cls) -> None:
+        """Shutdown NVML if initialized."""
+        if cls._nvml_initialized:
+            try:
+                import pynvml
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
+            cls._nvml_initialized = False
+            cls._nvml_handle = None
+
+    @classmethod
+    def get_free_gpu_memory_mb(cls) -> int:
+        """
+        Get current free GPU memory in MB.
+
+        Returns:
+            int: Free VRAM in MB (0 if no GPU or error)
+        """
+        if cls._hardware_info is None:
+            cls.detect()
+
+        if not cls._hardware_info.nvidia_gpu:
+            return 0
+
+        # Use persistent NVML handle
+        if cls._init_nvml() and cls._nvml_handle is not None:
+            try:
+                import pynvml
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(cls._nvml_handle)
+                return mem_info.free // (1024 * 1024)
+            except Exception as e:
+                logger.debug(f"Error getting free GPU memory: {e}")
+                cls._nvml_initialized = False
+                cls._nvml_handle = None
+
+        # Fall back to PyTorch
+        try:
+            import torch
+            if torch.cuda.is_available():
+                total = torch.cuda.get_device_properties(0).total_memory
+                reserved = torch.cuda.memory_reserved(0)
+                return (total - reserved) // (1024 * 1024)
+        except Exception:
+            pass
+
+        return 0
+
+    @classmethod
+    def check_gpu_memory_available(cls, required_mb: int, safety_margin: float = 0.2) -> bool:
+        """
+        Check if enough GPU memory is available for an operation.
+
+        Args:
+            required_mb: Required memory in MB
+            safety_margin: Extra margin to keep free (default 20%)
+
+        Returns:
+            bool: True if enough memory is available
+        """
+        free_mb = cls.get_free_gpu_memory_mb()
+        if free_mb == 0:
+            return False
+
+        # Add safety margin
+        required_with_margin = int(required_mb * (1 + safety_margin))
+        return free_mb >= required_with_margin
+
+    @classmethod
+    def estimate_array_gpu_memory_mb(cls, array_or_shape, dtype=None) -> int:
+        """
+        Estimate GPU memory required for an array.
+
+        Args:
+            array_or_shape: NumPy array or tuple shape
+            dtype: Data type (default: float32)
+
+        Returns:
+            int: Estimated memory in MB
+        """
+        import numpy as np
+
+        if hasattr(array_or_shape, 'nbytes'):
+            # It's an array
+            return array_or_shape.nbytes // (1024 * 1024) + 1  # +1 to round up
+        else:
+            # It's a shape tuple
+            if dtype is None:
+                dtype = np.float32
+            element_size = np.dtype(dtype).itemsize
+            total_elements = 1
+            for dim in array_or_shape:
+                total_elements *= dim
+            return (total_elements * element_size) // (1024 * 1024) + 1
+
+    @classmethod
+    def log_gpu_memory_status(cls, operation: str = "") -> None:
+        """
+        Log current GPU memory status.
+
+        Args:
+            operation: Description of the operation being performed
+        """
+        stats = cls.get_dynamic_stats()
+        if stats['vram_total_mb'] > 0:
+            used = stats['vram_used_mb']
+            total = stats['vram_total_mb']
+            free = total - used
+            pct = stats['vram_percent']
+            prefix = f"[{operation}] " if operation else ""
+            logger.info(f"{prefix}GPU Memory: {used}/{total} MB used ({pct:.1f}%), {free} MB free")
 
     @classmethod
     def get_dynamic_stats(cls) -> dict:
@@ -255,30 +391,34 @@ class HardwareDetector:
 
         # GPU statistics via pynvml (more reliable than PyTorch for utilization/temp)
         if cls._hardware_info and cls._hardware_info.nvidia_gpu:
-            try:
-                import pynvml
-                pynvml.nvmlInit()
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-
-                # VRAM
-                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                stats['vram_used_mb'] = mem_info.used // (1024 * 1024)
-                stats['vram_total_mb'] = mem_info.total // (1024 * 1024)
-                stats['vram_percent'] = (mem_info.used / mem_info.total) * 100
-
-                # GPU utilization
-                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                stats['gpu_utilization'] = util.gpu
-
-                # Temperature
+            # Use persistent NVML handle
+            if cls._init_nvml() and cls._nvml_handle is not None:
                 try:
-                    temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-                    stats['gpu_temp_c'] = temp
-                except Exception:
-                    pass
+                    import pynvml
 
-                pynvml.nvmlShutdown()
-            except ImportError:
+                    # VRAM
+                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(cls._nvml_handle)
+                    stats['vram_used_mb'] = mem_info.used // (1024 * 1024)
+                    stats['vram_total_mb'] = mem_info.total // (1024 * 1024)
+                    stats['vram_percent'] = (mem_info.used / mem_info.total) * 100
+
+                    # GPU utilization
+                    util = pynvml.nvmlDeviceGetUtilizationRates(cls._nvml_handle)
+                    stats['gpu_utilization'] = util.gpu
+
+                    # Temperature
+                    try:
+                        temp = pynvml.nvmlDeviceGetTemperature(cls._nvml_handle, pynvml.NVML_TEMPERATURE_GPU)
+                        stats['gpu_temp_c'] = temp
+                    except Exception:
+                        pass
+
+                except Exception as e:
+                    logger.debug(f"Error getting GPU stats via pynvml: {e}")
+                    # Reset NVML on error to try reinitializing next time
+                    cls._nvml_initialized = False
+                    cls._nvml_handle = None
+            else:
                 # Fall back to PyTorch for basic VRAM info
                 try:
                     import torch
@@ -289,7 +429,5 @@ class HardwareDetector:
                             stats['vram_percent'] = (stats['vram_used_mb'] / stats['vram_total_mb']) * 100
                 except Exception:
                     pass
-            except Exception as e:
-                logger.debug(f"Error getting GPU stats via pynvml: {e}")
 
         return stats

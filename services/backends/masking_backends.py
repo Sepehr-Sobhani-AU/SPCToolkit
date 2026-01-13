@@ -4,8 +4,11 @@ Masking Backend Implementations
 Provides GPU (CuPy) and CPU (NumPy) backends for point cloud masking/filtering.
 """
 
+import logging
 import numpy as np
 from .base import MaskingBackend
+
+logger = logging.getLogger(__name__)
 
 
 class CuPyMasking(MaskingBackend):
@@ -19,49 +22,67 @@ class CuPyMasking(MaskingBackend):
     def is_gpu(self) -> bool:
         return True
 
+    def _estimate_gpu_memory_mb(self, *arrays) -> int:
+        """Estimate GPU memory needed for arrays (with 4x overhead for operations)."""
+        total_mb = 0
+        for arr in arrays:
+            if arr is not None:
+                total_mb += arr.nbytes // (1024 * 1024) + 1
+        return total_mb * 4  # 4x overhead for GPU operations
+
     def apply_mask(self, points: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Apply boolean mask to filter points using CuPy on GPU."""
-        self.log_execution("Masking")
+        from services.memory_manager import MemoryManager
 
+        # Check GPU memory using centralized manager
+        required_mb = self._estimate_gpu_memory_mb(points, mask)
+        if not MemoryManager.can_use_gpu(required_mb):
+            return points[mask]  # CPU fallback
+
+        self.log_execution("Masking")
         import cupy as cp
 
-        # Transfer to GPU
-        points_gpu = cp.asarray(points)
-        mask_gpu = cp.asarray(mask)
+        try:
+            points_gpu = cp.asarray(points)
+            mask_gpu = cp.asarray(mask)
+            result_gpu = points_gpu[mask_gpu]
+            result = cp.asnumpy(result_gpu)
 
-        # Apply mask on GPU
-        result_gpu = points_gpu[mask_gpu]
+            del points_gpu, mask_gpu, result_gpu
+            MemoryManager.cleanup()
+            return result
 
-        # Transfer back to CPU
-        result = cp.asnumpy(result_gpu)
-
-        # Clean up GPU memory
-        del points_gpu, mask_gpu, result_gpu
-        cp.get_default_memory_pool().free_all_blocks()
-
-        return result
+        except (cp.cuda.memory.OutOfMemoryError, MemoryError) as e:
+            logger.warning(f"GPU OOM during masking: {e}, falling back to CPU")
+            MemoryManager.cleanup()
+            return points[mask]
 
     def apply_mask_to_array(self, array: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Apply boolean mask to any array using CuPy on GPU."""
-        self.log_execution("Masking (array)")
+        from services.memory_manager import MemoryManager
 
+        # Check GPU memory using centralized manager
+        required_mb = self._estimate_gpu_memory_mb(array, mask)
+        if not MemoryManager.can_use_gpu(required_mb):
+            return array[mask]  # CPU fallback
+
+        self.log_execution("Masking (array)")
         import cupy as cp
 
-        # Transfer to GPU
-        array_gpu = cp.asarray(array)
-        mask_gpu = cp.asarray(mask)
+        try:
+            array_gpu = cp.asarray(array)
+            mask_gpu = cp.asarray(mask)
+            result_gpu = array_gpu[mask_gpu]
+            result = cp.asnumpy(result_gpu)
 
-        # Apply mask on GPU
-        result_gpu = array_gpu[mask_gpu]
+            del array_gpu, mask_gpu, result_gpu
+            MemoryManager.cleanup()
+            return result
 
-        # Transfer back to CPU
-        result = cp.asnumpy(result_gpu)
-
-        # Clean up GPU memory
-        del array_gpu, mask_gpu, result_gpu
-        cp.get_default_memory_pool().free_all_blocks()
-
-        return result
+        except (cp.cuda.memory.OutOfMemoryError, MemoryError) as e:
+            logger.warning(f"GPU OOM during array masking: {e}, falling back to CPU")
+            MemoryManager.cleanup()
+            return array[mask]
 
 
 class NumpyMasking(MaskingBackend):

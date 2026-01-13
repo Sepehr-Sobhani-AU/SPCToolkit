@@ -1,13 +1,42 @@
 # main.py
 import sys
 import logging
+import os
 
-# Configure logging FIRST
+# Configure logging FIRST - write to both console and file
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'spctoolkit_debug.log')
+
+
+class FlushingFileHandler(logging.FileHandler):
+    """File handler that flushes after every log entry (for crash debugging)."""
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+# Create file handler that logs everything including DEBUG
+# Use FlushingFileHandler to ensure logs are written before crash
+file_handler = FlushingFileHandler(LOG_FILE, mode='w')  # 'w' to overwrite each run
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+
+# Create console handler with INFO level
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+
+# Configure root logger
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,  # Capture all levels
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[file_handler, console_handler]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Logging to file: {LOG_FILE}")
 
 # IMPORTANT: Detect hardware BEFORE importing PyQt5/OpenGL
 # This avoids conflicts with PyCharm debugger's Qt support
