@@ -383,6 +383,37 @@ class PointCloud:
         """Get a per-point attribute by name."""
         return self.attributes.get(name)
 
+    def with_attribute(self, name: str, values: np.ndarray) -> 'PointCloud':
+        """
+        Return a new PointCloud with an additional attribute.
+
+        Memory-efficient: creates a shallow copy that shares array references
+        with the original, only adding the new attribute.
+
+        Args:
+            name: Name of the attribute to add
+            values: Array of values (first dimension must match point count)
+
+        Returns:
+            PointCloud: New point cloud with the added attribute
+
+        Example:
+            pc_with_labels = point_cloud.with_attribute('labels', label_array)
+        """
+        # Create shallow copy - shares array references (memory efficient)
+        result = PointCloud(
+            points=self.points,
+            colors=self.colors,
+            normals=self.normals,
+            intensity=getattr(self, 'intensity', np.array([])),
+            distToGround=getattr(self, 'distToGround', np.array([])),
+            params=self.name
+        )
+        # Copy attributes dict (shallow) and add new attribute
+        result.attributes = self.attributes.copy()
+        result.add_attribute(name, values)
+        return result
+
     def translate(self, translation):
         """
         Translate the cluster by a given translation vector.

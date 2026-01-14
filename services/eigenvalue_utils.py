@@ -50,6 +50,23 @@ class EigenvalueUtils:
         self._last_computed_eigenvalues = None
         self._last_tree = None
         self._last_indices = None
+        self._last_point_count = 0
+        self._last_k = 0
+
+    def clear_cache(self) -> None:
+        """
+        Clear cached data to free memory.
+
+        Call this method when:
+        - Processing a different point cloud
+        - Parameters (k) have changed
+        - Memory needs to be freed
+        """
+        self._last_computed_eigenvalues = None
+        self._last_tree = None
+        self._last_indices = None
+        self._last_point_count = 0
+        self._last_k = 0
 
     @staticmethod
     def _create_batches(total_size: int, batch_size: int) -> List[Tuple[int, int]]:
@@ -178,8 +195,22 @@ class EigenvalueUtils:
         # Ensure points are in the correct format
         points_float32 = points.astype(np.float32, copy=False)
 
-        # Memory optimization - only create the indices and tree once
-        if self._last_tree is None or len(self._last_indices) != len(points) or self._last_indices.shape[1] != k + 1:
+        # Check if cache is valid (same point count and k value)
+        cache_valid = (
+            self._last_tree is not None and
+            self._last_indices is not None and
+            self._last_point_count == len(points) and
+            self._last_k == k
+        )
+
+        if cache_valid:
+            # Reuse cached indices
+            indices = self._last_indices
+        else:
+            # Cache is invalid - clear old cache BEFORE creating new one
+            # This avoids temporary memory duplication
+            self.clear_cache()
+
             print("Building KD-tree and finding neighbors...")
             tree = KDTree(points_float32)
             self._last_tree = tree
@@ -187,10 +218,9 @@ class EigenvalueUtils:
             # Find k nearest neighbors for each point (including the point itself)
             distances, indices = tree.query(points_float32, k=k + 1)
             self._last_indices = indices
+            self._last_point_count = len(points)
+            self._last_k = k
             print("KD-tree built and neighbors found.")
-        else:
-            # Reuse indices if we're analyzing the same point cloud with the same k
-            indices = self._last_indices
 
         # Create batches for processing
         batches = self._create_batches(len(points), batch_size)
