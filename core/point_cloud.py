@@ -498,7 +498,14 @@ class PointCloud:
                 points_gpu = cp.asarray(self.points, dtype=cp.float32)
                 db = cumlDBSCAN(eps=eps, min_samples=min_points)
                 labels_gpu = db.fit_predict(points_gpu)
-                labels = cp.asnumpy(labels_gpu).astype(np.int32)
+
+                # Convert dtype on GPU before transfer (more efficient than CPU conversion)
+                labels_gpu_int32 = labels_gpu.astype(cp.int32)
+                labels = cp.asnumpy(labels_gpu_int32)
+
+                # Clean up GPU memory
+                del points_gpu, labels_gpu, labels_gpu_int32
+                cp.get_default_memory_pool().free_all_blocks()
 
                 self._print_dbscan_results(labels, start_time, "cuML GPU")
                 return labels

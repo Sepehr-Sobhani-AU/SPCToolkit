@@ -96,11 +96,12 @@ class CuMLDBSCAN(DBSCANBackend):
             db = cumlDBSCAN(eps=eps, min_samples=min_samples)
             labels_gpu = db.fit_predict(points_gpu)
 
-            # Transfer results back to CPU as numpy array
-            labels = cp.asnumpy(labels_gpu).astype(np.int32)
+            # Convert dtype on GPU before transfer (more efficient than CPU conversion)
+            labels_gpu_int32 = labels_gpu.astype(cp.int32)
+            labels = cp.asnumpy(labels_gpu_int32)
 
             # Clean up GPU memory
-            del points_gpu, labels_gpu
+            del points_gpu, labels_gpu, labels_gpu_int32
             cp.get_default_memory_pool().free_all_blocks()
 
             # Report results
