@@ -465,3 +465,54 @@ class MainWindow(QtWidgets.QMainWindow):
         Enable the tree widget after processing is complete.
         """
         self.tree_widget.setEnabled(True)
+
+    def closeEvent(self, event):
+        """
+        Handle application close with proper memory cleanup.
+
+        Ensures all memory resources are freed consistently to avoid
+        memory leaks between sessions.
+        """
+        import gc
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("MainWindow closing - performing cleanup...")
+
+        # Clear global references to allow garbage collection
+        from config.config import global_variables
+        global_variables.global_data_manager = None
+        global_variables.global_data_nodes = None
+        global_variables.global_file_manager = None
+        global_variables.global_pcd_viewer_widget = None
+        global_variables.global_tree_structure_widget = None
+        global_variables.global_main_window = None
+        global_variables.global_analysis_thread_manager = None
+
+        # Clear CuPy memory pools if available
+        try:
+            import cupy as cp
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            logger.info("CuPy memory pools cleared")
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error clearing CuPy memory: {e}")
+
+        # Clear PyTorch cache if available
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("PyTorch CUDA cache cleared")
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error clearing PyTorch cache: {e}")
+
+        # Force garbage collection
+        gc.collect()
+        logger.info("Garbage collection completed")
+
+        # Call parent closeEvent
+        super().closeEvent(event)
