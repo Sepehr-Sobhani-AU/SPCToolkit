@@ -15,7 +15,7 @@ Workflow:
 import uuid
 import logging
 import numpy as np
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, List
 
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtCore import Qt
@@ -118,13 +118,11 @@ class MergeBranchesPlugin(ActionPlugin):
                     )
                     return
 
-            # Merge the point clouds
-            logger.info(f"Merging {len(point_clouds)} point clouds...")
-            merged_pc = self._merge_point_clouds(point_clouds)
-            logger.info(f"Merge complete: {merged_pc.size} total points")
-
-            # Get the merged name from params
+            # Merge the point clouds using PointCloud.merge()
             merged_name = params.get("merged_name", f"Merged ({len(point_clouds)} branches)")
+            logger.info(f"Merging {len(point_clouds)} point clouds...")
+            merged_pc = PointCloud.merge(point_clouds, name=merged_name)
+            logger.info(f"Merge complete: {merged_pc.size} total points")
 
             # Create DataNode for merged result at root level
             logger.debug("Creating DataNode for merged result")
@@ -187,188 +185,6 @@ class MergeBranchesPlugin(ActionPlugin):
             main_window.enable_menus()
             main_window.enable_tree()
             logger.debug("UI restored")
-
-    def _merge_point_clouds(self, point_clouds: List[PointCloud]) -> PointCloud:
-        """
-        Merge multiple point clouds into a single PointCloud.
-
-        Memory-optimized: pre-allocates arrays and fills directly instead of
-        using np.concatenate which creates intermediate copies.
-
-        Args:
-            point_clouds: List of PointCloud instances to merge
-
-        Returns:
-            PointCloud: Merged point cloud with all attributes
-        """
-        logger.debug(f"_merge_point_clouds: merging {len(point_clouds)} clouds")
-
-        # Calculate total size for pre-allocation
-        total_points = sum(pc.size for pc in point_clouds)
-        logger.debug(f"Total points to merge: {total_points:,}")
-
-        # Pre-allocate points array and fill directly (memory efficient)
-        logger.debug("Pre-allocating and filling points...")
-        all_points = np.empty((total_points, 3), dtype=np.float32)
-        offset = 0
-        for pc in point_clouds:
-            n = pc.size
-            all_points[offset:offset + n] = pc.points
-            offset += n
-        logger.debug(f"Points merged: {len(all_points):,}")
-
-        # Handle colors
-        logger.debug("Merging colors...")
-        all_colors = self._merge_optional_array(
-            point_clouds,
-            'colors',
-            shape_suffix=(3,),
-            fill_value=1.0  # White for missing colors
-        )
-        logger.debug(f"Colors: {'present' if all_colors is not None else 'None'}")
-
-        # Handle normals
-        logger.debug("Merging normals...")
-        all_normals = self._merge_optional_array(
-            point_clouds,
-            'normals',
-            shape_suffix=(3,),
-            fill_value=0.0  # Zero vector for missing normals
-        )
-        logger.debug(f"Normals: {'present' if all_normals is not None else 'None'}")
-
-        # Create merged point cloud
-        logger.debug("Creating merged PointCloud object...")
-        merged_pc = PointCloud(
-            points=all_points,
-            colors=all_colors,
-            normals=all_normals
-        )
-        logger.debug(f"PointCloud created with {merged_pc.size} points")
-
-        # Merge custom attributes
-        logger.debug("Merging custom attributes...")
-        self._merge_attributes(point_clouds, merged_pc)
-        logger.debug(f"Attributes merged: {list(merged_pc.attributes.keys()) if merged_pc.attributes else 'none'}")
-
-        return merged_pc
-
-    def _merge_optional_array(
-        self,
-        point_clouds: List[PointCloud],
-        attr_name: str,
-        shape_suffix: tuple = (),
-        fill_value: float = np.nan
-    ) -> np.ndarray:
-        """
-        Merge an optional array attribute from multiple point clouds.
-
-        Memory-optimized: pre-allocates output array and fills directly.
-
-        Args:
-            point_clouds: List of point clouds
-            attr_name: Name of the attribute (e.g., 'colors', 'normals')
-            shape_suffix: Shape suffix for each point (e.g., (3,) for RGB)
-            fill_value: Value to use when attribute is missing
-
-        Returns:
-            np.ndarray or None: Merged array, or None if none have the attribute
-        """
-        # Check if any point cloud has this attribute
-        has_attr = any(
-            hasattr(pc, attr_name) and getattr(pc, attr_name) is not None
-            and len(getattr(pc, attr_name)) > 0
-            for pc in point_clouds
-        )
-
-        if not has_attr:
-            return None
-
-        # Calculate total size and pre-allocate
-        total_points = sum(pc.size for pc in point_clouds)
-        output_shape = (total_points,) + shape_suffix
-        merged = np.empty(output_shape, dtype=np.float32)
-
-        # Fill directly (memory efficient - no intermediate arrays)
-        offset = 0
-        for pc in point_clouds:
-            n = pc.size
-            attr_val = getattr(pc, attr_name, None)
-
-            if attr_val is not None and len(attr_val) > 0:
-                merged[offset:offset + n] = attr_val
-            else:
-                # Fill with default value for missing attribute
-                merged[offset:offset + n] = fill_value
-            offset += n
-
-        return merged
-
-    def _merge_attributes(
-        self,
-        point_clouds: List[PointCloud],
-        merged_pc: PointCloud
-    ) -> None:
-        """
-        Merge custom attributes from all point clouds into the merged result.
-
-        Memory-optimized: pre-allocates arrays and fills directly.
-        Attributes present in some but not all point clouds will have NaN
-        values for points from clouds where the attribute was missing.
-
-        Args:
-            point_clouds: Source point clouds
-            merged_pc: Target merged point cloud
-        """
-        # Collect all unique attribute names
-        all_attr_names: Set[str] = set()
-        for pc in point_clouds:
-            if hasattr(pc, 'attributes') and pc.attributes:
-                all_attr_names.update(pc.attributes.keys())
-
-        if not all_attr_names:
-            return
-
-        # Calculate total size once
-        total_points = sum(pc.size for pc in point_clouds)
-
-        # Merge each attribute
-        for attr_name in all_attr_names:
-            # Determine attribute shape and dtype from first cloud that has it
-            attr_shape = ()
-            attr_dtype = np.float32
-            for pc in point_clouds:
-                if hasattr(pc, 'attributes') and attr_name in pc.attributes:
-                    sample = pc.attributes[attr_name]
-                    if sample.ndim == 1:
-                        attr_shape = ()  # Scalar per point
-                    else:
-                        attr_shape = sample.shape[1:]  # Shape after first dim
-                    attr_dtype = sample.dtype
-                    break
-
-            # Pre-allocate merged array
-            output_shape = (total_points,) + attr_shape
-            merged_attr = np.empty(output_shape, dtype=attr_dtype)
-
-            # Determine fill value based on dtype
-            if np.issubdtype(attr_dtype, np.floating):
-                fill_value = np.nan
-            else:
-                fill_value = -1
-
-            # Fill directly (memory efficient - no intermediate arrays)
-            offset = 0
-            for pc in point_clouds:
-                n = pc.size
-                if hasattr(pc, 'attributes') and attr_name in pc.attributes:
-                    merged_attr[offset:offset + n] = pc.attributes[attr_name]
-                else:
-                    merged_attr[offset:offset + n] = fill_value
-                offset += n
-
-            # Add to merged point cloud
-            merged_pc.add_attribute(attr_name, merged_attr)
 
     def _hide_source_branches(
         self,

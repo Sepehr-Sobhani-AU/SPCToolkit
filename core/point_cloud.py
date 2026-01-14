@@ -138,6 +138,204 @@ class PointCloud:
         """
         return len(self.points)
 
+    @classmethod
+    def merge(cls, point_clouds: list, name: str = "Merged") -> 'PointCloud':
+        """
+        Merge multiple point clouds into a single PointCloud.
+
+        Memory-optimized: pre-allocates arrays and fills directly instead of
+        using np.concatenate which creates intermediate copies.
+
+        Args:
+            point_clouds: List of PointCloud instances to merge
+            name: Name for the merged point cloud
+
+        Returns:
+            PointCloud: Merged point cloud with all points, colors, normals, and attributes
+
+        Example:
+            merged = PointCloud.merge([pc1, pc2, pc3], name="Combined")
+        """
+        if not point_clouds:
+            raise ValueError("Cannot merge empty list of point clouds")
+
+        if len(point_clouds) == 1:
+            # Single point cloud - return a shallow copy
+            pc = point_clouds[0]
+            result = cls(
+                points=pc.points,
+                colors=pc.colors,
+                normals=pc.normals,
+                params=name
+            )
+            result.attributes = pc.attributes.copy()
+            return result
+
+        logger.debug(f"PointCloud.merge(): merging {len(point_clouds)} clouds")
+
+        # Calculate total size for pre-allocation
+        total_points = sum(pc.size for pc in point_clouds)
+        logger.debug(f"  Total points: {total_points:,}")
+
+        # Pre-allocate and fill points
+        merged_points = np.empty((total_points, 3), dtype=np.float32)
+        offset = 0
+        for pc in point_clouds:
+            n = pc.size
+            merged_points[offset:offset + n] = pc.points
+            offset += n
+
+        # Merge colors (fill with white if missing)
+        merged_colors = cls._merge_optional_array(
+            point_clouds, 'colors', (3,), fill_value=1.0
+        )
+
+        # Merge normals (fill with zero if missing)
+        merged_normals = cls._merge_optional_array(
+            point_clouds, 'normals', (3,), fill_value=0.0
+        )
+
+        # Merge legacy attributes (intensity, distToGround)
+        merged_intensity = cls._merge_optional_array(
+            point_clouds, 'intensity', (), fill_value=0.0
+        )
+        merged_dist_to_ground = cls._merge_optional_array(
+            point_clouds, 'distToGround', (), fill_value=0.0
+        )
+
+        # Create merged point cloud
+        merged_pc = cls(
+            points=merged_points,
+            colors=merged_colors,
+            normals=merged_normals,
+            intensity=merged_intensity if merged_intensity is not None else np.array([]),
+            distToGround=merged_dist_to_ground if merged_dist_to_ground is not None else np.array([]),
+            params=name
+        )
+
+        # Merge custom attributes
+        cls._merge_attributes_into(point_clouds, merged_pc, total_points)
+
+        logger.debug(f"  Merge complete: {merged_pc.size:,} points")
+        return merged_pc
+
+    @classmethod
+    def _merge_optional_array(
+        cls,
+        point_clouds: list,
+        attr_name: str,
+        shape_suffix: tuple,
+        fill_value: float = 0.0
+    ) -> np.ndarray:
+        """
+        Merge an optional array attribute from multiple point clouds.
+
+        Memory-optimized: pre-allocates output array and fills directly.
+
+        Args:
+            point_clouds: List of point clouds
+            attr_name: Name of the attribute (e.g., 'colors', 'normals')
+            shape_suffix: Shape suffix for each point (e.g., (3,) for RGB)
+            fill_value: Value to use when attribute is missing
+
+        Returns:
+            np.ndarray or None: Merged array, or None if none have the attribute
+        """
+        # Check if any point cloud has this attribute with data
+        has_attr = any(
+            hasattr(pc, attr_name) and getattr(pc, attr_name) is not None
+            and len(getattr(pc, attr_name)) > 0
+            for pc in point_clouds
+        )
+
+        if not has_attr:
+            return None
+
+        # Calculate total size and pre-allocate
+        total_points = sum(pc.size for pc in point_clouds)
+        output_shape = (total_points,) + shape_suffix
+        merged = np.empty(output_shape, dtype=np.float32)
+
+        # Fill directly (memory efficient - no intermediate arrays)
+        offset = 0
+        for pc in point_clouds:
+            n = pc.size
+            attr_val = getattr(pc, attr_name, None)
+
+            if attr_val is not None and len(attr_val) > 0:
+                merged[offset:offset + n] = attr_val
+            else:
+                merged[offset:offset + n] = fill_value
+            offset += n
+
+        return merged
+
+    @classmethod
+    def _merge_attributes_into(
+        cls,
+        point_clouds: list,
+        merged_pc: 'PointCloud',
+        total_points: int
+    ) -> None:
+        """
+        Merge custom attributes from all point clouds into the merged result.
+
+        Memory-optimized: pre-allocates arrays and fills directly.
+        Attributes present in some but not all point clouds will have NaN/fill
+        values for points from clouds where the attribute was missing.
+
+        Args:
+            point_clouds: Source point clouds
+            merged_pc: Target merged point cloud
+            total_points: Total number of points (for pre-allocation)
+        """
+        # Collect all unique attribute names
+        all_attr_names = set()
+        for pc in point_clouds:
+            if hasattr(pc, 'attributes') and pc.attributes:
+                all_attr_names.update(pc.attributes.keys())
+
+        if not all_attr_names:
+            return
+
+        # Merge each attribute
+        for attr_name in all_attr_names:
+            # Determine attribute shape and dtype from first cloud that has it
+            attr_shape = ()
+            attr_dtype = np.float32
+            for pc in point_clouds:
+                if hasattr(pc, 'attributes') and attr_name in pc.attributes:
+                    sample = pc.attributes[attr_name]
+                    if sample.ndim == 1:
+                        attr_shape = ()  # Scalar per point
+                    else:
+                        attr_shape = sample.shape[1:]  # Shape after first dim
+                    attr_dtype = sample.dtype
+                    break
+
+            # Pre-allocate merged array
+            output_shape = (total_points,) + attr_shape
+            merged_attr = np.empty(output_shape, dtype=attr_dtype)
+
+            # Determine fill value based on dtype
+            if np.issubdtype(attr_dtype, np.floating):
+                fill_value = np.nan
+            else:
+                fill_value = -1
+
+            # Fill directly (memory efficient - no intermediate arrays)
+            offset = 0
+            for pc in point_clouds:
+                n = pc.size
+                if hasattr(pc, 'attributes') and attr_name in pc.attributes:
+                    merged_attr[offset:offset + n] = pc.attributes[attr_name]
+                else:
+                    merged_attr[offset:offset + n] = fill_value
+                offset += n
+
+            # Add to merged point cloud
+            merged_pc.add_attribute(attr_name, merged_attr)
+
     # This code should replace the existing add_attribute method in the PointCloud class
     def add_attribute(self, name, values):
         """Add or update a per-point attribute.
