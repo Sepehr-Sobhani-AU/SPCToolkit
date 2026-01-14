@@ -192,6 +192,9 @@ class MergeBranchesPlugin(ActionPlugin):
         """
         Merge multiple point clouds into a single PointCloud.
 
+        Memory-optimized: pre-allocates arrays and fills directly instead of
+        using np.concatenate which creates intermediate copies.
+
         Args:
             point_clouds: List of PointCloud instances to merge
 
@@ -200,10 +203,19 @@ class MergeBranchesPlugin(ActionPlugin):
         """
         logger.debug(f"_merge_point_clouds: merging {len(point_clouds)} clouds")
 
-        # Concatenate points
-        logger.debug("Concatenating points...")
-        all_points = np.concatenate([pc.points for pc in point_clouds], axis=0)
-        logger.debug(f"Total points: {len(all_points)}")
+        # Calculate total size for pre-allocation
+        total_points = sum(pc.size for pc in point_clouds)
+        logger.debug(f"Total points to merge: {total_points:,}")
+
+        # Pre-allocate points array and fill directly (memory efficient)
+        logger.debug("Pre-allocating and filling points...")
+        all_points = np.empty((total_points, 3), dtype=np.float32)
+        offset = 0
+        for pc in point_clouds:
+            n = pc.size
+            all_points[offset:offset + n] = pc.points
+            offset += n
+        logger.debug(f"Points merged: {len(all_points):,}")
 
         # Handle colors
         logger.debug("Merging colors...")
@@ -251,6 +263,8 @@ class MergeBranchesPlugin(ActionPlugin):
         """
         Merge an optional array attribute from multiple point clouds.
 
+        Memory-optimized: pre-allocates output array and fills directly.
+
         Args:
             point_clouds: List of point clouds
             attr_name: Name of the attribute (e.g., 'colors', 'normals')
@@ -270,19 +284,25 @@ class MergeBranchesPlugin(ActionPlugin):
         if not has_attr:
             return None
 
-        merged_arrays = []
+        # Calculate total size and pre-allocate
+        total_points = sum(pc.size for pc in point_clouds)
+        output_shape = (total_points,) + shape_suffix
+        merged = np.empty(output_shape, dtype=np.float32)
+
+        # Fill directly (memory efficient - no intermediate arrays)
+        offset = 0
         for pc in point_clouds:
+            n = pc.size
             attr_val = getattr(pc, attr_name, None)
 
             if attr_val is not None and len(attr_val) > 0:
-                merged_arrays.append(attr_val)
+                merged[offset:offset + n] = attr_val
             else:
                 # Fill with default value for missing attribute
-                fill_shape = (pc.size,) + shape_suffix
-                filled = np.full(fill_shape, fill_value, dtype=np.float32)
-                merged_arrays.append(filled)
+                merged[offset:offset + n] = fill_value
+            offset += n
 
-        return np.concatenate(merged_arrays, axis=0)
+        return merged
 
     def _merge_attributes(
         self,
@@ -292,6 +312,7 @@ class MergeBranchesPlugin(ActionPlugin):
         """
         Merge custom attributes from all point clouds into the merged result.
 
+        Memory-optimized: pre-allocates arrays and fills directly.
         Attributes present in some but not all point clouds will have NaN
         values for points from clouds where the attribute was missing.
 
@@ -308,12 +329,13 @@ class MergeBranchesPlugin(ActionPlugin):
         if not all_attr_names:
             return
 
+        # Calculate total size once
+        total_points = sum(pc.size for pc in point_clouds)
+
         # Merge each attribute
         for attr_name in all_attr_names:
-            merged_attr_values = []
-
-            # Determine attribute shape from first cloud that has it
-            attr_shape = None
+            # Determine attribute shape and dtype from first cloud that has it
+            attr_shape = ()
             attr_dtype = np.float32
             for pc in point_clouds:
                 if hasattr(pc, 'attributes') and attr_name in pc.attributes:
@@ -325,22 +347,27 @@ class MergeBranchesPlugin(ActionPlugin):
                     attr_dtype = sample.dtype
                     break
 
-            # Build merged array
-            for pc in point_clouds:
-                if hasattr(pc, 'attributes') and attr_name in pc.attributes:
-                    merged_attr_values.append(pc.attributes[attr_name])
-                else:
-                    # Fill with NaN for missing attribute
-                    fill_shape = (pc.size,) + (attr_shape if attr_shape else ())
-                    # Use NaN for float types, -1 for int types
-                    if np.issubdtype(attr_dtype, np.floating):
-                        filled = np.full(fill_shape, np.nan, dtype=attr_dtype)
-                    else:
-                        filled = np.full(fill_shape, -1, dtype=attr_dtype)
-                    merged_attr_values.append(filled)
+            # Pre-allocate merged array
+            output_shape = (total_points,) + attr_shape
+            merged_attr = np.empty(output_shape, dtype=attr_dtype)
 
-            # Concatenate and add to merged point cloud
-            merged_attr = np.concatenate(merged_attr_values, axis=0)
+            # Determine fill value based on dtype
+            if np.issubdtype(attr_dtype, np.floating):
+                fill_value = np.nan
+            else:
+                fill_value = -1
+
+            # Fill directly (memory efficient - no intermediate arrays)
+            offset = 0
+            for pc in point_clouds:
+                n = pc.size
+                if hasattr(pc, 'attributes') and attr_name in pc.attributes:
+                    merged_attr[offset:offset + n] = pc.attributes[attr_name]
+                else:
+                    merged_attr[offset:offset + n] = fill_value
+                offset += n
+
+            # Add to merged point cloud
             merged_pc.add_attribute(attr_name, merged_attr)
 
     def _hide_source_branches(
