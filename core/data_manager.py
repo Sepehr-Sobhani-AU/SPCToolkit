@@ -58,6 +58,7 @@ class DataManager(QObject):
         self.analysis_manager = AnalysisManager(plugin_manager)
         self.node_reconstruction_manager = NodeReconstructionManager()
         self.selected_branches = []
+        self._last_rendered_uids = set()  # Track successfully rendered UIDs
 
         # Connect signals
         self.file_manager.point_cloud_loaded.connect(self._on_point_cloud_loaded)
@@ -540,6 +541,7 @@ class DataManager(QObject):
             logger.debug("  No visible branches, clearing viewer")
             self.viewer_widget.set_points(None)
             self.viewer_widget.update()
+            self._last_rendered_uids = set()
             return
 
         # Estimate total points and check if all cached
@@ -567,9 +569,12 @@ class DataManager(QObject):
                 f"Cannot render {total_points:,} points.\n\n{message}\n\n"
                 "Please hide some branches to free memory."
             )
-            # Revert visibility for all branches
-            for uid in uids_to_show:
+            # Only revert branches that weren't previously rendered (the newly checked ones)
+            # This preserves the previous view instead of clearing everything
+            newly_checked = set(uids_to_show) - self._last_rendered_uids
+            for uid in newly_checked:
                 self._revert_visibility(uid)
+            logger.debug(f"  Reverted {len(newly_checked)} newly checked branches")
             return
 
         # Pre-allocate vertex array (position + color per vertex) for memory efficiency
@@ -626,6 +631,9 @@ class DataManager(QObject):
         logger.info(f"  Rendering {offset:,} points")
         self.viewer_widget.set_point_vertices(vertices[:offset])
         self.viewer_widget.update()
+
+        # Track successfully rendered UIDs for future visibility revert
+        self._last_rendered_uids = set(uids_to_show)
 
         if zoom_extent:
             self.viewer_widget.zoom_to_extent()
