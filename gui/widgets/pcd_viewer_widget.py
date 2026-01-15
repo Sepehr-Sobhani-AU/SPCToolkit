@@ -1,14 +1,14 @@
-import sys
 import logging
 import traceback
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget, QMessageBox
+from scipy.spatial import cKDTree
+from PyQt5.QtWidgets import QOpenGLWidget, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
 from OpenGL.GL import *
 from OpenGL.GLU import gluPerspective, gluProject, gluUnProject
 from OpenGL.GLU import gluNewQuadric, gluDeleteQuadric, gluQuadricDrawStyle
 from OpenGL.GLU import gluSphere
-from OpenGL.GLU import GLU_LINE, GLU_FILL
+from OpenGL.GLU import GLU_FILL
 from OpenGL.arrays import vbo
 
 # Get logger for this module
@@ -307,7 +307,7 @@ class PCDViewerWidget(QOpenGLWidget):
         self._default_pan_z = value
 
     def __init__(self, parent=None):
-        super().__init__()
+        super().__init__(parent)
 
         # Set focus policy to ensure the widget receives keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
@@ -327,6 +327,7 @@ class PCDViewerWidget(QOpenGLWidget):
         # Point cloud data
         self.points = None
         self.vbo = None
+        self._kdtree = None  # Spatial index for fast point picking
 
         # Interaction variables
         self.last_mouse_pos = None
@@ -435,6 +436,7 @@ class PCDViewerWidget(QOpenGLWidget):
                     logger.warning(f"  Error deleting VBO: {e}")
                 self.vbo = None
             self.points = None
+            self._kdtree = None  # Clear spatial index
             MemoryManager.cleanup()
             self.update()
             return
@@ -470,6 +472,11 @@ class PCDViewerWidget(QOpenGLWidget):
             self.points[:, :3] = points
             self.points[:, 3:] = colors
             logger.debug(f"  Combined array: {self.points.shape}, {self.points.nbytes / 1024 / 1024:.1f} MB")
+
+            # Build spatial index for fast point picking
+            logger.debug("  Building KDTree spatial index...")
+            self._kdtree = cKDTree(self.points[:, :3])
+            logger.debug("  KDTree built")
 
             self.update()
             logger.debug("  set_points() completed")
@@ -511,6 +518,7 @@ class PCDViewerWidget(QOpenGLWidget):
                     logger.warning(f"  Error deleting VBO: {e}")
                 self.vbo = None
             self.points = None
+            self._kdtree = None  # Clear spatial index
             MemoryManager.cleanup()
             self.update()
             return
@@ -536,6 +544,11 @@ class PCDViewerWidget(QOpenGLWidget):
             # Direct assignment - no copying needed
             self.points = vertices
             logger.debug(f"  Assigned {len(vertices):,} point vertices directly")
+
+            # Build spatial index for fast point picking
+            logger.debug("  Building KDTree spatial index...")
+            self._kdtree = cKDTree(self.points[:, :3])
+            logger.debug("  KDTree built")
 
             self.update()
             logger.debug("  set_point_vertices() completed")
@@ -686,6 +699,9 @@ class PCDViewerWidget(QOpenGLWidget):
             glDisableClientState(GL_VERTEX_ARRAY)
             glDisableClientState(GL_COLOR_ARRAY)
 
+            # Unbind the VBO to prevent issues with other rendering
+            self.vbo.unbind()
+
         except Exception as e:
             logger.error(f"  ERROR in render_point_cloud(): {e}")
             logger.error(f"  Points shape: {self.points.shape if self.points is not None else 'None'}")
@@ -707,6 +723,7 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.picked_points_indices:
             glColor3f(*self.picked_point_highlight_color)
 
+            invalid_indices = []
             for index in self.picked_points_indices:
                 try:
                     position = self.points[index, :3]
@@ -716,7 +733,11 @@ class PCDViewerWidget(QOpenGLWidget):
                     radius = self.max_extent * self.picked_point_highlight_size / 1000
                     self.draw_sphere(position, radius)
                 except IndexError:
-                    continue
+                    invalid_indices.append(index)
+
+            # Remove invalid indices that no longer exist in the point cloud
+            for invalid_index in invalid_indices:
+                self.picked_points_indices.remove(invalid_index)
 
     def resizeGL(self, w, h):
         """
@@ -888,6 +909,10 @@ class PCDViewerWidget(QOpenGLWidget):
         # Show the axis symbol after zooming
         self.show_axis = True
 
+        # Stop existing timer if any to prevent memory leak
+        if self.axis_timer is not None:
+            self.axis_timer.stop()
+
         # Set a timer to hide the axis symbol after zooming is done
         self.axis_timer = QTimer(self)
         self.axis_timer.setSingleShot(True)
@@ -925,6 +950,17 @@ class PCDViewerWidget(QOpenGLWidget):
 
         # Call the parent class's closeEvent
         super().closeEvent(event)
+
+    def deleteOpenGLResources(self):
+        """
+        Clean up OpenGL resources.
+
+        This method is called during closeEvent to ensure all OpenGL resources
+        are properly released. Override this method to add additional cleanup
+        for any custom OpenGL resources.
+        """
+        # Additional OpenGL resource cleanup can be added here if needed
+        pass
 
     def keyPressEvent(self, event):
         """
@@ -1075,13 +1111,17 @@ class PCDViewerWidget(QOpenGLWidget):
         world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
         pick_point = np.array(world_coords[:3])
 
-        # Find the closest point in the point cloud to the picked point
-        distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
-        min_distance_index = np.argmin(distances)
-        min_distance = distances[min_distance_index]
-
         # Set a threshold to determine if a point is close enough to be considered picked
         threshold = self.max_extent * self.picking_point_threshold_factor
+
+        # Find the closest point using KDTree for O(log n) performance
+        if self._kdtree is not None:
+            min_distance, min_distance_index = self._kdtree.query(pick_point, k=1)
+        else:
+            # Fallback to brute-force if KDTree not available
+            distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
+            min_distance_index = np.argmin(distances)
+            min_distance = distances[min_distance_index]
 
         if min_distance < threshold:
             # Add the index to the list of picked points
@@ -1180,18 +1220,21 @@ class PCDViewerWidget(QOpenGLWidget):
         world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
         click_point = np.array(world_coords[:3])
 
-        # Find the closest point in the point cloud to the click point
-        distances = np.linalg.norm(self.points[:, :3] - click_point, axis=1)
-        min_distance_index = np.argmin(distances)
-        min_distance = distances[min_distance_index]
-
         # Set a threshold to determine if a point is close enough
-        threshold = self.max_extent * self.picking_point_threshold_factor  # Adjust as needed
+        threshold = self.max_extent * self.picking_point_threshold_factor
+
+        # Find the closest point using KDTree for O(log n) performance
+        if self._kdtree is not None:
+            min_distance, min_distance_index = self._kdtree.query(click_point, k=1)
+        else:
+            # Fallback to brute-force if KDTree not available
+            distances = np.linalg.norm(self.points[:, :3] - click_point, axis=1)
+            min_distance_index = np.argmin(distances)
+            min_distance = distances[min_distance_index]
 
         if min_distance < threshold:
-            # Update the center to the new point
-            old_center = self.center.copy()
-            self.center = self.points[min_distance_index, :3]
+            # Update the center to the new point (copy to avoid reference issues)
+            self.center = self.points[min_distance_index, :3].copy()
 
     def reset_view(self):
         """
@@ -1325,8 +1368,7 @@ class PCDViewerWidget(QOpenGLWidget):
             raise
 
     def show_point_cloud(self, visible=True):
-        """Show the point cloud by setting visibility to True and updating the view."""
-
-        if self.visible == visible:
+        """Show or hide the point cloud by setting visibility and updating the view."""
+        if self.visible != visible:
             self.visible = visible
             self.update()
