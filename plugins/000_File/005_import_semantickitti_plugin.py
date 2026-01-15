@@ -659,10 +659,31 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             )
             return
 
-        # Concatenate all data
+        # Memory-optimized merge: pre-allocate and fill directly
+        # This avoids creating intermediate arrays from vstack/concatenate
         try:
-            merged_points = np.vstack(all_points)
-            merged_intensity = np.concatenate(all_intensity)
+            # Calculate total size for pre-allocation
+            total_points = sum(len(pts) for pts in all_points)
+            logger.info(f"Pre-allocating arrays for {total_points:,} points...")
+
+            # Pre-allocate output arrays as float32 directly
+            points_translated = np.empty((total_points, 3), dtype=np.float32)
+            merged_intensity = np.empty(total_points, dtype=np.float32)
+
+            # Fill directly with translation applied (avoids intermediate float64 array)
+            offset = 0
+            for pts, intensity in zip(all_points, all_intensity):
+                n = len(pts)
+                # Translate and convert to float32 in one step
+                points_translated[offset:offset + n] = (pts - trajectory_min_bound).astype(np.float32)
+                merged_intensity[offset:offset + n] = intensity
+                offset += n
+
+            # Clear source lists to free memory
+            del all_points
+            del all_intensity
+            gc.collect()
+
         except MemoryError as e:
             QMessageBox.critical(
                 main_window,
@@ -679,18 +700,27 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             )
             return
 
-        # Translate to origin for float32 precision
-        # Use trajectory-based origin for consistent alignment across different filters
-        points_translated = (merged_points - trajectory_min_bound).astype(np.float32)
+        # Create intensity-based grayscale colors (memory efficient)
+        intensity_min = merged_intensity.min()
+        intensity_range = merged_intensity.max() - intensity_min + 1e-6
+        # Pre-allocate colors array and fill directly (avoids column_stack copy)
+        colors = np.empty((total_points, 3), dtype=np.float32)
+        intensity_norm = (merged_intensity - intensity_min) / intensity_range
+        colors[:, 0] = intensity_norm
+        colors[:, 1] = intensity_norm
+        colors[:, 2] = intensity_norm
 
-        # Always use intensity for PointCloud colors
-        intensity_norm = (merged_intensity - merged_intensity.min()) / (merged_intensity.max() - merged_intensity.min() + 1e-6)
-        colors = np.column_stack([intensity_norm] * 3).astype(np.float32)
-
-        # Concatenate labels if loaded
+        # Merge labels if loaded (pre-allocate and fill)
         merged_semantic = None
         if all_semantic:
-            merged_semantic = np.concatenate(all_semantic)
+            merged_semantic = np.empty(total_points, dtype=np.int32)
+            offset = 0
+            for sem in all_semantic:
+                n = len(sem)
+                merged_semantic[offset:offset + n] = sem
+                offset += n
+            del all_semantic
+            gc.collect()
 
         # Check GPU memory before proceeding
         total_points = len(points_translated)
