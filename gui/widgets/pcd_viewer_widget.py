@@ -1233,8 +1233,20 @@ class PCDViewerWidget(QOpenGLWidget):
             min_distance = distances[min_distance_index]
 
         if min_distance < threshold:
-            # Update the center to the new point (copy to avoid reference issues)
-            self.center = self.points[min_distance_index, :3].copy()
+            # Save old center before updating
+            old_center = self.center.copy()
+            new_center = self.points[min_distance_index, :3].copy()
+
+            # Adjust pan to compensate for center change (prevents view shift)
+            # The transformation is: pan + center, so to keep the same view:
+            # new_pan + new_center = old_pan + old_center
+            # new_pan = old_pan + (old_center - new_center)
+            self.pan_x += old_center[0] - new_center[0]
+            self.pan_y += old_center[1] - new_center[1]
+            self.pan_z += old_center[2] - new_center[2]
+
+            # Update the center to the new point
+            self.center = new_center
 
     def reset_view(self):
         """
