@@ -488,6 +488,15 @@ class MainWindow(QtWidgets.QMainWindow):
         global_variables.global_main_window = None
         global_variables.global_analysis_thread_manager = None
 
+        # Clear EigenvalueUtils singleton cache (KD-tree, indices)
+        try:
+            from core.point_cloud import _eigenvalue_utils_instance
+            if _eigenvalue_utils_instance is not None:
+                _eigenvalue_utils_instance.clear_cache()
+                logger.info("EigenvalueUtils cache cleared")
+        except Exception as e:
+            logger.warning(f"Error clearing EigenvalueUtils cache: {e}")
+
         # Clear CuPy memory pools if available
         try:
             import cupy as cp

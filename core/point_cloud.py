@@ -497,6 +497,7 @@ class PointCloud:
         """
         self.points += translation
         self.translation += translation
+        self._obb_calculated = False  # Invalidate OBB cache (center changes)
 
     def augment_points(self, scale=0.005, augmentation_factor=2):
         """
@@ -532,6 +533,8 @@ class PointCloud:
             augmented_distToGround = np.repeat(self.distToGround, augmentation_factor)
             augmented_distToGround += noise[:, 2]
             self.distToGround = augmented_distToGround
+
+        self._obb_calculated = False  # Invalidate OBB cache (points changed)
 
     def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False, use_sklearn=False, use_gpu='auto'):
         """
@@ -1109,6 +1112,8 @@ class PointCloud:
         if len(self.distToGround) > 0:
             self.distToGround += noise[:, 2]  # Update only the Z-axis component
 
+        self._obb_calculated = False  # Invalidate OBB cache (points changed)
+
     def KNN(self, k=2):
         """
         Perform a k-nearest neighbors (KNN) search on the cluster's points.
@@ -1184,6 +1189,8 @@ class PointCloud:
 
         # Apply the rotation to points
         self.points = np.matmul(R, self.points.T).T
+
+        self._obb_calculated = False  # Invalidate OBB cache (points transformed)
 
     def save(self, file_name):
         """
@@ -1453,6 +1460,7 @@ class PointCloud:
             self.length = length
             self.width = width
             self.height = height
+            self.center = list(obb.center)
 
         except RuntimeError:
             # OBB calculation failed (degenerate geometry) - use 2D bounding box fallback
