@@ -1,5 +1,4 @@
 # Standard library imports
-import copy
 import time
 import math
 import os
@@ -24,6 +23,17 @@ from services.eigenvalue_utils import EigenvalueUtils
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
+
+# Singleton for EigenvalueUtils - preserves KD-tree cache across calls
+_eigenvalue_utils_instance = None
+
+
+def _get_eigenvalue_utils():
+    """Get or create singleton EigenvalueUtils instance."""
+    global _eigenvalue_utils_instance
+    if _eigenvalue_utils_instance is None:
+        _eigenvalue_utils_instance = EigenvalueUtils()
+    return _eigenvalue_utils_instance
 
 
 class PointCloud:
@@ -85,28 +95,13 @@ class PointCloud:
         self.prediction = ''
         self.probability = 0
         self.model_weight = ''
-        self.center = [0, 0, 0]
-        self.length = 0
-        self.width = 0
-        self.height = 0
 
-        # If cluster has no point in it, ignore calculating obb
-        # Skip OBB for large point clouds (>10M) to avoid slow computation
-        if self.size > 10_000_000:
-            logger.debug(f"  Skipping OBB for large point cloud ({self.size:,} points)")
-        elif self.size > 3:
-            # Check if points are coplanar (all have the same Z coordinate)
-            # If so, skip OBB calculation as it will fail
-            if not self._are_points_coplanar():
-                logger.debug(f"  Calculating OBB...")
-                self._update_obb_dim()
-            else:
-                # For coplanar points, calculate 2D bounding box manually
-                logger.debug(f"  Points are coplanar, using 2D bbox")
-                self._update_2d_bbox()
-        else:
-            logger.debug(f"  Skipping OBB (too few points)")
-            return
+        # OBB dimensions - lazy evaluation (calculated on first access)
+        self._center = [0, 0, 0]
+        self._length = 0
+        self._width = 0
+        self._height = 0
+        self._obb_calculated = False
 
         logger.debug(f"  PointCloud created: {self.size} points, name={self.name}")
 
@@ -137,6 +132,85 @@ class PointCloud:
             int: The total number of points in the point cloud.
         """
         return len(self.points)
+
+    # --- OBB Properties (Lazy Evaluation) ---
+    # These properties calculate OBB dimensions only when first accessed,
+    # avoiding expensive computation for operations that don't need them.
+
+    @property
+    def length(self):
+        """Get OBB length (lazy calculation on first access)."""
+        if not self._obb_calculated:
+            self._calculate_obb_lazy()
+        return self._length
+
+    @length.setter
+    def length(self, value):
+        """Set length directly (used by _update_obb_dim)."""
+        self._length = value
+
+    @property
+    def width(self):
+        """Get OBB width (lazy calculation on first access)."""
+        if not self._obb_calculated:
+            self._calculate_obb_lazy()
+        return self._width
+
+    @width.setter
+    def width(self, value):
+        """Set width directly (used by _update_obb_dim)."""
+        self._width = value
+
+    @property
+    def height(self):
+        """Get OBB height (lazy calculation on first access)."""
+        if not self._obb_calculated:
+            self._calculate_obb_lazy()
+        return self._height
+
+    @height.setter
+    def height(self, value):
+        """Set height directly (used by _update_obb_dim)."""
+        self._height = value
+
+    @property
+    def center(self):
+        """Get OBB center (lazy calculation on first access)."""
+        if not self._obb_calculated:
+            self._calculate_obb_lazy()
+        return self._center
+
+    @center.setter
+    def center(self, value):
+        """Set center directly (used by _update_2d_bbox)."""
+        self._center = value
+
+    def _calculate_obb_lazy(self):
+        """
+        Calculate OBB dimensions on first access (lazy evaluation).
+
+        This method is called automatically when length, width, height, or center
+        are accessed for the first time. The result is cached for subsequent accesses.
+        """
+        if self._obb_calculated:
+            return
+
+        logger.debug(f"_calculate_obb_lazy() called for {self.size:,} points")
+
+        if self.size <= 3:
+            logger.debug("  Too few points for OBB")
+        elif self.size > 10_000_000:
+            logger.debug("  Using 2D bbox for large point cloud")
+            self._update_2d_bbox()
+        elif self._are_points_coplanar():
+            logger.debug("  Using 2D bbox for coplanar points")
+            self._update_2d_bbox()
+        else:
+            logger.debug("  Calculating full OBB")
+            self._update_obb_dim()
+
+        self._obb_calculated = True
+        logger.debug(f"  OBB calculated: L={self._length:.2f}, W={self._width:.2f}, H={self._height:.2f}")
 
     @classmethod
     def merge(cls, point_clouds: list, name: str = "Merged") -> 'PointCloud':
@@ -669,8 +743,8 @@ class PointCloud:
             np.ndarray: Eigenvalues for each point
         """
 
-        # Create analyser instance (using CPU to avoid memory issues)
-        analyser = EigenvalueUtils()
+        # Use singleton to preserve KD-tree cache across calls
+        analyser = _get_eigenvalue_utils()
 
         # Use the analyser to compute eigenvalues
         return analyser.get_eigenvalues(self.points, k=k, smooth=smooth, batch_size=batch_size)
@@ -898,13 +972,9 @@ class PointCloud:
             self.points = apply_mask(self.points).astype(original_dtype)
             logger.debug(f"  Points masked: {len(self.points):,} points remaining")
 
-        # Update OBB dimensions - skip for large point clouds to avoid slow computation
-        if len(self.points) > 10_000_000:
-            logger.debug(f"  Skipping OBB update for large point cloud ({len(self.points):,} points)")
-        else:
-            logger.debug(f"  Updating OBB dimensions...")
-            self._update_obb_dim()
-            logger.debug(f"  OBB update complete")
+        # Invalidate OBB cache - will be recalculated lazily when accessed
+        self._obb_calculated = False
+        logger.debug(f"  OBB cache invalidated (lazy recalculation on next access)")
 
         # Apply mask to colors
         if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
@@ -1465,8 +1535,8 @@ class PointCloud:
             (min_coords[2] + max_coords[2]) / 2
         ]
 
-        print(
-            f"Calculated 2D bounding box for coplanar points: L={self.length:.2f}, W={self.width:.2f}, H={self.height:.6f}")
+        logger.debug(
+            f"Calculated 2D bounding box: L={self._length:.2f}, W={self._width:.2f}, H={self._height:.6f}")
 
     def estimate_normals(self, k: int = 30):
         """
