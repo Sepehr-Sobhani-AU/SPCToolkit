@@ -134,6 +134,14 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 "max": 120.0,
                 "label": "Max Distance (m)",
                 "description": "Keep points within this distance from scanner (0 = unlimited)"
+            },
+            "subsample_ratio": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.01,
+                "max": 1.0,
+                "label": "Subsample Ratio",
+                "description": "Keep this fraction of points (0.25 = 25%). Use < 1.0 for large imports."
             }
         }
 
@@ -336,10 +344,12 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         load_labels = params.get("load_labels", True)
         apply_poses = params.get("apply_poses", False)
         max_distance = params.get("max_distance", 30.0)
+        subsample_ratio = params.get("subsample_ratio", 1.0)
 
         logger.info(f"  load_labels: {load_labels}")
         logger.info(f"  apply_poses: {apply_poses}")
         logger.info(f"  max_distance: {max_distance}")
+        logger.info(f"  subsample_ratio: {subsample_ratio}")
 
         # Load poses and calibration if needed
         poses = None
@@ -423,6 +433,19 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
                     filtered_count = len(points)
                     logger.debug(f"  Distance filter: {original_count} -> {filtered_count} points ({100*filtered_count/original_count:.1f}%)")
+
+                # Apply subsample if ratio < 1.0
+                if subsample_ratio < 1.0:
+                    pre_subsample_count = len(points)
+                    n_keep = max(1, int(len(points) * subsample_ratio))
+                    indices = np.random.choice(len(points), n_keep, replace=False)
+                    indices.sort()  # Maintain spatial order
+                    points = points[indices]
+                    intensity = intensity[indices]
+                    if semantic_labels is not None:
+                        semantic_labels = semantic_labels[indices]
+                        instance_ids = instance_ids[indices]
+                    logger.debug(f"  Subsample: {pre_subsample_count} -> {len(points)} points ({100*subsample_ratio:.1f}%)")
 
                 # Apply pose if requested
                 if apply_poses and poses:
@@ -537,6 +560,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         """
         load_labels = params.get("load_labels", True)
         max_distance = params.get("max_distance", 30.0)
+        subsample_ratio = params.get("subsample_ratio", 1.0)
 
         # Load poses (mandatory for merge)
         poses_path = self._get_poses_path(file_paths[0])
@@ -610,6 +634,17 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     filtered_count = len(points)
                     if idx % progress_interval == 0:
                         pass  # Filtered count logging
+
+                # Apply subsample if ratio < 1.0
+                if subsample_ratio < 1.0:
+                    n_keep = max(1, int(len(points) * subsample_ratio))
+                    indices = np.random.choice(len(points), n_keep, replace=False)
+                    indices.sort()  # Maintain spatial order
+                    points = points[indices]
+                    intensity = intensity[indices]
+                    if semantic_labels is not None:
+                        semantic_labels = semantic_labels[indices]
+                        instance_labels = instance_labels[indices]
 
                 # Apply pose transformation (mandatory)
                 frame_num = self._extract_frame_number(os.path.basename(file_path))
