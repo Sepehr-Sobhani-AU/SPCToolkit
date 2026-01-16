@@ -127,14 +127,6 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 "label": "Apply Poses",
                 "description": "Transform points to world coordinates using poses.txt"
             },
-            "max_distance": {
-                "type": "float",
-                "default": 30.0,
-                "min": 0.0,
-                "max": 120.0,
-                "label": "Max Distance (m)",
-                "description": "Keep points within this distance from scanner (0 = unlimited)"
-            },
             "subsample_ratio": {
                 "type": "float",
                 "default": 1.0,
@@ -343,12 +335,10 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
         load_labels = params.get("load_labels", True)
         apply_poses = params.get("apply_poses", False)
-        max_distance = params.get("max_distance", 30.0)
         subsample_ratio = params.get("subsample_ratio", 1.0)
 
         logger.info(f"  load_labels: {load_labels}")
         logger.info(f"  apply_poses: {apply_poses}")
-        logger.info(f"  max_distance: {max_distance}")
         logger.info(f"  subsample_ratio: {subsample_ratio}")
 
         # Load poses and calibration if needed
@@ -410,7 +400,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 intensity = data[:, 3]  # remission/intensity
                 logger.debug(f"  Loaded {len(points)} points")
 
-                # Load labels BEFORE filtering
+                # Load labels if requested
                 semantic_labels = None
                 instance_ids = None
                 if load_labels:
@@ -419,20 +409,6 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                         logger.debug(f"  Loading labels from: {label_path}")
                         semantic_labels, instance_ids = self._load_labels(label_path)
                         logger.debug(f"  Loaded {len(semantic_labels)} labels")
-
-                # Apply distance filter if requested
-                original_count = len(points)
-                if max_distance > 0:
-                    distances = np.linalg.norm(points, axis=1)
-                    mask = distances <= max_distance
-                    points = points[mask]
-                    intensity = intensity[mask]
-                    if semantic_labels is not None:
-                        semantic_labels = semantic_labels[mask]
-                        instance_ids = instance_ids[mask]
-
-                    filtered_count = len(points)
-                    logger.debug(f"  Distance filter: {original_count} -> {filtered_count} points ({100*filtered_count/original_count:.1f}%)")
 
                 # Apply subsample if ratio < 1.0
                 if subsample_ratio < 1.0:
@@ -553,14 +529,23 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         """
         Import multiple .bin files and merge into single point cloud.
 
+        Uses two-pass streaming approach for minimal memory footprint:
+        - Pass 1: Calculate exact point count from file sizes (no I/O)
+        - Pass 2: Stream each scan directly into pre-allocated arrays
+
         Args:
             file_paths: List of paths to .bin files
             params: Import parameters
             main_window: Main application window
         """
         load_labels = params.get("load_labels", True)
-        max_distance = params.get("max_distance", 30.0)
         subsample_ratio = params.get("subsample_ratio", 1.0)
+
+        logger.info("-" * 40)
+        logger.info("_import_merged() started (two-pass streaming)")
+        logger.info(f"  Files: {len(file_paths)}")
+        logger.info(f"  load_labels: {load_labels}")
+        logger.info(f"  subsample_ratio: {subsample_ratio}")
 
         # Load poses (mandatory for merge)
         poses_path = self._get_poses_path(file_paths[0])
@@ -573,67 +558,88 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             return
 
         poses = self._load_poses(poses_path)
+        logger.info(f"  Loaded {len(poses)} poses")
 
         # Load calibration (velodyne to camera transform)
         Tr_velo_to_cam = None
         calib_path = self._get_calib_path(file_paths[0])
         if calib_path:
             Tr_velo_to_cam = self._load_calib(calib_path)
+            logger.info("  Loaded calibration matrix")
 
         # Calculate consistent origin from trajectory (scanner positions)
-        # This ensures all imports of same sequence align, regardless of filtering
         scanner_positions = np.array([pose[:3, 3] for pose in poses])
         trajectory_min_bound_kitti = scanner_positions.min(axis=0)
 
         # Convert trajectory_min_bound from KITTI to viewer coordinates
         # KITTI: X forward, Y left, Z up -> Viewer: X forward, Y up, Z right
-        # [X, Y, Z] -> [X, Z, -Y]
         trajectory_min_bound = np.array([
             trajectory_min_bound_kitti[0],   # X unchanged
             trajectory_min_bound_kitti[2],   # Y = Z_old
             -trajectory_min_bound_kitti[1]   # Z = -Y_old
         ])
+        logger.info(f"  Trajectory min bound: {trajectory_min_bound}")
 
-        # Lists to accumulate data
-        all_points = []
-        all_intensity = []
-        all_semantic = []
-        all_instance = []
+        # ================================================================
+        # PASS 1: Calculate exact point count from file sizes (no I/O)
+        # ================================================================
+        logger.info("Pass 1: Calculating total points from file sizes...")
+        total_points = 0
+        for file_path in file_paths:
+            file_size = os.path.getsize(file_path)
+            file_points = file_size // 16  # 4 floats × 4 bytes each
+            if subsample_ratio < 1.0:
+                file_points = max(1, int(file_points * subsample_ratio))
+            total_points += file_points
 
+        logger.info(f"  Total points to allocate: {total_points:,}")
+
+        # Estimate memory requirements
+        points_mem = total_points * 3 * 4 / (1024 * 1024)  # float32 xyz
+        intensity_mem = total_points * 4 / (1024 * 1024)   # float32
+        labels_mem = total_points * 4 / (1024 * 1024) if load_labels else 0  # int32
+        total_mem = points_mem + intensity_mem + labels_mem
+        logger.info(f"  Estimated memory: {total_mem:.1f} MB")
+
+        # ================================================================
+        # Pre-allocate all output arrays
+        # ================================================================
+        logger.info("Pre-allocating output arrays...")
+        try:
+            points_final = np.empty((total_points, 3), dtype=np.float32)
+            intensity_final = np.empty(total_points, dtype=np.float32)
+            semantic_final = np.empty(total_points, dtype=np.int32) if load_labels else None
+            logger.info(f"  Arrays allocated: {(points_final.nbytes + intensity_final.nbytes) / (1024*1024):.1f} MB")
+        except MemoryError:
+            QMessageBox.critical(
+                main_window,
+                "Memory Error",
+                f"Not enough memory to allocate {total_points:,} points ({total_mem:.0f} MB).\n\n"
+                f"Try using a lower subsample ratio or importing fewer scans."
+            )
+            return
+
+        # ================================================================
+        # PASS 2: Stream directly into pre-allocated arrays
+        # ================================================================
+        logger.info("Pass 2: Streaming scans to pre-allocated arrays...")
+        offset = 0
         failed_files = []
-
-        # Merging scans
-        progress_interval = max(1, len(file_paths) // 20)  # Show progress every 5%
+        progress_interval = max(1, len(file_paths) // 20)
 
         for idx, file_path in enumerate(file_paths):
             try:
                 # Load .bin file
                 data = np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
-                points = data[:, :3].astype(np.float64)  # Convert to float64 for transformation precision
+                points = data[:, :3].astype(np.float64)  # float64 for transformation precision
                 intensity = data[:, 3]
 
-                # Load labels BEFORE filtering (so we can filter them too)
+                # Load labels if requested
                 semantic_labels = None
-                instance_labels = None
                 if load_labels:
                     label_path = self._get_label_path(file_path)
                     if label_path:
-                        semantic_labels, instance_labels = self._load_labels(label_path)
-
-                # Apply distance filter if requested
-                original_count = len(points)
-                if max_distance > 0:
-                    distances = np.linalg.norm(points, axis=1)
-                    mask = distances <= max_distance
-                    points = points[mask]
-                    intensity = intensity[mask]
-                    if semantic_labels is not None:
-                        semantic_labels = semantic_labels[mask]
-                        instance_labels = instance_labels[mask]
-
-                    filtered_count = len(points)
-                    if idx % progress_interval == 0:
-                        pass  # Filtered count logging
+                        semantic_labels, _ = self._load_labels(label_path)
 
                 # Apply subsample if ratio < 1.0
                 if subsample_ratio < 1.0:
@@ -644,9 +650,8 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     intensity = intensity[indices]
                     if semantic_labels is not None:
                         semantic_labels = semantic_labels[indices]
-                        instance_labels = instance_labels[indices]
 
-                # Apply pose transformation (mandatory)
+                # Apply pose transformation
                 frame_num = self._extract_frame_number(os.path.basename(file_path))
                 if frame_num >= len(poses):
                     raise ValueError(f"No pose available for frame {frame_num}")
@@ -656,37 +661,44 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     T_combined = poses[frame_num] @ Tr_velo_to_cam
                 else:
                     T_combined = poses[frame_num]
-                points_transformed = self._apply_pose(points, T_combined)
+                points_world = self._apply_pose(points, T_combined)
 
-                # Convert KITTI coordinate system (X forward, Y left, Z up)
-                # to viewer coordinate system (X forward, Y up, Z right)
-                # Rotation: 90 degrees around X axis (counter-clockwise)
-                # New: [X, Y, Z] = [X_old, Z_old, -Y_old]
-                # Create new array to avoid in-place modification issues
-                points_converted = np.column_stack([
-                    points_transformed[:, 0],   # X unchanged
-                    points_transformed[:, 2],   # Y = Z_old
-                    -points_transformed[:, 1]   # Z = -Y_old
-                ])
+                # Convert coordinate system and write directly to pre-allocated arrays
+                # KITTI: [X forward, Y left, Z up] -> Viewer: [X forward, Y up, Z right]
+                n = len(points_world)
+                points_final[offset:offset + n, 0] = (points_world[:, 0] - trajectory_min_bound[0]).astype(np.float32)
+                points_final[offset:offset + n, 1] = (points_world[:, 2] - trajectory_min_bound[1]).astype(np.float32)
+                points_final[offset:offset + n, 2] = (-points_world[:, 1] - trajectory_min_bound[2]).astype(np.float32)
+                intensity_final[offset:offset + n] = intensity
 
-                # Accumulate
-                all_points.append(points_converted)
-                all_intensity.append(intensity)
-
-                # Accumulate labels (already loaded and filtered above)
                 if load_labels:
                     if semantic_labels is not None:
-                        all_semantic.append(semantic_labels)
-                        all_instance.append(instance_labels)
+                        semantic_final[offset:offset + n] = semantic_labels
                     else:
-                        # No labels for this file, use zeros (use filtered point count)
-                        all_semantic.append(np.zeros(len(points), dtype=np.uint16))
-                        all_instance.append(np.zeros(len(points), dtype=np.uint16))
+                        semantic_final[offset:offset + n] = 0  # No labels for this file
+
+                offset += n
+
+                # Log progress periodically
+                if idx % progress_interval == 0:
+                    logger.debug(f"  Processed {idx + 1}/{len(file_paths)} files, {offset:,} points")
+
+                # Scan memory freed immediately on next iteration!
 
             except Exception as e:
+                logger.warning(f"  Failed to load {os.path.basename(file_path)}: {e}")
                 failed_files.append((os.path.basename(file_path), str(e)))
 
-        if not all_points:
+        # Trim arrays if actual count differs from estimate (due to failed files)
+        if offset < total_points:
+            logger.info(f"  Trimming arrays: {total_points:,} -> {offset:,} points")
+            points_final = points_final[:offset]
+            intensity_final = intensity_final[:offset]
+            if semantic_final is not None:
+                semantic_final = semantic_final[:offset]
+            total_points = offset
+
+        if total_points == 0:
             QMessageBox.critical(
                 main_window,
                 "Import Failed",
@@ -694,81 +706,25 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             )
             return
 
-        # Memory-optimized merge: pre-allocate and fill directly
-        # This avoids creating intermediate arrays from vstack/concatenate
-        try:
-            # Calculate total size for pre-allocation
-            total_points = sum(len(pts) for pts in all_points)
-            logger.info(f"Pre-allocating arrays for {total_points:,} points...")
+        logger.info(f"  Streaming complete: {total_points:,} points from {len(file_paths) - len(failed_files)} files")
 
-            # Pre-allocate output arrays as float32 directly
-            points_translated = np.empty((total_points, 3), dtype=np.float32)
-            merged_intensity = np.empty(total_points, dtype=np.float32)
-
-            # Fill directly with translation applied (avoids intermediate float64 array)
-            offset = 0
-            for pts, intensity in zip(all_points, all_intensity):
-                n = len(pts)
-                # Translate and convert to float32 in one step
-                points_translated[offset:offset + n] = (pts - trajectory_min_bound).astype(np.float32)
-                merged_intensity[offset:offset + n] = intensity
-                offset += n
-
-            # Clear source lists to free memory
-            del all_points
-            del all_intensity
-            gc.collect()
-
-        except MemoryError as e:
-            QMessageBox.critical(
-                main_window,
-                "Memory Error",
-                f"Not enough memory to merge {len(all_points)} scans.\n\n"
-                f"Try importing as separate scans instead."
-            )
-            return
-        except Exception as e:
-            QMessageBox.critical(
-                main_window,
-                "Merge Failed",
-                f"Failed to merge point clouds:\n{str(e)}"
-            )
-            return
-
-        # Create intensity-based grayscale colors (memory efficient)
-        intensity_min = merged_intensity.min()
-        intensity_range = merged_intensity.max() - intensity_min + 1e-6
-        # Pre-allocate colors array and fill directly (avoids column_stack copy)
+        # Create intensity-based grayscale colors
+        intensity_min = intensity_final.min()
+        intensity_range = intensity_final.max() - intensity_min + 1e-6
         colors = np.empty((total_points, 3), dtype=np.float32)
-        intensity_norm = (merged_intensity - intensity_min) / intensity_range
+        intensity_norm = (intensity_final - intensity_min) / intensity_range
         colors[:, 0] = intensity_norm
         colors[:, 1] = intensity_norm
         colors[:, 2] = intensity_norm
 
-        # Merge labels if loaded (pre-allocate and fill)
-        merged_semantic = None
-        if all_semantic:
-            merged_semantic = np.empty(total_points, dtype=np.int32)
-            offset = 0
-            for sem in all_semantic:
-                n = len(sem)
-                merged_semantic[offset:offset + n] = sem
-                offset += n
-            del all_semantic
-            gc.collect()
-
         # Check GPU memory before proceeding
-        total_points = len(points_translated)
-        data_size_mb = (points_translated.nbytes + colors.nbytes) / (1024 * 1024)
+        data_size_mb = (points_final.nbytes + colors.nbytes) / (1024 * 1024)
         logger.info(f"Merged data: {total_points:,} points, {data_size_mb:.1f} MB")
 
         try:
             from services.hardware_detector import HardwareDetector
 
-            # Estimate GPU memory needed:
-            # - VBO: points + colors combined (~1.5x data size for overhead)
-            # - Masking operations during reconstruction: 3x data size
-            # - Labels if present: additional memory
+            # Estimate GPU memory needed
             vbo_required = data_size_mb * 1.5
             masking_required = data_size_mb * 3
             total_gpu_required = vbo_required + masking_required
@@ -779,7 +735,6 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 logger.info(f"GPU memory: {free_gpu_mb} MB free, need ~{total_gpu_required:.0f} MB")
 
                 if total_gpu_required > free_gpu_mb:
-                    # Warn user but don't block - operations will fall back to CPU
                     logger.warning(
                         f"Large dataset may exceed GPU memory. "
                         f"Operations will automatically fall back to CPU if needed."
@@ -791,7 +746,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                         f"may exceed available GPU memory ({free_gpu_mb} MB free).\n\n"
                         f"Operations will automatically fall back to CPU if needed, "
                         f"but rendering may be slow or limited.\n\n"
-                        f"Consider importing fewer scans or using a larger max_distance filter."
+                        f"Consider using a lower subsample ratio."
                     )
         except ImportError:
             pass
@@ -800,34 +755,37 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
         # Create PointCloud with standard name
         logger.info(f"Creating PointCloud with {total_points:,} points...")
-        point_cloud = PointCloud(points_translated, colors=colors)
+        point_cloud = PointCloud(points_final, colors=colors)
         point_cloud.name = "SemanticKITTI"
         point_cloud.translation = trajectory_min_bound
 
         # Add intensity attribute
-        point_cloud.add_attribute('intensity', merged_intensity)
+        point_cloud.add_attribute('intensity', intensity_final)
 
         # Add PointCloud to data manager and get UID
         # Block signals if we have labels to add (prevents double render)
-        has_labels = merged_semantic is not None
+        has_labels = semantic_final is not None
         pc_uid = self._add_to_data_manager(point_cloud, block_signals=has_labels)
 
         # If labels loaded, create FeatureClasses as child
         # This triggers the single render for both branches
         if has_labels:
-            feature_classes = self._create_feature_classes(merged_semantic)
+            feature_classes = self._create_feature_classes(semantic_final)
             self._add_feature_classes_to_data_manager(feature_classes, pc_uid, "SemanticKITTI")
 
         # Show summary
         first_frame = self._extract_frame_number(os.path.basename(file_paths[0]))
         last_frame = self._extract_frame_number(os.path.basename(file_paths[-1]))
         message = f"Merged {len(file_paths) - len(failed_files)} scans (frames {first_frame:06d}-{last_frame:06d}) into 'SemanticKITTI'"
-        message += f"\nTotal points: {len(points_translated):,}"
+        message += f"\nTotal points: {total_points:,}"
         if failed_files:
             message += f"\n\n{len(failed_files)} files failed:\n"
             for filename, error in failed_files[:5]:
                 message += f"- {filename}: {error}\n"
         QMessageBox.information(main_window, "Merge Complete", message)
+
+        logger.info("_import_merged() completed")
+        logger.info("=" * 60)
 
     def _create_feature_classes(self, semantic_labels: np.ndarray) -> FeatureClasses:
         """
