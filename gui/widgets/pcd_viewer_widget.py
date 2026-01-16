@@ -11,6 +11,9 @@ from OpenGL.GLU import gluSphere
 from OpenGL.GLU import GLU_FILL
 from OpenGL.arrays import vbo
 
+from config.config import global_variables
+from services.lod_manager import LODManager
+
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
@@ -306,6 +309,20 @@ class PCDViewerWidget(QOpenGLWidget):
     def default_pan_z(self, value):
         self._default_pan_z = value
 
+    @property
+    def lod_info(self) -> dict:
+        """Current LOD state for debugging."""
+        data_manager = global_variables.global_data_manager
+        full = data_manager._total_visible_points if data_manager else 0
+        rendered = len(self.points) if self.points is not None else 0
+        return {
+            "sample_rate": f"{self._current_sample_rate:.1%}",
+            "point_budget": data_manager._point_budget if data_manager else 0,
+            "full_points": full,
+            "rendered_points": rendered,
+            "reduction": f"{(1 - rendered/full)*100:.1f}%" if full > 0 else "0%"
+        }
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -385,6 +402,10 @@ class PCDViewerWidget(QOpenGLWidget):
 
         # Timer for hiding the axis symbol after panning
         self.axis_timer = None
+
+        # LOD state (for triggering DataManager re-render)
+        self._current_sample_rate: float = 1.0
+        self._lod_enabled: bool = True  # Dynamic LOD for large point clouds
 
         # create a slot connection for branches_visibility_status emitted from tree_structure_widget
 
@@ -919,12 +940,53 @@ class PCDViewerWidget(QOpenGLWidget):
         self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
         self.axis_timer.start(500)  # 500 milliseconds delay to hide the axis symbol
 
+        # Check if LOD needs to be updated
+        self._on_zoom_changed()
+
         self.update()
 
     def hide_axis_after_zoom(self):
         """Hide the axis symbol after zooming is completed."""
         self.show_axis = False
         self.update()
+
+    def _on_zoom_changed(self):
+        """Called after zoom changes to potentially update LOD.
+
+        Note: LOD only DECREASES detail when zooming out, never increases.
+        This prevents OOM when zooming in on large datasets.
+        """
+        if not self._lod_enabled:
+            return
+
+        data_manager = global_variables.global_data_manager
+        if data_manager is None or data_manager._total_visible_points <= 0:
+            return
+
+        total_points = data_manager._total_visible_points
+        point_budget = data_manager._point_budget
+
+        # Calculate max safe rate (never exceed budget)
+        max_safe_rate = min(1.0, point_budget / total_points) if total_points > 0 else 1.0
+
+        new_rate = LODManager.compute_sample_rate(
+            total_points,
+            self.camera_distance,
+            self.zoom_factor,
+            self.max_extent or 1.0,
+            point_budget
+        )
+
+        # Cap at max safe rate
+        new_rate = min(new_rate, max_safe_rate)
+
+        # IMPORTANT: Only re-render if DECREASING detail (zooming out)
+        # Never increase detail dynamically - it risks OOM on large datasets
+        # Users who want more detail should adjust point_budget or hide branches
+        if new_rate < self._current_sample_rate - 0.05:
+            logger.debug(f"LOD: {self._current_sample_rate:.1%} -> {new_rate:.1%} (zoom out)")
+            self._current_sample_rate = new_rate
+            data_manager.render_visible_with_lod(new_rate)
 
     def closeEvent(self, event):
         """
@@ -1358,6 +1420,10 @@ class PCDViewerWidget(QOpenGLWidget):
 
             # Show axis briefly for orientation
             self.show_axis = True
+
+            # Note: Do NOT reset _current_sample_rate here - it was set by DataManager
+            # during render to respect the point budget. Resetting would cause
+            # _on_zoom_changed to trigger an unnecessary (and potentially OOM) re-render.
 
             # Update the view
             logger.debug("  Updating view...")

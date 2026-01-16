@@ -14,6 +14,21 @@ logger = logging.getLogger(__name__)
 class MemoryManager:
     """Centralized memory management for point cloud operations."""
 
+    # Memory constants (bytes per point)
+    BYTES_PER_POINT_VBO = 24         # 6 floats * 4 bytes (VRAM)
+    BYTES_PER_POINT_KDTREE = 8       # Estimated cKDTree overhead (RAM)
+    BYTES_PER_POINT_COMBINED = 24    # self.points array (RAM)
+    BYTES_PER_POINT_TOTAL_RAM = 32   # Combined + KDTree (RAM)
+    BYTES_PER_POINT_TOTAL_VRAM = 24  # VBO only (VRAM)
+
+    # Safety margins
+    RAM_SAFETY_MARGIN = 0.7   # Use 70% of available RAM
+    VRAM_SAFETY_MARGIN = 0.7  # Use 70% of available VRAM
+
+    # Point budget clamps
+    MIN_POINT_BUDGET = 1_000_000     # At least 1M points
+    MAX_POINT_BUDGET = 200_000_000   # Cap at 200M points
+
     @staticmethod
     def get_available_ram_mb() -> int:
         """
@@ -52,75 +67,119 @@ class MemoryManager:
             return 0
 
     @staticmethod
-    def estimate_render_memory(num_points: int, cached: bool = False) -> int:
+    def compute_unified_point_budget() -> tuple:
         """
-        Estimate RAM needed to render a given number of points.
+        Compute point budget considering both RAM and VRAM constraints.
 
-        Memory breakdown (optimized pipeline - direct combined array):
-        - Base: combined array (6 floats * 4 bytes = 24 bytes per point)
-        - If cached: 10% overhead (direct assignment to viewer)
-        - If not cached: 20% overhead (reconstruction + filling)
+        The budget is determined by the more constrained resource:
+        - RAM: 32 bytes/point (combined array + KDTree)
+        - VRAM: 24 bytes/point (VBO)
 
-        The rendering pipeline now builds the combined array directly instead of
-        creating separate points/colors arrays, reducing peak memory by ~50%.
+        Returns:
+            Tuple of (max_points: int, limiting_resource: str, details: dict)
+            - max_points: Maximum number of points that can be safely rendered
+            - limiting_resource: "RAM" or "VRAM" indicating the bottleneck
+            - details: Dict with ram_budget, vram_budget, ram_mb, vram_mb
+        """
+        ram_mb = MemoryManager.get_available_ram_mb()
+        vram_mb = MemoryManager.get_available_gpu_mb()
+
+        # Calculate RAM budget (32 bytes/point with safety margin)
+        if ram_mb > 0:
+            ram_bytes = ram_mb * 1024 * 1024
+            ram_budget = int(
+                (ram_bytes * MemoryManager.RAM_SAFETY_MARGIN)
+                / MemoryManager.BYTES_PER_POINT_TOTAL_RAM
+            )
+        else:
+            ram_budget = float('inf')  # Unknown, don't constrain
+
+        # Calculate VRAM budget (24 bytes/point with safety margin)
+        if vram_mb > 0:
+            vram_bytes = vram_mb * 1024 * 1024
+            vram_budget = int(
+                (vram_bytes * MemoryManager.VRAM_SAFETY_MARGIN)
+                / MemoryManager.BYTES_PER_POINT_TOTAL_VRAM
+            )
+        else:
+            vram_budget = float('inf')  # Unknown, don't constrain
+
+        # Details for logging/debugging
+        details = {
+            'ram_mb': ram_mb,
+            'vram_mb': vram_mb,
+            'ram_budget': ram_budget if ram_budget != float('inf') else None,
+            'vram_budget': vram_budget if vram_budget != float('inf') else None,
+        }
+
+        # Choose the more constrained resource
+        if ram_budget <= vram_budget:
+            limiting = "RAM"
+            max_points = ram_budget
+        else:
+            limiting = "VRAM"
+            max_points = vram_budget
+
+        # Handle case where both are unknown
+        if max_points == float('inf'):
+            max_points = MemoryManager.MAX_POINT_BUDGET
+            limiting = "default"
+
+        # Clamp to reasonable range
+        max_points = max(
+            MemoryManager.MIN_POINT_BUDGET,
+            min(int(max_points), MemoryManager.MAX_POINT_BUDGET)
+        )
+
+        logger.debug(
+            f"Unified point budget: {max_points:,} (limited by {limiting}, "
+            f"RAM={ram_mb:,} MB, VRAM={vram_mb:,} MB)"
+        )
+
+        return (max_points, limiting, details)
+
+    @staticmethod
+    def estimate_render_memory(num_points: int, cached: bool = False) -> dict:
+        """
+        Estimate memory needed to render a given number of points.
+
+        Memory breakdown:
+        - RAM: combined array (24 bytes) + KDTree (8 bytes) = 32 bytes/point
+        - VRAM: VBO only = 24 bytes/point
+        - Overhead: 10% if cached, 30% if not cached (reconstruction temps)
 
         Args:
             num_points: Number of points to render
             cached: Whether all data is already cached in memory
 
         Returns:
-            Estimated memory requirement in MB
+            Dict with ram_mb, vram_mb, and breakdown details
         """
-        bytes_per_float = 4
-        floats_per_combined_point = 6  # xyz + rgb
+        # RAM: combined array + KDTree
+        ram_base = num_points * MemoryManager.BYTES_PER_POINT_TOTAL_RAM
 
-        # Base memory: single combined array (24 bytes per point)
-        combined_bytes = num_points * floats_per_combined_point * bytes_per_float
+        # VRAM: VBO only
+        vram_base = num_points * MemoryManager.BYTES_PER_POINT_TOTAL_VRAM
 
         if cached:
             # Cached: minimal overhead (direct assignment to viewer)
-            total_bytes = combined_bytes * 1.1
+            ram_overhead = 1.1
         else:
             # Not cached: additional overhead for reconstruction operations
             # Reconstruction may create temporary PointCloud objects
-            total_bytes = combined_bytes * 1.2
+            ram_overhead = 1.3
 
-        return int(total_bytes / (1024 * 1024))
+        ram_bytes = int(ram_base * ram_overhead)
+        vram_bytes = vram_base  # VRAM doesn't have reconstruction overhead
 
-    @staticmethod
-    def can_render(num_points: int, cached: bool = False) -> tuple:
-        """
-        Check if rendering is possible with available memory.
-
-        This is a BLOCKING check - if memory is insufficient, the operation
-        should not proceed.
-
-        Args:
-            num_points: Number of points to render
-            cached: Whether all data is already cached in memory
-
-        Returns:
-            Tuple of (can_render: bool, message: str)
-            - If can_render is True, message is empty
-            - If can_render is False, message explains why
-        """
-        required_mb = MemoryManager.estimate_render_memory(num_points, cached)
-        available_mb = MemoryManager.get_available_ram_mb()
-
-        logger.debug(f"Memory check: {num_points:,} points, cached={cached}")
-        logger.debug(f"  Required: {required_mb:,} MB, Available: {available_mb:,} MB")
-
-        if available_mb == 0:
-            # Cannot determine memory - allow operation with warning
-            logger.warning("Cannot determine available RAM - proceeding anyway")
-            return (True, "")
-
-        if required_mb > available_mb:
-            message = f"Need {required_mb:,} MB, only {available_mb:,} MB available"
-            logger.warning(f"Insufficient memory: {message}")
-            return (False, message)
-
-        return (True, "")
+        return {
+            'ram_mb': int(ram_bytes / (1024 * 1024)),
+            'vram_mb': int(vram_bytes / (1024 * 1024)),
+            'ram_bytes': ram_bytes,
+            'vram_bytes': vram_bytes,
+            'num_points': num_points,
+            'cached': cached,
+        }
 
     @staticmethod
     def can_use_gpu(required_mb: int) -> bool:

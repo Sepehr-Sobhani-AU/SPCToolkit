@@ -20,6 +20,7 @@ from plugins.plugin_manager import PluginManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from gui.widgets.tree_structure_widget import TreeStructureWidget
 from gui.widgets.pcd_viewer_widget import PCDViewerWidget
+from services.lod_manager import LODManager
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -58,7 +59,11 @@ class DataManager(QObject):
         self.analysis_manager = AnalysisManager(plugin_manager)
         self.node_reconstruction_manager = NodeReconstructionManager()
         self.selected_branches = []
-        self._last_rendered_uids = set()  # Track successfully rendered UIDs
+
+        # LOD state
+        self._current_sample_rate: float = 1.0
+        self._point_budget: int = 50_000_000  # Tunable: target rendered points
+        self._total_visible_points: int = 0
 
         # Connect signals
         self.file_manager.point_cloud_loaded.connect(self._on_point_cloud_loaded)
@@ -508,30 +513,36 @@ class DataManager(QObject):
                 return len(node.data.points)
         return 0
 
-    def _revert_visibility(self, uid: str):
-        """Revert visibility for a branch (uncheck in tree)."""
-        from PyQt5.QtCore import Qt
-        self.tree_widget.visibility_status[uid] = False
-        item = self.tree_widget.branches_dict.get(uid)
-        if item:
-            self.tree_widget.blockSignals(True)
-            item.setCheckState(0, Qt.Unchecked)
-            self.tree_widget.blockSignals(False)
+    def render_visible_with_lod(self, sample_rate: float = None):
+        """
+        Re-render visible data with specified LOD sample rate.
 
-    def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False):
+        Args:
+            sample_rate: Sample rate (0.01 to 1.0), or None to use current rate
+        """
+        if sample_rate is not None:
+            self._current_sample_rate = sample_rate
+
+        # Get currently visible UIDs from tree widget
+        visibility_status = self.tree_widget.visibility_status
+        self._render_visible_data(visibility_status, zoom_extent=False,
+                                  sample_rate=self._current_sample_rate)
+
+    def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False,
+                             sample_rate: float = 1.0):
         """
         Handle visibility toggles from the tree structure widget.
 
         Args:
             visibility_status (dict): Dictionary of UUIDs to visibility states.
             zoom_extent (bool): Whether to zoom to the extent of the visible data
+            sample_rate (float): LOD sample rate (0.01 to 1.0), 1.0 = full resolution
         """
         import time
-        from PyQt5.QtWidgets import QMessageBox
         from PyQt5.QtCore import Qt
         from services.memory_manager import MemoryManager
 
-        logger.debug("_render_visible_data() called")
+        logger.debug(f"_render_visible_data() called (sample_rate={sample_rate:.1%})")
 
         uids_to_show = [uid for uid, vis in visibility_status.items() if vis]
         logger.debug(f"  Visible branches: {len(uids_to_show)}")
@@ -541,7 +552,7 @@ class DataManager(QObject):
             logger.debug("  No visible branches, clearing viewer")
             self.viewer_widget.set_points(None)
             self.viewer_widget.update()
-            self._last_rendered_uids = set()
+            self._total_visible_points = 0
             return
 
         # Estimate total points and check if all cached
@@ -557,29 +568,53 @@ class DataManager(QObject):
             except Exception:
                 pass
 
+        # Store total points for LOD calculations
+        self._total_visible_points = total_points
         logger.debug(f"  Total points: {total_points:,}, all_cached: {all_cached}")
 
-        # BLOCKING memory check using centralized MemoryManager
-        can_render, message = MemoryManager.can_render(total_points, cached=all_cached)
-        if not can_render:
-            logger.warning(f"  Blocked: {message}")
-            QMessageBox.warning(
-                None,
-                "Insufficient Memory",
-                f"Cannot render {total_points:,} points.\n\n{message}\n\n"
-                "Please hide some branches to free memory."
-            )
-            # Only revert branches that weren't previously rendered (the newly checked ones)
-            # This preserves the previous view instead of clearing everything
-            newly_checked = set(uids_to_show) - self._last_rendered_uids
-            for uid in newly_checked:
-                self._revert_visibility(uid)
-            logger.debug(f"  Reverted {len(newly_checked)} newly checked branches")
-            return
+        # Compute dynamic point budget based on available VRAM
+        self._point_budget = LODManager.compute_dynamic_point_budget()
+        logger.debug(f"  Dynamic point budget: {self._point_budget:,} (from VRAM)")
+
+        # AUTO-COMPUTE LOD: ALWAYS enforce point budget, regardless of requested sample_rate
+        # This prevents zoom-triggered re-renders from exceeding safe memory limits
+        if total_points > self._point_budget:
+            max_safe_rate = self._point_budget / total_points
+            if sample_rate > max_safe_rate:
+                old_rate = sample_rate
+                sample_rate = LODManager.compute_sample_rate(
+                    total_points,
+                    self.viewer_widget.camera_distance,
+                    self.viewer_widget.zoom_factor,
+                    self.viewer_widget.max_extent or 1.0,
+                    self._point_budget
+                )
+                # Ensure we never exceed the safe rate
+                sample_rate = min(sample_rate, max_safe_rate)
+                logger.info(f"  AUTO-LOD: Capped {old_rate:.1%} -> {sample_rate:.1%} "
+                            f"({total_points:,} points, {self._point_budget:,} budget)")
+            # Sync viewer's sample rate so _on_zoom_changed won't trigger unnecessary re-render
+            self.viewer_widget._current_sample_rate = sample_rate
+            self._current_sample_rate = sample_rate
+
+        # Debug-only memory logging (LOD already enforces point budget)
+        points_to_check = int(total_points * sample_rate) if sample_rate < 1.0 else total_points
+        estimates = MemoryManager.estimate_render_memory(points_to_check, cached=all_cached)
+        logger.debug(
+            f"  Memory estimate for {points_to_check:,} points: "
+            f"RAM={estimates['ram_mb']}MB, VRAM={estimates['vram_mb']}MB"
+        )
 
         # Pre-allocate vertex array (position + color per vertex) for memory efficiency
         # This avoids creating separate points/colors arrays that would double memory usage
-        vertices = np.empty((total_points, 6), dtype=np.float32)
+        # When LOD is active, allocate smaller array (with 20% buffer for small unsampled nodes)
+        if sample_rate < 1.0:
+            base_size = int(total_points * sample_rate)
+            buffer_size = max(int(base_size * 0.2), 100000)  # 20% buffer, min 100K
+            alloc_size = min(total_points, base_size + buffer_size)
+        else:
+            alloc_size = total_points
+        vertices = np.empty((alloc_size, 6), dtype=np.float32)
         offset = 0
 
         # Process each visible branch
@@ -614,13 +649,46 @@ class DataManager(QObject):
 
                 self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
-                # Fill vertex array directly (xyz in columns 0-2, rgb in columns 3-5)
-                vertices[offset:offset + n, :3] = point_cloud.points
-                if point_cloud.colors is not None:
-                    vertices[offset:offset + n, 3:] = point_cloud.colors
+                # Apply per-node subsampling if LOD is active
+                if sample_rate < 1.0:
+                    indices = LODManager.subsample_indices(n, sample_rate)
+                    if indices is not None:
+                        n_to_add = len(indices)
+                        pts = point_cloud.points[indices]
+                        clrs = point_cloud.colors[indices] if point_cloud.colors is not None else None
+                        logger.debug(f"    LOD subsampled: {n:,} -> {n_to_add:,}")
+                    else:
+                        # No subsampling needed for this node (small enough)
+                        n_to_add = n
+                        pts = point_cloud.points
+                        clrs = point_cloud.colors
+
+                    # Safety: resize buffer if needed (rare edge case with many small nodes)
+                    if offset + n_to_add > len(vertices):
+                        # Use 20% growth factor to minimize repeated reallocations
+                        new_size = int((offset + n_to_add) * 1.2) + 100000
+                        logger.warning(f"    Resizing vertex buffer: {len(vertices):,} -> {new_size:,}")
+                        # Efficient reallocation: create new array and copy existing data
+                        # (np.resize copies entire array which doubles memory temporarily)
+                        new_vertices = np.empty((new_size, 6), dtype=np.float32)
+                        new_vertices[:offset] = vertices[:offset]
+                        vertices = new_vertices
+                        del new_vertices  # Reference now held by vertices
+
+                    vertices[offset:offset + n_to_add, :3] = pts
+                    if clrs is not None:
+                        vertices[offset:offset + n_to_add, 3:] = clrs
+                    else:
+                        vertices[offset:offset + n_to_add, 3:] = 1.0  # White
+                    offset += n_to_add
                 else:
-                    vertices[offset:offset + n, 3:] = 1.0  # White
-                offset += n
+                    # Full resolution - fill vertex array directly
+                    vertices[offset:offset + n, :3] = point_cloud.points
+                    if point_cloud.colors is not None:
+                        vertices[offset:offset + n, 3:] = point_cloud.colors
+                    else:
+                        vertices[offset:offset + n, 3:] = 1.0  # White
+                    offset += n
 
             except Exception as e:
                 logger.error(f"    Error: {e}")
@@ -628,12 +696,9 @@ class DataManager(QObject):
                 continue
 
         # Send vertex data directly to viewer (memory efficient - no intermediate arrays)
-        logger.info(f"  Rendering {offset:,} points")
+        logger.info(f"  Rendering {offset:,} points (LOD: {sample_rate:.1%})")
         self.viewer_widget.set_point_vertices(vertices[:offset])
         self.viewer_widget.update()
-
-        # Track successfully rendered UIDs for future visibility revert
-        self._last_rendered_uids = set(uids_to_show)
 
         if zoom_extent:
             self.viewer_widget.zoom_to_extent()
