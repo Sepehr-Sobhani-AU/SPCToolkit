@@ -874,6 +874,8 @@ class PointCloud:
         This is more memory-efficient than deepcopy + inplace mask, as it only
         allocates memory for the filtered arrays, not the full copy.
 
+        Uses batch masking when GPU backend is available to minimize GPU transfers.
+
         Args:
             mask: Boolean mask array
             masking_backend: MaskingBackend instance or None for fallback
@@ -883,40 +885,77 @@ class PointCloud:
         """
         logger.debug(f"_create_masked_subset() called, mask has {np.sum(mask):,} True values")
 
-        # Helper function to apply mask to an array
-        def apply_mask(array):
-            if array is None:
-                return None
-            if masking_backend is not None:
-                return masking_backend.apply_mask_to_array(array, mask)
-            else:
-                return array[mask]
+        # Check if batch masking is available (GPU backend with batch method)
+        use_batch = (masking_backend is not None and
+                     hasattr(masking_backend, 'apply_mask_to_arrays_batch'))
 
-        # Apply mask to core arrays
-        new_points = apply_mask(self.points)
-        if new_points is not None:
-            new_points = new_points.astype(self.points.dtype)
+        if use_batch:
+            # Collect all arrays for batch processing
+            arrays_to_mask = {
+                'points': self.points,
+                'colors': self.colors if self.colors is not None and len(self.colors) > 0 else None,
+                'normals': self.normals if self.normals is not None and len(self.normals) > 0 else None,
+                'intensity': self.intensity if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0 else None,
+                'distToGround': self.distToGround if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0 else None,
+            }
 
-        new_colors = None
-        if self.colors is not None and len(self.colors) > 0:
-            new_colors = apply_mask(self.colors)
+            # Add custom attributes that need masking
+            for attr_name, attr_value in self.attributes.items():
+                if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                    arrays_to_mask[f'attr_{attr_name}'] = attr_value
+
+            # Single batch operation - mask transferred to GPU only ONCE
+            masked_results = masking_backend.apply_mask_to_arrays_batch(arrays_to_mask, mask)
+
+            # Extract results with dtype preservation
+            new_points = masked_results['points']
+            if new_points is not None:
+                new_points = new_points.astype(self.points.dtype)
+
+            new_colors = masked_results['colors']
             if new_colors is not None:
                 new_colors = new_colors.astype(self.colors.dtype)
 
-        new_normals = None
-        if self.normals is not None and len(self.normals) > 0:
-            new_normals = apply_mask(self.normals)
+            new_normals = masked_results['normals']
             if new_normals is not None:
                 new_normals = new_normals.astype(self.normals.dtype)
 
-        # Apply mask to legacy attributes (intensity, distToGround)
-        new_intensity = np.array([])
-        if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
-            new_intensity = apply_mask(self.intensity)
+            new_intensity = masked_results['intensity'] if masked_results['intensity'] is not None else np.array([])
+            new_dist_to_ground = masked_results['distToGround'] if masked_results['distToGround'] is not None else np.array([])
 
-        new_dist_to_ground = np.array([])
-        if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0:
-            new_dist_to_ground = apply_mask(self.distToGround)
+        else:
+            # Fallback: apply mask to each array individually
+            def apply_mask(array):
+                if array is None:
+                    return None
+                if masking_backend is not None:
+                    return masking_backend.apply_mask_to_array(array, mask)
+                else:
+                    return array[mask]
+
+            new_points = apply_mask(self.points)
+            if new_points is not None:
+                new_points = new_points.astype(self.points.dtype)
+
+            new_colors = None
+            if self.colors is not None and len(self.colors) > 0:
+                new_colors = apply_mask(self.colors)
+                if new_colors is not None:
+                    new_colors = new_colors.astype(self.colors.dtype)
+
+            new_normals = None
+            if self.normals is not None and len(self.normals) > 0:
+                new_normals = apply_mask(self.normals)
+                if new_normals is not None:
+                    new_normals = new_normals.astype(self.normals.dtype)
+
+            new_intensity = np.array([])
+            if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
+                new_intensity = apply_mask(self.intensity)
+
+            new_dist_to_ground = np.array([])
+            if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0:
+                new_dist_to_ground = apply_mask(self.distToGround)
 
         # Create new PointCloud with filtered data
         subset = PointCloud(
@@ -940,13 +979,21 @@ class PointCloud:
         subset.probability = self.probability
         subset.model_weight = self.model_weight
 
-        # Apply mask to custom attributes
-        for attr_name, attr_value in self.attributes.items():
-            if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
-                subset.attributes[attr_name] = apply_mask(attr_value)
-            else:
-                # Non-array or different-sized attributes are copied by reference
-                subset.attributes[attr_name] = attr_value
+        # Handle custom attributes
+        if use_batch:
+            # Extract from batch results
+            for attr_name, attr_value in self.attributes.items():
+                if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                    subset.attributes[attr_name] = masked_results[f'attr_{attr_name}']
+                else:
+                    subset.attributes[attr_name] = attr_value
+        else:
+            # Apply mask individually (fallback path)
+            for attr_name, attr_value in self.attributes.items():
+                if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                    subset.attributes[attr_name] = apply_mask(attr_value)
+                else:
+                    subset.attributes[attr_name] = attr_value
 
         logger.debug(f"_create_masked_subset() completed: {subset.size:,} points")
 
@@ -961,63 +1008,113 @@ class PointCloud:
         """
         Apply mask to all point cloud attributes in-place.
 
+        Uses batch masking when GPU backend is available to minimize GPU transfers.
+
         Args:
             mask: Boolean mask array
             masking_backend: MaskingBackend instance or None for fallback
         """
         logger.debug(f"_apply_mask_inplace() called, mask has {np.sum(mask):,} True values")
 
-        # Helper function to apply mask to an array
-        def apply_mask(array):
-            if masking_backend is not None:
-                return masking_backend.apply_mask_to_array(array, mask)
-            else:
-                return array[mask]
+        # Check if batch masking is available (GPU backend with batch method)
+        use_batch = (masking_backend is not None and
+                     hasattr(masking_backend, 'apply_mask_to_arrays_batch'))
 
-        # Apply mask to points
-        if hasattr(self, 'points') and len(self.points) > 0:
-            logger.debug(f"  Applying mask to points ({len(self.points):,} points)...")
-            original_dtype = self.points.dtype
-            self.points = apply_mask(self.points).astype(original_dtype)
-            logger.debug(f"  Points masked: {len(self.points):,} points remaining")
+        # Store original dtypes for preservation
+        points_dtype = self.points.dtype if hasattr(self, 'points') and len(self.points) > 0 else None
+        colors_dtype = self.colors.dtype if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0 else None
+        normals_dtype = self.normals.dtype if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0 else None
+
+        if use_batch:
+            # Collect all arrays for batch processing
+            arrays_to_mask = {
+                'points': self.points if points_dtype else None,
+                'colors': self.colors if colors_dtype else None,
+                'normals': self.normals if normals_dtype else None,
+                'intensity': self.intensity if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0 else None,
+                'distToGround': self.distToGround if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0 else None,
+            }
+
+            # Add custom attributes that need masking
+            for attr_name, attr_value in self.attributes.items():
+                if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                    arrays_to_mask[f'attr_{attr_name}'] = attr_value
+
+            # Single batch operation - mask transferred to GPU only ONCE
+            masked_results = masking_backend.apply_mask_to_arrays_batch(arrays_to_mask, mask)
+
+            # Apply results back to self
+            if masked_results['points'] is not None:
+                self.points = masked_results['points'].astype(points_dtype)
+                logger.debug(f"  Points masked: {len(self.points):,} points remaining")
+
+            if masked_results['colors'] is not None:
+                self.colors = masked_results['colors'].astype(colors_dtype)
+
+            if masked_results['normals'] is not None:
+                self.normals = masked_results['normals'].astype(normals_dtype)
+
+            if masked_results['intensity'] is not None:
+                self.intensity = masked_results['intensity']
+
+            if masked_results['distToGround'] is not None:
+                self.distToGround = masked_results['distToGround']
+
+            # Apply custom attributes from batch results
+            for attr_name in list(self.attributes.keys()):
+                attr_value = self.attributes[attr_name]
+                if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                    self.attributes[attr_name] = masked_results[f'attr_{attr_name}']
+
+        else:
+            # Fallback: apply mask to each array individually
+            def apply_mask(array):
+                if masking_backend is not None:
+                    return masking_backend.apply_mask_to_array(array, mask)
+                else:
+                    return array[mask]
+
+            # Apply mask to points
+            if points_dtype:
+                logger.debug(f"  Applying mask to points ({len(self.points):,} points)...")
+                self.points = apply_mask(self.points).astype(points_dtype)
+                logger.debug(f"  Points masked: {len(self.points):,} points remaining")
+
+            # Apply mask to colors
+            if colors_dtype:
+                logger.debug(f"  Applying mask to colors...")
+                self.colors = apply_mask(self.colors).astype(colors_dtype)
+                logger.debug(f"  Colors masked")
+
+            # Apply mask to normals
+            if normals_dtype:
+                logger.debug(f"  Applying mask to normals...")
+                self.normals = apply_mask(self.normals).astype(normals_dtype)
+                logger.debug(f"  Normals masked")
+
+            # Apply mask to intensity
+            if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
+                logger.debug(f"  Applying mask to intensity...")
+                self.intensity = apply_mask(self.intensity)
+                logger.debug(f"  Intensity masked")
+
+            # Apply mask to distToGround
+            if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0:
+                logger.debug(f"  Applying mask to distToGround...")
+                self.distToGround = apply_mask(self.distToGround)
+                logger.debug(f"  distToGround masked")
+
+            # Process custom attributes
+            logger.debug(f"  Processing {len(self.attributes)} custom attributes...")
+            for attr_name in list(self.attributes.keys()):
+                attr_value = self.attributes[attr_name]
+                if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
+                    logger.debug(f"    Masking attribute: {attr_name}")
+                    self.attributes[attr_name] = apply_mask(attr_value)
 
         # Invalidate OBB cache - will be recalculated lazily when accessed
         self._obb_calculated = False
         logger.debug(f"  OBB cache invalidated (lazy recalculation on next access)")
-
-        # Apply mask to colors
-        if hasattr(self, 'colors') and self.colors is not None and self.colors.shape[0] > 0:
-            logger.debug(f"  Applying mask to colors...")
-            original_dtype = self.colors.dtype
-            self.colors = apply_mask(self.colors).astype(original_dtype)
-            logger.debug(f"  Colors masked")
-
-        # Apply mask to normals
-        if hasattr(self, 'normals') and self.normals is not None and self.normals.shape[0] > 0:
-            logger.debug(f"  Applying mask to normals...")
-            original_dtype = self.normals.dtype
-            self.normals = apply_mask(self.normals).astype(original_dtype)
-            logger.debug(f"  Normals masked")
-
-        # Apply mask to intensity
-        if hasattr(self, 'intensity') and hasattr(self.intensity, 'shape') and self.intensity.shape[0] > 0:
-            logger.debug(f"  Applying mask to intensity...")
-            self.intensity = apply_mask(self.intensity)
-            logger.debug(f"  Intensity masked")
-
-        # Apply mask to distToGround
-        if hasattr(self, 'distToGround') and hasattr(self.distToGround, 'shape') and self.distToGround.shape[0] > 0:
-            logger.debug(f"  Applying mask to distToGround...")
-            self.distToGround = apply_mask(self.distToGround)
-            logger.debug(f"  distToGround masked")
-
-        # Process custom attributes
-        logger.debug(f"  Processing {len(self.attributes)} custom attributes...")
-        for attr_name in list(self.attributes.keys()):
-            attr_value = self.attributes[attr_name]
-            if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
-                logger.debug(f"    Masking attribute: {attr_name}")
-                self.attributes[attr_name] = apply_mask(attr_value)
 
         # Single cleanup after all masking operations (instead of per-array cleanup)
         if masking_backend is not None and masking_backend.is_gpu:

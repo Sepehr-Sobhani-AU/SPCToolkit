@@ -84,6 +84,85 @@ class CuPyMasking(MaskingBackend):
             MemoryManager.cleanup()  # Keep cleanup on OOM to recover memory
             return array[mask]
 
+    def apply_mask_to_arrays_batch(self, arrays: dict, mask: np.ndarray) -> dict:
+        """
+        Apply boolean mask to multiple arrays in a single batch operation.
+
+        This is more efficient than calling apply_mask_to_array repeatedly because:
+        1. The mask is transferred to GPU only ONCE
+        2. Arrays are processed sequentially with mask already on GPU
+        3. Reduces GPU synchronization overhead
+
+        Args:
+            arrays: Dict mapping names to numpy arrays (can include None values)
+            mask: (N,) boolean array
+
+        Returns:
+            Dict mapping names to masked arrays (None values preserved)
+        """
+        from services.memory_manager import MemoryManager
+        import cupy as cp
+
+        # Filter out None values and check if any arrays to process
+        valid_arrays = {k: v for k, v in arrays.items() if v is not None}
+        if not valid_arrays:
+            return {k: None for k in arrays}
+
+        # Estimate total GPU memory needed
+        total_mb = self._estimate_gpu_memory_mb(mask)
+        for arr in valid_arrays.values():
+            total_mb += self._estimate_gpu_memory_mb(arr)
+
+        # Check if we have enough GPU memory
+        if not MemoryManager.can_use_gpu(total_mb):
+            logger.info(f"Batch masking falling back to CPU (need {total_mb} MB)")
+            results = {}
+            for name, arr in arrays.items():
+                if arr is None:
+                    results[name] = None
+                else:
+                    results[name] = arr[mask]
+            return results
+
+        self.log_execution(f"Masking (batch: {len(valid_arrays)} arrays)")
+
+        try:
+            # Transfer mask to GPU ONCE
+            mask_gpu = cp.asarray(mask)
+
+            results = {}
+            for name, arr in arrays.items():
+                if arr is None:
+                    results[name] = None
+                    continue
+
+                # Transfer array to GPU, apply mask, transfer back
+                arr_gpu = cp.asarray(arr)
+                result_gpu = arr_gpu[mask_gpu]
+                results[name] = cp.asnumpy(result_gpu)
+
+                # Free this array's GPU memory immediately
+                del arr_gpu, result_gpu
+
+            # Free the mask
+            del mask_gpu
+
+            # Note: cleanup() not called here - caller is responsible
+            return results
+
+        except (cp.cuda.memory.OutOfMemoryError, MemoryError) as e:
+            logger.warning(f"GPU OOM during batch masking: {e}, falling back to CPU")
+            MemoryManager.cleanup()
+
+            # CPU fallback for remaining arrays
+            results = {}
+            for name, arr in arrays.items():
+                if arr is None:
+                    results[name] = None
+                else:
+                    results[name] = arr[mask]
+            return results
+
 
 class NumpyMasking(MaskingBackend):
     """CPU masking using NumPy."""
@@ -105,3 +184,23 @@ class NumpyMasking(MaskingBackend):
         """Apply boolean mask to any array using NumPy on CPU."""
         self.log_execution("Masking (array)")
         return array[mask]
+
+    def apply_mask_to_arrays_batch(self, arrays: dict, mask: np.ndarray) -> dict:
+        """
+        Apply boolean mask to multiple arrays in a batch operation.
+
+        Args:
+            arrays: Dict mapping names to numpy arrays (can include None values)
+            mask: (N,) boolean array
+
+        Returns:
+            Dict mapping names to masked arrays (None values preserved)
+        """
+        self.log_execution(f"Masking (batch: {sum(1 for v in arrays.values() if v is not None)} arrays)")
+        results = {}
+        for name, arr in arrays.items():
+            if arr is None:
+                results[name] = None
+            else:
+                results[name] = arr[mask]
+        return results
