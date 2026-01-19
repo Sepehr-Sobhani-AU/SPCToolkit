@@ -949,6 +949,12 @@ class PointCloud:
                 subset.attributes[attr_name] = attr_value
 
         logger.debug(f"_create_masked_subset() completed: {subset.size:,} points")
+
+        # Single cleanup after all masking operations (instead of per-array cleanup)
+        if masking_backend is not None and masking_backend.is_gpu:
+            from services.memory_manager import MemoryManager
+            MemoryManager.cleanup()
+
         return subset
 
     def _apply_mask_inplace(self, mask, masking_backend=None):
@@ -1012,6 +1018,11 @@ class PointCloud:
             if isinstance(attr_value, np.ndarray) and attr_value.shape[0] == len(mask):
                 logger.debug(f"    Masking attribute: {attr_name}")
                 self.attributes[attr_name] = apply_mask(attr_value)
+
+        # Single cleanup after all masking operations (instead of per-array cleanup)
+        if masking_backend is not None and masking_backend.is_gpu:
+            from services.memory_manager import MemoryManager
+            MemoryManager.cleanup()
 
         logger.debug(f"_apply_mask_inplace() completed")
 

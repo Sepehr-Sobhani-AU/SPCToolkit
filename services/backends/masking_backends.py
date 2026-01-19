@@ -49,12 +49,12 @@ class CuPyMasking(MaskingBackend):
             result = cp.asnumpy(result_gpu)
 
             del points_gpu, mask_gpu, result_gpu
-            MemoryManager.cleanup()
+            # Note: cleanup() removed - caller is responsible for cleanup after batch operations
             return result
 
         except (cp.cuda.memory.OutOfMemoryError, MemoryError) as e:
             logger.warning(f"GPU OOM during masking: {e}, falling back to CPU")
-            MemoryManager.cleanup()
+            MemoryManager.cleanup()  # Keep cleanup on OOM to recover memory
             return points[mask]
 
     def apply_mask_to_array(self, array: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -76,12 +76,12 @@ class CuPyMasking(MaskingBackend):
             result = cp.asnumpy(result_gpu)
 
             del array_gpu, mask_gpu, result_gpu
-            MemoryManager.cleanup()
+            # Note: cleanup() removed - caller is responsible for cleanup after batch operations
             return result
 
         except (cp.cuda.memory.OutOfMemoryError, MemoryError) as e:
             logger.warning(f"GPU OOM during array masking: {e}, falling back to CPU")
-            MemoryManager.cleanup()
+            MemoryManager.cleanup()  # Keep cleanup on OOM to recover memory
             return array[mask]
 
 
