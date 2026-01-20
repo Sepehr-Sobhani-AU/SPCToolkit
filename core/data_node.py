@@ -14,12 +14,12 @@ class DataNode:
         data (Any): The actual data object stored in this node. Supported types:
             - PointCloud: Primary 3D point cloud data with coordinates, colors, normals, and attributes
             - masks: Boolean arrays for point selection/filtering
-            - cluster_labels: Integer arrays assigning points to clusters
+            - cluster_labels: Clusters object with labels and optional cluster_names for semantic classification
             - values: Arbitrary scalar values per point
             - eigenvalues: Eigenvalue-based geometric features
             - colors: RGB color arrays for visualization
             - dist_to_ground: Distance-to-ground measurements
-            - feature_classes: Feature classification (Tree, Car, Building, etc.) for ML
+            - class_reference: Reference to a specific class for filtering by semantic label
             - labels: Cluster labels
             - indexs: Index arrays for point references
         parent_uid (UUID): The UUID of the parent node, if applicable.

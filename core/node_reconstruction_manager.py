@@ -19,7 +19,6 @@ from tasks.apply_masks import ApplyMasks
 from tasks.apply_eigenvalues import ApplyEigenvalues
 from tasks.apply_colors import ApplyColors
 from tasks.apply_dist_to_ground import ApplyDistToGround
-from tasks.apply_feature_classes import ApplyFeatureClasses
 from tasks.apply_class_reference import ApplyClassReference
 
 
@@ -42,7 +41,6 @@ class NodeReconstructionManager:
             "eigenvalues": ApplyEigenvalues,
             "colors": ApplyColors,
             "dist_to_ground": ApplyDistToGround,
-            "feature_classes": ApplyFeatureClasses,
             "class_reference": ApplyClassReference,
         }
 
