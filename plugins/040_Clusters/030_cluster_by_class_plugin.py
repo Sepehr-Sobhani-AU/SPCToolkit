@@ -66,13 +66,6 @@ class ClusterByClassPlugin(ActionPlugin):
                 "max": 1000000,
                 "label": "Target Batch Size",
                 "description": "Target points per batch for processing (smaller = less memory)"
-            },
-            "use_gpu": {
-                "type": "choice",
-                "options": ["Auto", "Force GPU", "CPU Only"],
-                "default": "Auto",
-                "label": "GPU Acceleration",
-                "description": "Auto: Use GPU if cuML available, Force GPU: Require GPU, CPU Only: Disable GPU"
             }
         }
 
@@ -145,15 +138,6 @@ class ClusterByClassPlugin(ActionPlugin):
         min_samples = params["min_samples"]
         target_batch_size = params.get("target_batch_size", 250000)
 
-        # Convert GPU mode string to parameter value
-        gpu_mode = params.get("use_gpu", "Auto")
-        if gpu_mode == "Force GPU":
-            use_gpu = True
-        elif gpu_mode == "CPU Only":
-            use_gpu = False
-        else:  # "Auto"
-            use_gpu = 'auto'
-
         import time
         start_time = time.time()
 
@@ -163,7 +147,6 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"  Total points:     {len(points):,}")
         print(f"  Parameters:       eps={eps}, min_samples={min_samples}")
         print(f"  Batch size:       {target_batch_size:,}")
-        print(f"  GPU mode:         {gpu_mode}")
         print(f"{'='*60}")
 
         # Get unique classes
@@ -211,7 +194,7 @@ class ClusterByClassPlugin(ActionPlugin):
                 def dbscan_func(batch_points, eps, min_points, **kwargs):
                     """Wrapper for DBSCAN to use with batch processor"""
                     batch_pc = PointCloud(points=batch_points)
-                    return batch_pc.dbscan(eps=eps, min_points=min_points, use_gpu=use_gpu)
+                    return batch_pc.dbscan(eps=eps, min_points=min_points)
 
                 local_labels = batch_processor.cluster_in_batches(
                     clustering_func=dbscan_func,
@@ -221,7 +204,7 @@ class ClusterByClassPlugin(ActionPlugin):
             else:
                 # Direct DBSCAN for smaller point clouds
                 class_pc = PointCloud(points=class_points)
-                local_labels = class_pc.dbscan(eps=eps, min_points=min_samples, use_gpu=use_gpu)
+                local_labels = class_pc.dbscan(eps=eps, min_points=min_samples)
 
             # Map local labels to global cluster IDs
             unique_local_labels = np.unique(local_labels)
@@ -292,12 +275,30 @@ class ClusterByClassPlugin(ActionPlugin):
         finally:
             tree_widget.blockSignals(False)
 
-        # Create FeatureClasses object (preserves original class structure)
-        # FeatureClasses.labels contains CLASS IDs (same as input FeatureClasses)
-        # FeatureClasses.class_mapping maps class IDs to class names (same as input)
+        # Build cluster_id -> class_name mapping efficiently using vectorized operations
+        # Each cluster gets mapped to its semantic class name
+        cluster_to_class_mapping = {}
+
+        # Filter to non-noise points only
+        valid_mask = output_cluster_labels >= 0
+        valid_cluster_ids = output_cluster_labels[valid_mask]
+        valid_class_ids = output_class_labels[valid_mask]
+
+        # Get unique clusters and the index of their first occurrence (O(n log n) instead of O(n*k))
+        unique_cluster_ids, first_indices = np.unique(valid_cluster_ids, return_index=True)
+
+        # Build mapping using first occurrence indices (O(k) loop, no masking)
+        for i, cluster_id in enumerate(unique_cluster_ids):
+            class_id = valid_class_ids[first_indices[i]]
+            class_name = input_feature_classes.class_mapping.get(int(class_id), f"class_{class_id}")
+            cluster_to_class_mapping[int(cluster_id)] = class_name
+
+        # Create FeatureClasses object with proper cluster -> class mapping
+        # FeatureClasses.labels contains CLUSTER IDs (same as parent Clusters)
+        # FeatureClasses.class_mapping maps cluster IDs to class names
         feature_classes = FeatureClasses(
-            labels=output_class_labels,
-            class_mapping=input_feature_classes.class_mapping.copy(),
+            labels=output_cluster_labels,
+            class_mapping=cluster_to_class_mapping,
             class_colors=input_feature_classes.class_colors.copy()
         )
 

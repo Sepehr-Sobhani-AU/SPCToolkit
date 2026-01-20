@@ -214,9 +214,6 @@ class ClusterByValuePlugin(ActionPlugin):
         min_samples = params["min_samples"]
         target_batch_size = params.get("target_batch_size", 250000)
 
-        # GPU mode is automatic
-        use_gpu = 'auto'
-
         import time
         start_time = time.time()
 
@@ -301,7 +298,7 @@ class ClusterByValuePlugin(ActionPlugin):
                 def dbscan_func(batch_points, eps, min_points, **kwargs):
                     """Wrapper for DBSCAN to use with batch processor"""
                     batch_pc = PointCloud(points=batch_points)
-                    return batch_pc.dbscan(eps=eps, min_points=min_points, use_gpu=use_gpu)
+                    return batch_pc.dbscan(eps=eps, min_points=min_points)
 
                 local_labels = batch_processor.cluster_in_batches(
                     clustering_func=dbscan_func,
@@ -311,7 +308,7 @@ class ClusterByValuePlugin(ActionPlugin):
             else:
                 # Direct DBSCAN for smaller point clouds
                 value_pc = PointCloud(points=value_points)
-                local_labels = value_pc.dbscan(eps=eps, min_points=min_samples, use_gpu=use_gpu)
+                local_labels = value_pc.dbscan(eps=eps, min_points=min_samples)
 
             # Map local labels to global cluster IDs
             unique_local_labels = np.unique(local_labels)
@@ -383,10 +380,30 @@ class ClusterByValuePlugin(ActionPlugin):
         finally:
             tree_widget.blockSignals(False)
 
-        # Create FeatureClasses object
+        # Build cluster_id -> class_name mapping efficiently using vectorized operations
+        # Each cluster gets mapped to its value class name
+        cluster_to_class_mapping = {}
+
+        # Filter to non-noise points only
+        valid_mask = output_cluster_labels >= 0
+        valid_cluster_ids = output_cluster_labels[valid_mask]
+        valid_value_ids = output_value_labels[valid_mask]
+
+        # Get unique clusters and the index of their first occurrence (O(n log n) instead of O(n*k))
+        unique_cluster_ids, first_indices = np.unique(valid_cluster_ids, return_index=True)
+
+        # Build mapping using first occurrence indices (O(k) loop, no masking)
+        for i, cluster_id in enumerate(unique_cluster_ids):
+            value_class_id = valid_value_ids[first_indices[i]]
+            value_class_name = class_mapping.get(int(value_class_id), f"value_{value_class_id}")
+            cluster_to_class_mapping[int(cluster_id)] = value_class_name
+
+        # Create FeatureClasses object with proper cluster -> class mapping
+        # FeatureClasses.labels contains CLUSTER IDs (same as parent Clusters)
+        # FeatureClasses.class_mapping maps cluster IDs to class names
         feature_classes = FeatureClasses(
-            labels=output_value_labels,
-            class_mapping=class_mapping,
+            labels=output_cluster_labels,
+            class_mapping=cluster_to_class_mapping,
             class_colors=class_colors
         )
 

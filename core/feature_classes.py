@@ -63,31 +63,50 @@ class FeatureClasses:
         if feature_class not in self.get_unique_classes():
             raise ValueError(f"Feature class '{feature_class}' not found in the mapping.")
 
-        # Create mask for all points
-        mask = np.zeros(len(self.labels), dtype=bool)
-
         # Find all cluster IDs that map to this feature class
-        for cluster_id, cls in self.class_mapping.items():
-            if cls == feature_class:
-                mask |= (self.labels == cluster_id)
+        cluster_ids = [cid for cid, cls in self.class_mapping.items() if cls == feature_class]
 
-        return mask
+        if not cluster_ids:
+            return np.zeros(len(self.labels), dtype=bool)
+
+        # Use np.isin for vectorized membership test (much faster than loop)
+        return np.isin(self.labels, cluster_ids)
 
     def get_points_color(self) -> np.ndarray:
         """
         Get color values for all points based on their feature class.
 
+        Uses vectorized lookup table for O(n) performance instead of O(n*k).
+
         Returns:
             np.ndarray: Array of RGB color values for each point.
         """
-        # Initialize with a default color (gray)
-        colors = np.ones((len(self.labels), 3), dtype=np.float32) * 0.7
+        n_points = len(self.labels)
+        default_color = np.array([0.7, 0.7, 0.7], dtype=np.float32)
 
-        # Assign colors based on feature class
-        for cluster_id, class_name in self.class_mapping.items():
+        if len(self.class_mapping) == 0:
+            return np.tile(default_color, (n_points, 1))
+
+        # Find the range of label values for lookup table sizing
+        min_label = int(np.min(self.labels))
+        max_label = int(np.max(self.labels))
+
+        # Offset to handle negative labels (e.g., -1 for noise)
+        offset = -min_label if min_label < 0 else 0
+        table_size = max_label + offset + 1
+
+        # Build color lookup table (O(k) where k = number of mappings)
+        color_lut = np.tile(default_color, (table_size, 1))
+
+        for label_id, class_name in self.class_mapping.items():
             if class_name in self.class_colors:
-                mask = self.labels == cluster_id
-                colors[mask] = self.class_colors[class_name]
+                idx = label_id + offset
+                if 0 <= idx < table_size:
+                    color_lut[idx] = self.class_colors[class_name]
+
+        # Apply lookup using vectorized indexing (O(n))
+        adjusted_labels = self.labels + offset
+        colors = color_lut[adjusted_labels]
 
         return colors
 
