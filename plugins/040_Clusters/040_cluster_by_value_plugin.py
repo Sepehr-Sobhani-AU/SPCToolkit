@@ -3,9 +3,8 @@
 Cluster by Value Action Plugin.
 
 For point clouds with numeric attributes (e.g., intensity, classification),
-runs DBSCAN clustering on each unique value separately and produces:
-1. Clusters node (merged cluster IDs from all value groups)
-2. FeatureClasses child node (maps each cluster ID to its value)
+runs DBSCAN clustering on each unique value separately and produces a single
+Clusters node with cluster_names mapping each cluster ID to its source value.
 """
 
 from typing import Dict, Any
@@ -15,7 +14,6 @@ import uuid
 from plugins.interfaces import ActionPlugin
 from core.data_node import DataNode
 from core.point_cloud import PointCloud
-from core.feature_classes import FeatureClasses
 from core.clusters import Clusters
 from services.batch_processor import BatchProcessor
 from config.config import global_variables
@@ -27,13 +25,9 @@ class ClusterByValuePlugin(ActionPlugin):
     Cluster by Value Action Plugin.
 
     Takes a PointCloud node with numeric attributes,
-    runs DBSCAN clustering separately on each unique value, and produces:
-    1. Clusters node with globally unique cluster IDs
-    2. FeatureClasses child that maps cluster IDs to value names
-
-    This follows the program architecture:
-    - Clusters stores the cluster IDs
-    - FeatureClasses (child of Clusters) classifies those clusters
+    runs DBSCAN clustering separately on each unique value, and produces
+    a single Clusters node with globally unique cluster IDs and cluster_names
+    mapping each cluster to its source attribute value.
     """
 
     def get_name(self) -> str:
@@ -235,10 +229,10 @@ class ClusterByValuePlugin(ActionPlugin):
         output_value_labels = np.full(len(points), -1, dtype=np.int32)
         next_cluster_id = 0
 
-        # Create value-to-id mapping and class mapping for FeatureClasses
+        # Create value-to-id mapping and name mapping for Clusters
         value_to_class_id = {}
-        class_mapping = {}
-        class_colors = {}
+        value_names = {}
+        cluster_colors = {}
 
         # Check if attribute contains string values
         is_string_attr = (
@@ -256,14 +250,14 @@ class ClusterByValuePlugin(ActionPlugin):
             # For string attributes, use the value directly (e.g., "Car", "Tree")
             # For numeric attributes, show "attribute=value"
             if is_string_attr:
-                class_mapping[i] = str(value)
+                value_names[i] = str(value)
             elif isinstance(value, (np.floating, float)):
-                class_mapping[i] = f"{attribute_name}={value:.2f}"
+                value_names[i] = f"{attribute_name}={value:.2f}"
             else:
-                class_mapping[i] = f"{attribute_name}={value}"
-            # Generate a color for this class
+                value_names[i] = f"{attribute_name}={value}"
+            # Generate a color for this value
             np.random.seed(int(hash(str(value))) % (2**31))
-            class_colors[class_mapping[i]] = np.random.rand(3).astype(np.float32)
+            cluster_colors[value_names[i]] = np.random.rand(3).astype(np.float32)
 
         # Fixed batch overlap at 10%
         BATCH_OVERLAP = 0.1
@@ -272,7 +266,7 @@ class ClusterByValuePlugin(ActionPlugin):
         print(f"\nClustering each value:")
         for value in unique_values:
             class_id = value_to_class_id[value]
-            class_name = class_mapping[class_id]
+            class_name = value_names[class_id]
 
             # Get mask for points with this value
             value_mask = (attribute_values == value)
@@ -354,35 +348,8 @@ class ClusterByValuePlugin(ActionPlugin):
         print(f"  Points/second:     {len(points)/elapsed_time:,.0f}")
         print(f"{'='*60}\n")
 
-        # Create Clusters object
-        clusters = Clusters(labels=output_cluster_labels)
-        clusters.set_random_color()
-
-        # Create Clusters DataNode (child of selected node)
-        clusters_node = DataNode(
-            data=clusters,
-            data_type="cluster_labels",
-            parent_uid=selected_uid_uuid,
-            depends_on=[selected_uid_uuid],
-            tags=["cluster_by_value", attribute_name]
-        )
-
-        # Add Clusters node to tree
-        # Block signals for first add_branch to prevent double rendering
-        clusters_uid = data_nodes.add_node(clusters_node)
-        tree_widget.blockSignals(True)
-        try:
-            tree_widget.add_branch(
-                str(clusters_uid),
-                str(selected_uid_uuid),
-                "cluster_labels"
-            )
-        finally:
-            tree_widget.blockSignals(False)
-
-        # Build cluster_id -> class_name mapping efficiently using vectorized operations
-        # Each cluster gets mapped to its value class name
-        cluster_to_class_mapping = {}
+        # Build cluster_id -> value_name mapping efficiently using vectorized operations
+        cluster_names = {}
 
         # Filter to non-noise points only
         valid_mask = output_cluster_labels >= 0
@@ -395,34 +362,31 @@ class ClusterByValuePlugin(ActionPlugin):
         # Build mapping using first occurrence indices (O(k) loop, no masking)
         for i, cluster_id in enumerate(unique_cluster_ids):
             value_class_id = valid_value_ids[first_indices[i]]
-            value_class_name = class_mapping.get(int(value_class_id), f"value_{value_class_id}")
-            cluster_to_class_mapping[int(cluster_id)] = value_class_name
+            value_name = value_names.get(int(value_class_id), f"value_{value_class_id}")
+            cluster_names[int(cluster_id)] = value_name
 
-        # Create FeatureClasses object with proper cluster -> class mapping
-        # FeatureClasses.labels contains CLUSTER IDs (same as parent Clusters)
-        # FeatureClasses.class_mapping maps cluster IDs to class names
-        feature_classes = FeatureClasses(
+        # Create single Clusters object with cluster_names and cluster_colors
+        clusters = Clusters(
             labels=output_cluster_labels,
-            class_mapping=cluster_to_class_mapping,
-            class_colors=class_colors
+            cluster_names=cluster_names,
+            cluster_colors=cluster_colors
         )
 
-        # Create FeatureClasses DataNode as child of Clusters
-        feature_classes_node = DataNode(
-            data=feature_classes,
-            data_type="feature_classes",
-            parent_uid=clusters_uid,
-            depends_on=[clusters_uid],
-            tags=["cluster_by_value", "auto_classified", attribute_name]
+        # Create Clusters DataNode (child of selected node)
+        clusters_node = DataNode(
+            data=clusters,
+            data_type="cluster_labels",
+            parent_uid=selected_uid_uuid,
+            depends_on=[selected_uid_uuid],
+            tags=["cluster_by_value", attribute_name]
         )
 
-        # Add FeatureClasses node to tree
-        # This triggers branch_added signal → single render for both branches
-        feature_classes_uid = data_nodes.add_node(feature_classes_node)
+        # Add Clusters node to tree
+        clusters_uid = data_nodes.add_node(clusters_node)
         tree_widget.add_branch(
-            str(feature_classes_uid),
             str(clusters_uid),
-            "feature_classes"
+            str(selected_uid_uuid),
+            "cluster_labels"
         )
 
         # Show success message
@@ -434,6 +398,5 @@ class ClusterByValuePlugin(ActionPlugin):
             f"Created {next_cluster_id} cluster instances across {len(unique_values)} unique values.\n\n"
             f"Processing time: {elapsed_time:.2f} seconds\n"
             f"Processing speed: {len(points)/elapsed_time:,.0f} points/sec\n\n"
-            f"- Clusters node added with merged cluster IDs\n"
-            f"- FeatureClasses child node added with automatic classification"
+            f"Clusters node added with value names preserved."
         )

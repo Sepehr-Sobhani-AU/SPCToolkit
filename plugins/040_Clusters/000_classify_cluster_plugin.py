@@ -7,7 +7,7 @@ Workflow:
 3. User clicks on points in clusters to select them (Shift+Click)
 4. User runs this plugin
 5. Dialog asks for class label
-6. Selected clusters are classified and stored in FeatureClasses DataNode
+6. Selected clusters are classified and stored in the Clusters DataNode
 """
 
 import numpy as np
@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.feature_classes import FeatureClasses
+from core.clusters import Clusters
 
 
 class ClassifyClusterPlugin(ActionPlugin):
@@ -25,7 +25,7 @@ class ClassifyClusterPlugin(ActionPlugin):
 
     Uses the existing point selection mechanism (Shift+Click) to select clusters.
     Finds which clusters contain the selected points and assigns them a class label.
-    Creates or updates a FeatureClasses DataNode to store the classifications.
+    Updates or creates cluster_names in the Clusters object.
     """
 
     # Default class colors (RGB in [0, 1] range)
@@ -161,52 +161,52 @@ class ClassifyClusterPlugin(ActionPlugin):
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
-        # Check if FeatureClasses already exists as a child of this branch
-        existing_fc_node, existing_feature_classes = self._find_existing_feature_classes(
+        # Check if Clusters with names already exists as a child of this branch
+        existing_clusters_node, existing_clusters = self._find_existing_named_clusters(
             data_nodes, selected_uid
         )
 
-        # Create or update FeatureClasses
-        feature_classes = self.create_or_update_feature_classes(
+        # Create or update Clusters with names
+        clusters = self.create_or_update_clusters(
             point_cloud.cluster_labels,
             selected_cluster_ids,
             class_name,
-            existing_feature_classes
+            existing_clusters
         )
 
         # Create or update the DataNode
-        if existing_fc_node is not None:
+        if existing_clusters_node is not None:
             # Update existing node's data
-            existing_fc_node.data = feature_classes
+            existing_clusters_node.data = clusters
 
-            # Make the feature_classes branch visible to show updated classifications
+            # Make the clusters branch visible to show updated classifications
             from PyQt5.QtCore import Qt
-            fc_item = tree_widget.branches_dict.get(str(existing_fc_node.uid))
-            if fc_item:
-                fc_item.setCheckState(0, Qt.Checked)
-                tree_widget.visibility_status[str(existing_fc_node.uid)] = True
+            clusters_item = tree_widget.branches_dict.get(str(existing_clusters_node.uid))
+            if clusters_item:
+                clusters_item.setCheckState(0, Qt.Checked)
+                tree_widget.visibility_status[str(existing_clusters_node.uid)] = True
 
             # Manually trigger visibility update to refresh the visualization
             data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
         else:
-            # Create new DataNode for FeatureClasses
+            # Create new DataNode for Clusters with names
             from core.data_node import DataNode
             import uuid
 
             # Convert selected_uid from string to UUID
             parent_uuid = uuid.UUID(selected_uid) if isinstance(selected_uid, str) else selected_uid
 
-            fc_node = DataNode(
-                params="feature_classes",
-                data=feature_classes,
-                data_type="feature_classes",
+            clusters_node = DataNode(
+                params="cluster_labels",
+                data=clusters,
+                data_type="cluster_labels",
                 parent_uid=parent_uuid,
                 depends_on=[parent_uuid],
                 tags=["classification"]
             )
 
             # Add to data_nodes collection
-            fc_uid = data_nodes.add_node(fc_node)
+            clusters_uid = data_nodes.add_node(clusters_node)
 
             # Add to tree widget and make it visible
             # CRITICAL: Block signals BEFORE adding branch to prevent auto-check from triggering render
@@ -215,13 +215,13 @@ class ClassifyClusterPlugin(ActionPlugin):
 
             try:
                 # Add branch (it will be auto-checked inside add_branch, but signals are blocked)
-                tree_widget.add_branch(str(fc_uid), str(selected_uid), "feature_classes")
+                tree_widget.add_branch(str(clusters_uid), str(selected_uid), "cluster_labels")
 
                 # Get the newly added item and set it to checked (visible)
-                fc_item = tree_widget.branches_dict.get(str(fc_uid))
-                if fc_item:
-                    fc_item.setCheckState(0, Qt.Checked)
-                    tree_widget.visibility_status[str(fc_uid)] = True
+                clusters_item = tree_widget.branches_dict.get(str(clusters_uid))
+                if clusters_item:
+                    clusters_item.setCheckState(0, Qt.Checked)
+                    tree_widget.visibility_status[str(clusters_uid)] = True
             finally:
                 # Always re-enable signals
                 tree_widget.blockSignals(False)
@@ -240,69 +240,69 @@ class ClassifyClusterPlugin(ActionPlugin):
             "Classification Complete",
             f"Classified {len(selected_cluster_ids)} cluster(s) as '{class_name}':\n"
             f"Cluster IDs: {cluster_list}\n\n"
-            f"Total classified clusters: {len(feature_classes.class_mapping)}"
+            f"Total classified clusters: {len(clusters.cluster_names)}"
         )
 
-    def create_or_update_feature_classes(
+    def create_or_update_clusters(
         self,
         cluster_labels: np.ndarray,
         selected_cluster_ids: Set[int],
         class_name: str,
-        existing_feature_classes: Optional[FeatureClasses] = None
-    ) -> FeatureClasses:
+        existing_clusters: Optional[Clusters] = None
+    ) -> Clusters:
         """
-        Create a new FeatureClasses object or update an existing one.
+        Create a new Clusters object or update an existing one with cluster names.
 
         Args:
             cluster_labels: Array of cluster labels for each point
             selected_cluster_ids: Set of cluster IDs to classify
             class_name: Class name to assign to the selected clusters
-            existing_feature_classes: Existing FeatureClasses to update (or None)
+            existing_clusters: Existing Clusters to update (or None)
 
         Returns:
-            FeatureClasses: New or updated FeatureClasses object
+            Clusters: New or updated Clusters object with cluster_names
         """
         # Start with existing mapping or create new one
-        if existing_feature_classes is not None:
-            class_mapping = existing_feature_classes.class_mapping.copy()
-            class_colors = existing_feature_classes.class_colors.copy()
+        if existing_clusters is not None:
+            cluster_names = existing_clusters.cluster_names.copy()
+            cluster_colors = existing_clusters.cluster_colors.copy()
         else:
-            class_mapping = {}
-            class_colors = {}
+            cluster_names = {}
+            cluster_colors = {}
 
         # Add/update classifications for selected clusters
         for cluster_id in selected_cluster_ids:
-            class_mapping[cluster_id] = class_name
+            cluster_names[cluster_id] = class_name
 
         # Ensure all classes in the mapping have colors
-        for cls in set(class_mapping.values()):
-            if cls not in class_colors:
+        for cls in set(cluster_names.values()):
+            if cls not in cluster_colors:
                 # Use default color if available, otherwise generate random color
                 if cls in self.DEFAULT_CLASS_COLORS:
-                    class_colors[cls] = self.DEFAULT_CLASS_COLORS[cls]
+                    cluster_colors[cls] = self.DEFAULT_CLASS_COLORS[cls]
                 else:
                     # Generate a random color
-                    class_colors[cls] = np.random.rand(3).astype(np.float32)
+                    cluster_colors[cls] = np.random.rand(3).astype(np.float32)
 
-        # Create new FeatureClasses object
-        feature_classes = FeatureClasses(
+        # Create new Clusters object with names
+        clusters = Clusters(
             labels=cluster_labels,
-            class_mapping=class_mapping,
-            class_colors=class_colors
+            cluster_names=cluster_names,
+            cluster_colors=cluster_colors
         )
 
-        return feature_classes
+        return clusters
 
-    def _find_existing_feature_classes(self, data_nodes, branch_uid: str) -> tuple:
+    def _find_existing_named_clusters(self, data_nodes, branch_uid: str) -> tuple:
         """
-        Search for an existing FeatureClasses as a child of the given branch.
+        Search for an existing Clusters with names as a child of the given branch.
 
         Args:
             data_nodes: DataNodes collection
             branch_uid: UID of the parent branch (Clusters)
 
         Returns:
-            Tuple of (DataNode or None, FeatureClasses or None)
+            Tuple of (DataNode or None, Clusters or None)
         """
         import uuid
 
@@ -312,9 +312,10 @@ class ClassifyClusterPlugin(ActionPlugin):
         # Convert branch_uid to UUID for comparison
         parent_uuid = uuid.UUID(branch_uid) if isinstance(branch_uid, str) else branch_uid
 
-        # Search for a child node with data_type="feature_classes" and parent_uid=branch_uid
+        # Search for a child node with data_type="cluster_labels" and has cluster_names
         for uid, node in all_nodes.items():
-            if node.parent_uid == parent_uuid and node.data_type == "feature_classes":
-                return node, node.data
+            if node.parent_uid == parent_uuid and node.data_type == "cluster_labels":
+                if hasattr(node.data, 'has_names') and node.data.has_names():
+                    return node, node.data
 
         return None, None

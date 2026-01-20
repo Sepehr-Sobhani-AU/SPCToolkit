@@ -3,9 +3,8 @@
 Cluster by Class Action Plugin.
 
 For pre-classified point clouds (e.g., SemanticKITTI), runs DBSCAN clustering
-on each semantic class separately and produces:
-1. Clusters node (merged cluster IDs from all classes)
-2. FeatureClasses child node (maps each cluster ID to its class name)
+on each semantic class separately and produces a single Clusters node with
+cluster_names mapping each cluster ID to its original class name.
 """
 
 from typing import Dict, Any
@@ -15,7 +14,6 @@ import uuid
 from plugins.interfaces import ActionPlugin
 from core.data_node import DataNode
 from core.point_cloud import PointCloud
-from core.feature_classes import FeatureClasses
 from core.clusters import Clusters
 from services.batch_processor import BatchProcessor
 from config.config import global_variables
@@ -26,14 +24,10 @@ class ClusterByClassPlugin(ActionPlugin):
     """
     Cluster by Class Action Plugin.
 
-    Takes a FeatureClasses node where every point has a class label,
-    runs DBSCAN clustering separately on each class, and produces:
-    1. Clusters node with globally unique cluster IDs
-    2. FeatureClasses child that maps cluster IDs to class names
-
-    This follows the program architecture:
-    - Clusters stores the cluster IDs
-    - FeatureClasses (child of Clusters) classifies those clusters
+    Takes a Clusters node with semantic names (e.g., from SemanticKITTI import),
+    runs DBSCAN clustering separately on each class, and produces a single
+    Clusters node with globally unique cluster IDs and cluster_names mapping
+    each cluster to its original semantic class name.
     """
 
     def get_name(self) -> str:
@@ -81,7 +75,7 @@ class ClusterByClassPlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Selection",
-                "Please select a FeatureClasses branch."
+                "Please select a Clusters branch with semantic names."
             )
             return
 
@@ -95,19 +89,30 @@ class ClusterByClassPlugin(ActionPlugin):
         # Get the DataNode
         selected_node = data_nodes.get_node(selected_uid_uuid)
 
-        # Validate it's a FeatureClasses node
-        if selected_node.data_type != "feature_classes":
+        # Validate it's a Clusters node with names
+        if selected_node.data_type != "cluster_labels":
             QMessageBox.warning(
                 main_window,
                 "Invalid Selection",
-                f"This plugin only works on FeatureClasses nodes.\n"
+                f"This plugin requires a Clusters node with semantic names.\n"
                 f"You selected a '{selected_node.data_type}' node.\n"
-                f"Please select a FeatureClasses node (pre-classified point cloud)."
+                f"Please select a Clusters node (e.g., from SemanticKITTI import)."
             )
             return
 
-        # Get FeatureClasses data
-        input_feature_classes = selected_node.data
+        # Get Clusters data
+        input_clusters = selected_node.data
+
+        # Check if it has names
+        if not input_clusters.has_names():
+            QMessageBox.warning(
+                main_window,
+                "No Semantic Names",
+                "This Clusters node doesn't have semantic names.\n"
+                "Please select a Clusters node with cluster_names "
+                "(e.g., from SemanticKITTI import)."
+            )
+            return
 
         # Get parent PointCloud (need to reconstruct to get XYZ coordinates)
         parent_uid = selected_node.parent_uid
@@ -124,11 +129,11 @@ class ClusterByClassPlugin(ActionPlugin):
         points = point_cloud.points
 
         # Validate input
-        if len(input_feature_classes.labels) != len(points):
+        if len(input_clusters.labels) != len(points):
             QMessageBox.critical(
                 main_window,
                 "Data Mismatch",
-                f"Label array length ({len(input_feature_classes.labels)}) does not "
+                f"Label array length ({len(input_clusters.labels)}) does not "
                 f"match point count ({len(points)})"
             )
             return
@@ -150,7 +155,7 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"{'='*60}")
 
         # Get unique classes
-        unique_class_ids = np.unique(input_feature_classes.labels)
+        unique_class_ids = np.unique(input_clusters.labels)
         print(f"Found {len(unique_class_ids)} unique classes")
 
         # Initialize output arrays
@@ -165,13 +170,13 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"\nClustering each class:")
         for class_id in unique_class_ids:
             # Get class name from mapping
-            class_name = input_feature_classes.class_mapping.get(
+            class_name = input_clusters.cluster_names.get(
                 int(class_id),
                 f"class_{class_id}"
             )
 
             # Get mask for points of this class
-            class_mask = (input_feature_classes.labels == class_id)
+            class_mask = (input_clusters.labels == class_id)
             class_point_indices = np.where(class_mask)[0]
             class_points = points[class_mask]
 
@@ -249,35 +254,8 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"  Points/second:     {len(points)/elapsed_time:,.0f}")
         print(f"{'='*60}\n")
 
-        # Create Clusters object
-        clusters = Clusters(labels=output_cluster_labels)
-        clusters.set_random_color()
-
-        # Create Clusters DataNode (child of input FeatureClasses)
-        clusters_node = DataNode(
-            data=clusters,
-            data_type="cluster_labels",
-            parent_uid=selected_uid_uuid,
-            depends_on=[selected_uid_uuid],
-            tags=["cluster_by_class"]
-        )
-
-        # Add Clusters node to tree
-        # Block signals for first add_branch to prevent double rendering
-        clusters_uid = data_nodes.add_node(clusters_node)
-        tree_widget.blockSignals(True)
-        try:
-            tree_widget.add_branch(
-                str(clusters_uid),
-                str(selected_uid_uuid),
-                "cluster_labels"
-            )
-        finally:
-            tree_widget.blockSignals(False)
-
         # Build cluster_id -> class_name mapping efficiently using vectorized operations
-        # Each cluster gets mapped to its semantic class name
-        cluster_to_class_mapping = {}
+        cluster_names = {}
 
         # Filter to non-noise points only
         valid_mask = output_cluster_labels >= 0
@@ -290,34 +268,31 @@ class ClusterByClassPlugin(ActionPlugin):
         # Build mapping using first occurrence indices (O(k) loop, no masking)
         for i, cluster_id in enumerate(unique_cluster_ids):
             class_id = valid_class_ids[first_indices[i]]
-            class_name = input_feature_classes.class_mapping.get(int(class_id), f"class_{class_id}")
-            cluster_to_class_mapping[int(cluster_id)] = class_name
+            class_name = input_clusters.cluster_names.get(int(class_id), f"class_{class_id}")
+            cluster_names[int(cluster_id)] = class_name
 
-        # Create FeatureClasses object with proper cluster -> class mapping
-        # FeatureClasses.labels contains CLUSTER IDs (same as parent Clusters)
-        # FeatureClasses.class_mapping maps cluster IDs to class names
-        feature_classes = FeatureClasses(
+        # Create single Clusters object with cluster_names and cluster_colors
+        clusters = Clusters(
             labels=output_cluster_labels,
-            class_mapping=cluster_to_class_mapping,
-            class_colors=input_feature_classes.class_colors.copy()
+            cluster_names=cluster_names,
+            cluster_colors=input_clusters.cluster_colors.copy()
         )
 
-        # Create FeatureClasses DataNode as child of Clusters
-        feature_classes_node = DataNode(
-            data=feature_classes,
-            data_type="feature_classes",
-            parent_uid=clusters_uid,
-            depends_on=[clusters_uid],
-            tags=["cluster_by_class", "auto_classified"]
+        # Create Clusters DataNode (child of input Clusters)
+        clusters_node = DataNode(
+            data=clusters,
+            data_type="cluster_labels",
+            parent_uid=selected_uid_uuid,
+            depends_on=[selected_uid_uuid],
+            tags=["cluster_by_class"]
         )
 
-        # Add FeatureClasses node to tree
-        # This triggers branch_added signal → single render for both branches
-        feature_classes_uid = data_nodes.add_node(feature_classes_node)
+        # Add Clusters node to tree
+        clusters_uid = data_nodes.add_node(clusters_node)
         tree_widget.add_branch(
-            str(feature_classes_uid),
             str(clusters_uid),
-            "feature_classes"
+            str(selected_uid_uuid),
+            "cluster_labels"
         )
 
         # Show success message
@@ -328,6 +303,5 @@ class ClusterByClassPlugin(ActionPlugin):
             f"Created {next_cluster_id} cluster instances across {len(unique_class_ids)} classes.\n\n"
             f"Processing time: {elapsed_time:.2f} seconds\n"
             f"Processing speed: {len(points)/elapsed_time:,.0f} points/sec\n\n"
-            f"- Clusters node added with merged cluster IDs\n"
-            f"- FeatureClasses child node added with automatic classification"
+            f"Clusters node added with semantic names preserved."
         )

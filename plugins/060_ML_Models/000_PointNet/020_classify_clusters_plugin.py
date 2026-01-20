@@ -13,7 +13,7 @@ Workflow:
    - Confidence threshold
    - Skip small clusters option
 5. Plugin loads model and classifies clusters
-6. Creates/updates FeatureClasses DataNode with predictions
+6. Creates/updates Clusters DataNode with cluster_names for predictions
 """
 
 import os
@@ -24,7 +24,7 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.feature_classes import FeatureClasses
+from core.clusters import Clusters
 from models.pointnet.inference import (
     load_model_with_metadata,
     classify_clusters_batch
@@ -302,55 +302,51 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             # Update progress dialog with final statistics
             progress_dialog.update_statistics(stats)
 
-            # Create class mapping with Unclassified
+            # Create cluster_names mapping with Unclassified
             class_mapping_extended = {int(k): v for k, v in class_mapping.items()}
             unclassified_id = max(class_mapping_extended.keys()) + 1 if class_mapping_extended else 0
             class_mapping_extended[unclassified_id] = "Unclassified"
 
-            # Convert cluster-based class_ids dict to per-point array
-            # class_ids is currently {cluster_id: class_id}
-            # We need to create an array where each point gets its cluster's class_id
-            point_class_ids = np.full(point_cloud.size, unclassified_id, dtype=np.int32)
-
-            for cluster_id, predicted_class_id in class_ids.items():
-                # Find all points in this cluster
-                cluster_mask = point_cloud.cluster_labels == cluster_id
-
-                # Assign the predicted class (or unclassified if -1)
+            # Build cluster_names dict: maps cluster_id -> class_name
+            cluster_names = {}
+            for cluster_id in clusters_to_classify:
+                predicted_class_id = class_ids.get(cluster_id, -1)
                 if predicted_class_id == -1:
-                    point_class_ids[cluster_mask] = unclassified_id
+                    cluster_names[cluster_id] = "Unclassified"
                 else:
-                    point_class_ids[cluster_mask] = predicted_class_id
+                    cluster_names[cluster_id] = class_mapping_extended.get(
+                        predicted_class_id, "Unclassified"
+                    )
 
-            # Create class colors
-            class_colors = {}
-            for class_name in class_mapping_extended.values():
+            # Create cluster_colors
+            cluster_colors = {}
+            for class_name in set(cluster_names.values()):
                 if class_name in self.DEFAULT_CLASS_COLORS:
-                    class_colors[class_name] = self.DEFAULT_CLASS_COLORS[class_name]
+                    cluster_colors[class_name] = self.DEFAULT_CLASS_COLORS[class_name]
                 else:
                     # Generate random color for unknown classes
-                    class_colors[class_name] = np.random.rand(3).astype(np.float32)
+                    cluster_colors[class_name] = np.random.rand(3).astype(np.float32)
 
-            # Create FeatureClasses object
-            feature_classes = FeatureClasses(
-                labels=point_class_ids,
-                class_mapping=class_mapping_extended,
-                class_colors=class_colors
+            # Create Clusters object with cluster_names
+            clusters = Clusters(
+                labels=point_cloud.cluster_labels.copy(),
+                cluster_names=cluster_names,
+                cluster_colors=cluster_colors
             )
 
-            # Check if FeatureClasses already exists as a child
-            existing_fc_node = self._find_existing_feature_classes(data_nodes, selected_uid)
+            # Check if Clusters with names already exists as a child
+            existing_clusters_node = self._find_existing_named_clusters(data_nodes, selected_uid)
 
             # Create or update DataNode
-            if existing_fc_node is not None:
+            if existing_clusters_node is not None:
                 # Update existing node
-                existing_fc_node.data = feature_classes
+                existing_clusters_node.data = clusters
 
                 # Make visible
-                fc_item = tree_widget.branches_dict.get(str(existing_fc_node.uid))
-                if fc_item:
-                    fc_item.setCheckState(0, Qt.Checked)
-                    tree_widget.visibility_status[str(existing_fc_node.uid)] = True
+                clusters_item = tree_widget.branches_dict.get(str(existing_clusters_node.uid))
+                if clusters_item:
+                    clusters_item.setCheckState(0, Qt.Checked)
+                    tree_widget.visibility_status[str(existing_clusters_node.uid)] = True
 
                 # Trigger visibility update
                 data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
@@ -362,28 +358,28 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
                 parent_uuid = uuid.UUID(selected_uid) if isinstance(selected_uid, str) else selected_uid
 
-                fc_node = DataNode(
-                    params="feature_classes",
-                    data=feature_classes,
-                    data_type="feature_classes",
+                clusters_node = DataNode(
+                    params="cluster_labels",
+                    data=clusters,
+                    data_type="cluster_labels",
                     parent_uid=parent_uuid,
                     depends_on=[parent_uuid],
                     tags=["classification", "ml", "pointnet"]
                 )
 
                 # Add to data_nodes
-                fc_uid = data_nodes.add_node(fc_node)
+                clusters_uid = data_nodes.add_node(clusters_node)
 
                 # Add to tree widget (block signals to prevent auto-render)
                 tree_widget.blockSignals(True)
                 try:
-                    tree_widget.add_branch(str(fc_uid), str(selected_uid), "feature_classes")
+                    tree_widget.add_branch(str(clusters_uid), str(selected_uid), "cluster_labels")
 
                     # Set visible
-                    fc_item = tree_widget.branches_dict.get(str(fc_uid))
-                    if fc_item:
-                        fc_item.setCheckState(0, Qt.Checked)
-                        tree_widget.visibility_status[str(fc_uid)] = True
+                    clusters_item = tree_widget.branches_dict.get(str(clusters_uid))
+                    if clusters_item:
+                        clusters_item.setCheckState(0, Qt.Checked)
+                        tree_widget.visibility_status[str(clusters_uid)] = True
                 finally:
                     tree_widget.blockSignals(False)
 
@@ -397,18 +393,10 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             # Mark progress dialog as complete
             progress_dialog.classification_completed(stats)
 
-            # Count clusters per class (not points per class)
+            # Count clusters per class
             cluster_class_counts = {}
-            for cluster_id in clusters_to_classify:
-                cluster_mask = point_cloud.cluster_labels == cluster_id
-                cluster_points_classes = point_class_ids[cluster_mask]
-                if len(cluster_points_classes) > 0:
-                    # Take the most common class (should be unanimous for each cluster)
-                    unique_classes, counts = np.unique(cluster_points_classes, return_counts=True)
-                    cluster_class = unique_classes[np.argmax(counts)]
-                    if cluster_class in class_mapping_extended:
-                        class_name = class_mapping_extended[cluster_class]
-                        cluster_class_counts[class_name] = cluster_class_counts.get(class_name, 0) + 1
+            for cluster_id, class_name in cluster_names.items():
+                cluster_class_counts[class_name] = cluster_class_counts.get(class_name, 0) + 1
 
             # Print summary
             print(f"\n{'='*80}")
@@ -439,9 +427,9 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             main_window.enable_menus()
             main_window.enable_tree()
 
-    def _find_existing_feature_classes(self, data_nodes, branch_uid: str):
+    def _find_existing_named_clusters(self, data_nodes, branch_uid: str):
         """
-        Search for an existing FeatureClasses as a child of the given branch.
+        Search for an existing Clusters with names as a child of the given branch.
 
         Args:
             data_nodes: DataNodes collection
@@ -456,7 +444,8 @@ class ClassifyClustersMLPlugin(ActionPlugin):
         parent_uuid = uuid.UUID(branch_uid) if isinstance(branch_uid, str) else branch_uid
 
         for uid, node in all_nodes.items():
-            if node.parent_uid == parent_uuid and node.data_type == "feature_classes":
-                return node
+            if node.parent_uid == parent_uuid and node.data_type == "cluster_labels":
+                if hasattr(node.data, 'has_names') and node.data.has_names():
+                    return node
 
         return None

@@ -20,7 +20,7 @@ from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.point_cloud import PointCloud
 from core.data_node import DataNode
-from core.feature_classes import FeatureClasses
+from core.clusters import Clusters
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -479,13 +479,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 pc_uid = self._add_to_data_manager(point_cloud, block_signals=has_labels)
                 logger.info(f"  Added with UID: {pc_uid}")
 
-                # If labels loaded, create FeatureClasses as child
+                # If labels loaded, create Clusters with names as child
                 # This triggers the single render for both branches
                 if has_labels:
-                    logger.debug(f"  Creating FeatureClasses...")
-                    feature_classes = self._create_feature_classes(semantic_labels)
-                    logger.debug(f"  Adding FeatureClasses to DataManager...")
-                    self._add_feature_classes_to_data_manager(feature_classes, pc_uid, filename)
+                    logger.debug(f"  Creating Clusters with semantic names...")
+                    clusters = self._create_clusters(semantic_labels)
+                    logger.debug(f"  Adding Clusters to DataManager...")
+                    self._add_clusters_to_data_manager(clusters, pc_uid, filename)
 
                 success_count += 1
                 total_points_imported += len(points_translated)
@@ -767,11 +767,11 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         has_labels = semantic_final is not None
         pc_uid = self._add_to_data_manager(point_cloud, block_signals=has_labels)
 
-        # If labels loaded, create FeatureClasses as child
+        # If labels loaded, create Clusters with names as child
         # This triggers the single render for both branches
         if has_labels:
-            feature_classes = self._create_feature_classes(semantic_final)
-            self._add_feature_classes_to_data_manager(feature_classes, pc_uid, "SemanticKITTI")
+            clusters = self._create_clusters(semantic_final)
+            self._add_clusters_to_data_manager(clusters, pc_uid, "SemanticKITTI")
 
         # Show summary
         first_frame = self._extract_frame_number(os.path.basename(file_paths[0]))
@@ -787,80 +787,80 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         logger.info("_import_merged() completed")
         logger.info("=" * 60)
 
-    def _create_feature_classes(self, semantic_labels: np.ndarray) -> FeatureClasses:
+    def _create_clusters(self, semantic_labels: np.ndarray) -> Clusters:
         """
-        Create FeatureClasses object from semantic labels.
+        Create Clusters object from semantic labels.
 
         Args:
             semantic_labels: Array of semantic class IDs (SemanticKITTI format)
 
         Returns:
-            FeatureClasses object with original SemanticKITTI label IDs
+            Clusters object with semantic names (original SemanticKITTI label IDs)
         """
         # Get unique labels present in data
         unique_labels = np.unique(semantic_labels)
 
-        # Build class mapping using ORIGINAL label IDs (no remapping)
-        class_mapping = {}
-        class_colors = {}
+        # Build cluster_names mapping using ORIGINAL label IDs (no remapping)
+        cluster_names = {}
+        cluster_colors = {}
         for label in unique_labels:
             original_id = int(label)
             class_name = SEMANTICKITTI_CLASS_NAMES.get(original_id, f"class_{original_id}")
-            class_mapping[original_id] = class_name
+            cluster_names[original_id] = class_name
             rgb = np.array(SEMANTICKITTI_COLORS.get(original_id, (128, 128, 128))) / 255.0
-            class_colors[class_name] = rgb
+            cluster_colors[class_name] = rgb
 
-        return FeatureClasses(
+        return Clusters(
             labels=semantic_labels.astype(np.int32),
-            class_mapping=class_mapping,
-            class_colors=class_colors
+            cluster_names=cluster_names,
+            cluster_colors=cluster_colors
         )
 
-    def _add_feature_classes_to_data_manager(self, feature_classes: FeatureClasses,
-                                              parent_uid: str, parent_name: str) -> None:
+    def _add_clusters_to_data_manager(self, clusters: Clusters,
+                                        parent_uid: str, parent_name: str) -> None:
         """
-        Add FeatureClasses as child node to data manager and tree widget.
+        Add Clusters as child node to data manager and tree widget.
 
         Args:
-            feature_classes: The FeatureClasses object to add
+            clusters: The Clusters object to add (with semantic names)
             parent_uid: UID of parent PointCloud node
             parent_name: Name of parent PointCloud (for display)
         """
-        logger.debug(f"    _add_feature_classes_to_data_manager() called for parent: {parent_name}")
+        logger.debug(f"    _add_clusters_to_data_manager() called for parent: {parent_name}")
 
         data_manager = global_variables.global_data_manager
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
-        # Create DataNode for FeatureClasses (use standard name to match classification workflow)
-        logger.debug(f"    Creating FeatureClasses DataNode...")
-        fc_node = DataNode(
-            params="feature_classes",
-            data=feature_classes,
-            data_type="feature_classes",
+        # Create DataNode for Clusters (use standard name to match classification workflow)
+        logger.debug(f"    Creating Clusters DataNode...")
+        cluster_node = DataNode(
+            params="cluster_labels",
+            data=clusters,
+            data_type="cluster_labels",
             parent_uid=parent_uid,
             depends_on=[parent_uid],
-            tags=[]
+            tags=["semantic_labels"]
         )
 
         # Calculate memory size (labels array + dicts)
-        labels_size = feature_classes.labels.nbytes
+        labels_size = clusters.labels.nbytes
         # Format as MB
         size_mb = labels_size / (1024 * 1024)
-        fc_node.memory_size = f"{size_mb:.2f} MB"
-        logger.debug(f"    FeatureClasses memory size: {fc_node.memory_size}")
+        cluster_node.memory_size = f"{size_mb:.2f} MB"
+        logger.debug(f"    Clusters memory size: {cluster_node.memory_size}")
 
         # Add to data nodes collection
-        logger.debug(f"    Adding FeatureClasses to DataNodes collection...")
-        fc_uid = data_nodes.add_node(fc_node)
-        logger.debug(f"    FeatureClasses added with UID: {fc_uid}")
+        logger.debug(f"    Adding Clusters to DataNodes collection...")
+        cluster_uid = data_nodes.add_node(cluster_node)
+        logger.debug(f"    Clusters added with UID: {cluster_uid}")
 
         # Hide parent BEFORE adding child (prevents rendering both when signal triggers)
         # This prevents rendering both parent and child which doubles memory usage
         from PyQt5.QtCore import Qt
 
         parent_uid_str = str(parent_uid)
-        child_uid_str = str(fc_uid)
+        child_uid_str = str(cluster_uid)
 
         # Update parent visibility BEFORE adding child branch
         if parent_uid_str in tree_widget.visibility_status:
@@ -871,14 +871,14 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
             logger.debug(f"    Parent branch visibility set to False BEFORE adding child")
 
         # Now add the child branch (this triggers branch_added signal)
-        logger.debug(f"    Adding FeatureClasses branch to tree widget...")
+        logger.debug(f"    Adding Clusters branch to tree widget...")
         try:
-            tree_widget.add_branch(str(fc_uid), str(parent_uid), "feature_classes", is_root=False)
-            tree_widget.update_cache_tooltip(str(fc_uid), fc_node.memory_size)
-            logger.debug(f"    FeatureClasses branch added to tree")
+            tree_widget.add_branch(str(cluster_uid), str(parent_uid), "cluster_labels", is_root=False)
+            tree_widget.update_cache_tooltip(str(cluster_uid), cluster_node.memory_size)
+            logger.debug(f"    Clusters branch added to tree")
 
         except Exception as e:
-            logger.error(f"    Error adding FeatureClasses to tree: {e}")
+            logger.error(f"    Error adding Clusters to tree: {e}")
             logger.error(f"    Traceback:\n{traceback.format_exc()}")
             raise
 
