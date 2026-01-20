@@ -1,6 +1,6 @@
 # tasks/apply_class_reference.py
 """
-Task for filtering a point cloud to show only points of a specific class.
+Task for filtering a point cloud to show only points of a specific class/name.
 """
 
 from core.point_cloud import PointCloud
@@ -12,8 +12,8 @@ class ApplyClassReference:
     """
     Task for filtering a point cloud by semantic class.
 
-    This task takes a PointCloud instance (which should have feature_class_ids
-    from a parent FeatureClasses node) and a ClassReference, and creates a
+    This task takes a PointCloud instance (which should have cluster_ids
+    from a parent Clusters node with names) and a ClassReference, and creates a
     filtered point cloud showing only points of that class.
     """
 
@@ -22,7 +22,7 @@ class ApplyClassReference:
         Initialize the task.
 
         Args:
-            point_cloud (PointCloud): The point cloud to filter (must have feature_class_ids attribute)
+            point_cloud (PointCloud): The point cloud to filter (must have cluster_ids attribute)
             class_reference (ClassReference): The class reference for filtering
         """
         self.point_cloud = point_cloud
@@ -36,24 +36,29 @@ class ApplyClassReference:
             PointCloud: A new point cloud containing only points of the specified class
 
         Raises:
-            ValueError: If point cloud doesn't have feature_class_ids attribute
+            ValueError: If point cloud doesn't have cluster_ids attribute
         """
-        # Check if point cloud has feature_class_ids attribute
+        # Check if point cloud has required attribute
         if not hasattr(self.point_cloud, 'get_attribute'):
             raise ValueError(
-                "PointCloud must have feature_class_ids attribute. "
-                "Ensure the parent is a FeatureClasses node."
+                "PointCloud must have cluster_ids attribute. "
+                "Ensure the parent is a Clusters node with names."
             )
 
-        feature_class_ids = self.point_cloud.get_attribute("feature_class_ids")
-        if feature_class_ids is None:
+        # Try new attribute name first, then fall back to old name for compatibility
+        cluster_ids = self.point_cloud.get_attribute("cluster_ids")
+        if cluster_ids is None:
+            # Backward compatibility: try old attribute name
+            cluster_ids = self.point_cloud.get_attribute("feature_class_ids")
+
+        if cluster_ids is None:
             raise ValueError(
-                "PointCloud must have feature_class_ids attribute. "
-                "Ensure the parent is a FeatureClasses node."
+                "PointCloud must have cluster_ids attribute. "
+                "Ensure the parent is a Clusters node with names."
             )
 
         # Create mask for points of this class
-        class_mask = (feature_class_ids == self.class_reference.class_id)
+        class_mask = (cluster_ids == self.class_reference.class_id)
 
         # Get subset of points
         filtered_point_cloud = self.point_cloud.get_subset(class_mask)
