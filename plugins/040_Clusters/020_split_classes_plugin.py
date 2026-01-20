@@ -1,9 +1,9 @@
 """
-Plugin for splitting FeatureClasses into separate class branches.
+Plugin for splitting Clusters with names into separate class branches.
 
 Workflow:
-1. User creates/imports FeatureClasses (via ML classification, SemanticKITTI import, etc.)
-2. User selects the FeatureClasses branch
+1. User creates/imports Clusters with cluster_names (via ML classification, SemanticKITTI import, etc.)
+2. User selects the Clusters branch
 3. User runs this plugin
 4. Plugin analyzes classes and shows selection dialog with counts (clusters or points)
 5. Plugin creates a "Classes" container branch
@@ -24,7 +24,7 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.feature_classes import FeatureClasses
+from core.clusters import Clusters
 from core.class_reference import ClassReference
 from core.data_node import DataNode
 
@@ -144,7 +144,7 @@ class ClassSelectionDialog(QDialog):
 
 class SplitClassesPlugin(ActionPlugin):
     """
-    Action plugin for splitting FeatureClasses into separate class branches.
+    Action plugin for splitting Clusters with names into separate class branches.
 
     Creates a lightweight ClassReference branch for each selected class.
     Each branch contains only a small reference object (~100 bytes) rather than copying data.
@@ -183,7 +183,7 @@ class SplitClassesPlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Branch Selected",
-                "Please select a FeatureClasses branch before running this plugin."
+                "Please select a Clusters branch with names before running this plugin."
             )
             return
 
@@ -207,61 +207,56 @@ class SplitClassesPlugin(ActionPlugin):
             )
             return
 
-        # Validate that it's a FeatureClasses node
-        if not isinstance(selected_node.data, FeatureClasses):
+        # Validate that it's a Clusters node with names
+        if not isinstance(selected_node.data, Clusters):
             QMessageBox.warning(
                 main_window,
                 "Invalid Branch Type",
-                f"Selected branch is not a FeatureClasses branch.\n\n"
-                f"Expected: FeatureClasses\n"
+                f"Selected branch is not a Clusters branch.\n\n"
+                f"Expected: Clusters\n"
                 f"Got: {type(selected_node.data).__name__}\n\n"
-                f"Please select a FeatureClasses branch created by ML classification."
+                f"Please select a Clusters branch with cluster names."
+            )
+            return
+
+        if not selected_node.data.has_names():
+            QMessageBox.warning(
+                main_window,
+                "No Cluster Names",
+                "Selected Clusters branch has no cluster names defined.\n\n"
+                "Please select a Clusters branch that has been classified\n"
+                "(via ML classification, manual classification, or SemanticKITTI import)."
             )
             return
 
         try:
-            feature_classes = selected_node.data
+            clusters = selected_node.data
 
-            # Need to get cluster_labels from the parent point cloud
-            # Reconstruct the branch to get the point cloud with cluster_labels
+            # Reconstruct the branch to get the point cloud
             point_cloud = data_manager.reconstruct_branch(selected_uid)
 
-            # Check if cluster_labels exist and are not empty
-            if not hasattr(point_cloud, 'cluster_labels'):
-                cluster_labels = None
-            else:
-                cluster_labels = point_cloud.cluster_labels
-                # Handle both None, empty list [], and empty array
-                if cluster_labels is None or (hasattr(cluster_labels, '__len__') and len(cluster_labels) == 0):
-                    cluster_labels = None
+            # Get unique class names from cluster_names
+            # We need to invert the mapping: group cluster_ids by their class_name
+            class_to_cluster_ids = {}
+            for cluster_id, class_name in clusters.cluster_names.items():
+                if class_name not in class_to_cluster_ids:
+                    class_to_cluster_ids[class_name] = []
+                class_to_cluster_ids[class_name].append(cluster_id)
 
-            # Analyze classes and count clusters (if available) or points
-            unique_class_ids = np.unique(feature_classes.labels)
+            # Build class info: count clusters per class
             class_info = []
-
-            for class_id in unique_class_ids:
-                class_name = feature_classes.class_mapping.get(int(class_id), "Unknown")
-
-                # Find points of this class
-                class_mask = (feature_classes.labels == class_id)
-
-                if cluster_labels is not None:
-                    # Count unique clusters (excluding noise -1)
-                    class_cluster_ids = cluster_labels[class_mask]
-                    unique_clusters = np.unique(class_cluster_ids)
-                    unique_clusters = unique_clusters[unique_clusters != -1]  # Exclude noise
-                    count = len(unique_clusters)
-                else:
-                    # Count points instead
-                    count = np.sum(class_mask)
-
-                class_info.append((int(class_id), class_name, count))
+            for class_name, cluster_ids in class_to_cluster_ids.items():
+                # Use class_name as key (we'll pass cluster_ids as data)
+                count = len(cluster_ids)
+                # Use first cluster_id as class_id for ClassReference compatibility
+                class_id = cluster_ids[0] if cluster_ids else 0
+                class_info.append((class_id, class_name, count))
 
             # Sort by class name
             class_info.sort(key=lambda x: x[1])
 
-            # Show selection dialog
-            count_type = "clusters" if cluster_labels is not None else "points"
+            # Show selection dialog (always shows cluster counts since we have cluster_names)
+            count_type = "clusters"
             dialog = ClassSelectionDialog(main_window, class_info, count_type)
             if dialog.exec_() != QDialog.Accepted:
                 return  # User cancelled
@@ -283,7 +278,7 @@ class SplitClassesPlugin(ActionPlugin):
             main_window.tree_overlay.show_processing("Creating class branches...")
 
             print(f"\n{'='*80}")
-            print(f"Splitting FeatureClasses into Class Branches")
+            print(f"Splitting Clusters into Class Branches")
             print(f"{'='*80}")
             print(f"Creating {len(selected_classes)} class branches")
 
@@ -316,7 +311,7 @@ class SplitClassesPlugin(ActionPlugin):
             suffix = "cls" if count_type == "clusters" else "pts"
             for class_id, class_name, count in selected_classes:
                 # Get color for this class
-                color = feature_classes.class_colors.get(class_name, np.array([0.5, 0.5, 0.5]))
+                color = clusters.cluster_colors.get(class_name, np.array([0.5, 0.5, 0.5]))
 
                 # Create ClassReference object
                 class_reference = ClassReference(
@@ -332,7 +327,7 @@ class SplitClassesPlugin(ActionPlugin):
                     data=class_reference,
                     data_type="class_reference",
                     parent_uid=container_uid,
-                    depends_on=[parent_uuid],  # Depends on original FeatureClasses
+                    depends_on=[parent_uuid],  # Depends on parent Clusters
                     tags=["classification", "class", class_name]
                 )
 

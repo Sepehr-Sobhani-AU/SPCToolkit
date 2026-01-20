@@ -1,7 +1,7 @@
 """
 Export Classified Clusters Plugin
 
-Exports clusters with defined feature classes as numpy arrays for ML training data preparation.
+Exports clusters with defined cluster names as numpy arrays for ML training data preparation.
 Each cluster is saved as [XYZ, RGB] data to a subfolder named after its class, with optional subsampling.
 """
 
@@ -19,7 +19,7 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
     """
     Export classified clusters as numpy arrays for training data preparation.
 
-    This plugin exports clusters that have defined feature classes (classifications).
+    This plugin exports clusters that have defined cluster names (classifications).
     Each cluster is saved as a .npy file containing [XYZ, RGB] data (n, 6 array) in a
     subfolder corresponding to its class label. Clusters with more points than the
     specified maximum are randomly subsampled.
@@ -67,7 +67,7 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Selection",
-                "Please select a FeatureClasses branch to export."
+                "Please select a Clusters branch with names to export."
             )
             return
 
@@ -83,25 +83,25 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
 
         data_node = global_variables.global_data_nodes.get_node(selected_uid_uuid)
 
-        # Check if it's a FeatureClasses node
-        if data_node.data_type != "feature_classes":
+        # Check if it's a Clusters node with names
+        if data_node.data_type != "cluster_labels":
             QMessageBox.warning(
                 main_window,
                 "Invalid Selection",
-                "Please select a FeatureClasses branch to export.\n"
+                "Please select a Clusters branch with names to export.\n"
                 f"Selected branch type: {data_node.data_type}"
             )
             return
 
-        feature_classes = data_node.data
+        clusters = data_node.data
 
-        # Check if there are any classifications
-        if not feature_classes.class_mapping:
+        # Check if there are any cluster names (classifications)
+        if not hasattr(clusters, 'cluster_names') or not clusters.cluster_names:
             QMessageBox.warning(
                 main_window,
                 "No Classifications",
-                "The selected FeatureClasses branch has no classifications defined.\n"
-                "Please use the 'Classify Cluster' plugin to classify clusters first."
+                "The selected Clusters branch has no cluster names defined.\n"
+                "Please classify clusters first using 'Classify Cluster' or ML classification."
             )
             return
 
@@ -147,10 +147,10 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
         errors = []  # Track any errors
 
         try:
-            for cluster_id, class_name in feature_classes.class_mapping.items():
+            for cluster_id, class_name in clusters.cluster_names.items():
                 try:
                     # Create mask for this cluster
-                    mask = feature_classes.labels == cluster_id
+                    mask = clusters.labels == cluster_id
                     num_points_in_cluster = np.sum(mask)
 
                     # Skip if no points found
@@ -206,9 +206,9 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
         # Build summary message
         if exported_count == 0:
             error_msg = "No clusters were exported!\n\n"
-            error_msg += f"Total classified clusters: {len(feature_classes.class_mapping)}\n"
+            error_msg += f"Total classified clusters: {len(clusters.cluster_names)}\n"
             error_msg += f"Point cloud shape: {point_cloud.points.shape}\n"
-            error_msg += f"Labels shape: {feature_classes.labels.shape}\n\n"
+            error_msg += f"Labels shape: {clusters.labels.shape}\n\n"
             if errors:
                 error_msg += "Errors:\n" + "\n".join(errors[:5])  # Show first 5 errors
             QMessageBox.warning(
