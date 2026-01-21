@@ -1,15 +1,18 @@
-import sys
 import logging
 import traceback
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget, QMessageBox
+from scipy.spatial import cKDTree
+from PyQt5.QtWidgets import QOpenGLWidget, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
 from OpenGL.GL import *
 from OpenGL.GLU import gluPerspective, gluProject, gluUnProject
 from OpenGL.GLU import gluNewQuadric, gluDeleteQuadric, gluQuadricDrawStyle
 from OpenGL.GLU import gluSphere
-from OpenGL.GLU import GLU_LINE, GLU_FILL
+from OpenGL.GLU import GLU_FILL
 from OpenGL.arrays import vbo
+
+from config.config import global_variables
+from services.lod_manager import LODManager
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -306,8 +309,22 @@ class PCDViewerWidget(QOpenGLWidget):
     def default_pan_z(self, value):
         self._default_pan_z = value
 
+    @property
+    def lod_info(self) -> dict:
+        """Current LOD state for debugging."""
+        data_manager = global_variables.global_data_manager
+        full = data_manager._total_visible_points if data_manager else 0
+        rendered = len(self.points) if self.points is not None else 0
+        return {
+            "sample_rate": f"{self._current_sample_rate:.1%}",
+            "point_budget": data_manager._point_budget if data_manager else 0,
+            "full_points": full,
+            "rendered_points": rendered,
+            "reduction": f"{(1 - rendered/full)*100:.1f}%" if full > 0 else "0%"
+        }
+
     def __init__(self, parent=None):
-        super().__init__()
+        super().__init__(parent)
 
         # Set focus policy to ensure the widget receives keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
@@ -327,6 +344,7 @@ class PCDViewerWidget(QOpenGLWidget):
         # Point cloud data
         self.points = None
         self.vbo = None
+        self._kdtree = None  # Spatial index for fast point picking
 
         # Interaction variables
         self.last_mouse_pos = None
@@ -385,6 +403,10 @@ class PCDViewerWidget(QOpenGLWidget):
         # Timer for hiding the axis symbol after panning
         self.axis_timer = None
 
+        # LOD state (for triggering DataManager re-render)
+        self._current_sample_rate: float = 1.0
+        self._lod_enabled: bool = True  # Dynamic LOD for large point clouds
+
         # create a slot connection for branches_visibility_status emitted from tree_structure_widget
 
     def initializeGL(self):
@@ -435,6 +457,7 @@ class PCDViewerWidget(QOpenGLWidget):
                     logger.warning(f"  Error deleting VBO: {e}")
                 self.vbo = None
             self.points = None
+            self._kdtree = None  # Clear spatial index
             MemoryManager.cleanup()
             self.update()
             return
@@ -470,6 +493,11 @@ class PCDViewerWidget(QOpenGLWidget):
             self.points[:, :3] = points
             self.points[:, 3:] = colors
             logger.debug(f"  Combined array: {self.points.shape}, {self.points.nbytes / 1024 / 1024:.1f} MB")
+
+            # Build spatial index for fast point picking
+            logger.debug("  Building KDTree spatial index...")
+            self._kdtree = cKDTree(self.points[:, :3])
+            logger.debug("  KDTree built")
 
             self.update()
             logger.debug("  set_points() completed")
@@ -511,6 +539,7 @@ class PCDViewerWidget(QOpenGLWidget):
                     logger.warning(f"  Error deleting VBO: {e}")
                 self.vbo = None
             self.points = None
+            self._kdtree = None  # Clear spatial index
             MemoryManager.cleanup()
             self.update()
             return
@@ -536,6 +565,11 @@ class PCDViewerWidget(QOpenGLWidget):
             # Direct assignment - no copying needed
             self.points = vertices
             logger.debug(f"  Assigned {len(vertices):,} point vertices directly")
+
+            # Build spatial index for fast point picking
+            logger.debug("  Building KDTree spatial index...")
+            self._kdtree = cKDTree(self.points[:, :3])
+            logger.debug("  KDTree built")
 
             self.update()
             logger.debug("  set_point_vertices() completed")
@@ -686,6 +720,9 @@ class PCDViewerWidget(QOpenGLWidget):
             glDisableClientState(GL_VERTEX_ARRAY)
             glDisableClientState(GL_COLOR_ARRAY)
 
+            # Unbind the VBO to prevent issues with other rendering
+            self.vbo.unbind()
+
         except Exception as e:
             logger.error(f"  ERROR in render_point_cloud(): {e}")
             logger.error(f"  Points shape: {self.points.shape if self.points is not None else 'None'}")
@@ -707,6 +744,7 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.picked_points_indices:
             glColor3f(*self.picked_point_highlight_color)
 
+            invalid_indices = []
             for index in self.picked_points_indices:
                 try:
                     position = self.points[index, :3]
@@ -716,7 +754,11 @@ class PCDViewerWidget(QOpenGLWidget):
                     radius = self.max_extent * self.picked_point_highlight_size / 1000
                     self.draw_sphere(position, radius)
                 except IndexError:
-                    continue
+                    invalid_indices.append(index)
+
+            # Remove invalid indices that no longer exist in the point cloud
+            for invalid_index in invalid_indices:
+                self.picked_points_indices.remove(invalid_index)
 
     def resizeGL(self, w, h):
         """
@@ -888,11 +930,18 @@ class PCDViewerWidget(QOpenGLWidget):
         # Show the axis symbol after zooming
         self.show_axis = True
 
+        # Stop existing timer if any to prevent memory leak
+        if self.axis_timer is not None:
+            self.axis_timer.stop()
+
         # Set a timer to hide the axis symbol after zooming is done
         self.axis_timer = QTimer(self)
         self.axis_timer.setSingleShot(True)
         self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
         self.axis_timer.start(500)  # 500 milliseconds delay to hide the axis symbol
+
+        # Check if LOD needs to be updated
+        self._on_zoom_changed()
 
         self.update()
 
@@ -900,6 +949,44 @@ class PCDViewerWidget(QOpenGLWidget):
         """Hide the axis symbol after zooming is completed."""
         self.show_axis = False
         self.update()
+
+    def _on_zoom_changed(self):
+        """Called after zoom changes to potentially update LOD.
+
+        Note: LOD only DECREASES detail when zooming out, never increases.
+        This prevents OOM when zooming in on large datasets.
+        """
+        if not self._lod_enabled:
+            return
+
+        data_manager = global_variables.global_data_manager
+        if data_manager is None or data_manager._total_visible_points <= 0:
+            return
+
+        total_points = data_manager._total_visible_points
+        point_budget = data_manager._point_budget
+
+        # Calculate max safe rate (never exceed budget)
+        max_safe_rate = min(1.0, point_budget / total_points) if total_points > 0 else 1.0
+
+        new_rate = LODManager.compute_sample_rate(
+            total_points,
+            self.camera_distance,
+            self.zoom_factor,
+            self.max_extent or 1.0,
+            point_budget
+        )
+
+        # Cap at max safe rate
+        new_rate = min(new_rate, max_safe_rate)
+
+        # IMPORTANT: Only re-render if DECREASING detail (zooming out)
+        # Never increase detail dynamically - it risks OOM on large datasets
+        # Users who want more detail should adjust point_budget or hide branches
+        if new_rate < self._current_sample_rate - 0.05:
+            logger.debug(f"LOD: {self._current_sample_rate:.1%} -> {new_rate:.1%} (zoom out)")
+            self._current_sample_rate = new_rate
+            data_manager.render_visible_with_lod(new_rate)
 
     def closeEvent(self, event):
         """
@@ -925,6 +1012,17 @@ class PCDViewerWidget(QOpenGLWidget):
 
         # Call the parent class's closeEvent
         super().closeEvent(event)
+
+    def deleteOpenGLResources(self):
+        """
+        Clean up OpenGL resources.
+
+        This method is called during closeEvent to ensure all OpenGL resources
+        are properly released. Override this method to add additional cleanup
+        for any custom OpenGL resources.
+        """
+        # Additional OpenGL resource cleanup can be added here if needed
+        pass
 
     def keyPressEvent(self, event):
         """
@@ -1075,13 +1173,17 @@ class PCDViewerWidget(QOpenGLWidget):
         world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
         pick_point = np.array(world_coords[:3])
 
-        # Find the closest point in the point cloud to the picked point
-        distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
-        min_distance_index = np.argmin(distances)
-        min_distance = distances[min_distance_index]
-
         # Set a threshold to determine if a point is close enough to be considered picked
         threshold = self.max_extent * self.picking_point_threshold_factor
+
+        # Find the closest point using KDTree for O(log n) performance
+        if self._kdtree is not None:
+            min_distance, min_distance_index = self._kdtree.query(pick_point, k=1)
+        else:
+            # Fallback to brute-force if KDTree not available
+            distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
+            min_distance_index = np.argmin(distances)
+            min_distance = distances[min_distance_index]
 
         if min_distance < threshold:
             # Add the index to the list of picked points
@@ -1180,18 +1282,33 @@ class PCDViewerWidget(QOpenGLWidget):
         world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
         click_point = np.array(world_coords[:3])
 
-        # Find the closest point in the point cloud to the click point
-        distances = np.linalg.norm(self.points[:, :3] - click_point, axis=1)
-        min_distance_index = np.argmin(distances)
-        min_distance = distances[min_distance_index]
-
         # Set a threshold to determine if a point is close enough
-        threshold = self.max_extent * self.picking_point_threshold_factor  # Adjust as needed
+        threshold = self.max_extent * self.picking_point_threshold_factor
+
+        # Find the closest point using KDTree for O(log n) performance
+        if self._kdtree is not None:
+            min_distance, min_distance_index = self._kdtree.query(click_point, k=1)
+        else:
+            # Fallback to brute-force if KDTree not available
+            distances = np.linalg.norm(self.points[:, :3] - click_point, axis=1)
+            min_distance_index = np.argmin(distances)
+            min_distance = distances[min_distance_index]
 
         if min_distance < threshold:
-            # Update the center to the new point
+            # Save old center before updating
             old_center = self.center.copy()
-            self.center = self.points[min_distance_index, :3]
+            new_center = self.points[min_distance_index, :3].copy()
+
+            # Adjust pan to compensate for center change (prevents view shift)
+            # The transformation is: pan + center, so to keep the same view:
+            # new_pan + new_center = old_pan + old_center
+            # new_pan = old_pan + (old_center - new_center)
+            self.pan_x += old_center[0] - new_center[0]
+            self.pan_y += old_center[1] - new_center[1]
+            self.pan_z += old_center[2] - new_center[2]
+
+            # Update the center to the new point
+            self.center = new_center
 
     def reset_view(self):
         """
@@ -1304,6 +1421,10 @@ class PCDViewerWidget(QOpenGLWidget):
             # Show axis briefly for orientation
             self.show_axis = True
 
+            # Note: Do NOT reset _current_sample_rate here - it was set by DataManager
+            # during render to respect the point budget. Resetting would cause
+            # _on_zoom_changed to trigger an unnecessary (and potentially OOM) re-render.
+
             # Update the view
             logger.debug("  Updating view...")
             self.update()
@@ -1325,8 +1446,7 @@ class PCDViewerWidget(QOpenGLWidget):
             raise
 
     def show_point_cloud(self, visible=True):
-        """Show the point cloud by setting visibility to True and updating the view."""
-
-        if self.visible == visible:
+        """Show or hide the point cloud by setting visibility and updating the view."""
+        if self.visible != visible:
             self.visible = visible
             self.update()

@@ -844,7 +844,14 @@ class PointCloud:
         Returns:
             PointCloud: New point cloud with only masked points
         """
-        logger.debug(f"_create_masked_subset() called, mask has {np.sum(mask):,} True values")
+        true_count = np.sum(mask)
+        logger.debug(f"_create_masked_subset() called, mask has {true_count:,} True values")
+
+        # Optimization: if all points pass the mask, return self (no copy needed)
+        # This prevents expensive no-op copies for large point clouds
+        if true_count == len(mask):
+            logger.debug("  All points pass mask - returning self (no copy)")
+            return self
 
         # Check if batch masking is available (GPU backend with batch method)
         use_batch = (masking_backend is not None and
