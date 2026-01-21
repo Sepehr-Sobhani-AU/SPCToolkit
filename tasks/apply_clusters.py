@@ -54,9 +54,21 @@ class ApplyClusters:
             normals=self.point_cloud.normals
         )
 
+        # Copy existing attributes from source PointCloud
+        # This preserves any metadata from upstream operations
+        new_point_cloud.attributes = self.point_cloud.attributes.copy()
+
         # Add cluster labels as attribute for downstream tasks (like ApplyClassReference)
         # This replaces the old direct "cluster_labels" attribute and uses the attributes dict
         # which is properly masked during get_subset() operations
         new_point_cloud.add_attribute("cluster_labels", self.clusters.labels)
+
+        # Store cluster metadata for downstream operations (e.g., Cluster by Class on filtered branches)
+        # These are dict attributes (not per-point arrays) - store directly in attributes dict
+        # since add_attribute() is for per-point arrays only. Dict attributes are preserved
+        # unchanged through get_subset() operations.
+        if self.clusters.has_names():
+            new_point_cloud.attributes["_cluster_names"] = self.clusters.cluster_names
+            new_point_cloud.attributes["_cluster_colors"] = self.clusters.cluster_colors
 
         return new_point_cloud

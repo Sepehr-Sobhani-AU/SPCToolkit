@@ -24,10 +24,16 @@ class ClusterByClassPlugin(ActionPlugin):
     """
     Cluster by Class Action Plugin.
 
-    Takes a Clusters node with semantic names (e.g., from SemanticKITTI import),
+    Takes any branch derived from a Clusters node with semantic names
+    (e.g., from SemanticKITTI import, or a filtered Masks branch from one),
     runs DBSCAN clustering separately on each class, and produces a single
     Clusters node with globally unique cluster IDs and cluster_names mapping
     each cluster to its original semantic class name.
+
+    Works on:
+    - Clusters nodes directly
+    - Masks nodes that are children of Clusters nodes (filtered branches)
+    - Any branch where the reconstructed PointCloud has cluster metadata attributes
     """
 
     def get_name(self) -> str:
@@ -75,7 +81,7 @@ class ClusterByClassPlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Selection",
-                "Please select a Clusters branch with semantic names."
+                "Please select a branch with cluster metadata (e.g., Clusters node or filtered Masks)."
             )
             return
 
@@ -86,54 +92,52 @@ class ClusterByClassPlugin(ActionPlugin):
         else:
             selected_uid_uuid = selected_uid
 
-        # Get the DataNode
-        selected_node = data_nodes.get_node(selected_uid_uuid)
-
-        # Validate it's a Clusters node with names
-        if selected_node.data_type != "cluster_labels":
-            QMessageBox.warning(
-                main_window,
-                "Invalid Selection",
-                f"This plugin requires a Clusters node with semantic names.\n"
-                f"You selected a '{selected_node.data_type}' node.\n"
-                f"Please select a Clusters node (e.g., from SemanticKITTI import)."
-            )
-            return
-
-        # Get Clusters data
-        input_clusters = selected_node.data
-
-        # Check if it has names
-        if not input_clusters.has_names():
-            QMessageBox.warning(
-                main_window,
-                "No Semantic Names",
-                "This Clusters node doesn't have semantic names.\n"
-                "Please select a Clusters node with cluster_names "
-                "(e.g., from SemanticKITTI import)."
-            )
-            return
-
-        # Get parent PointCloud (need to reconstruct to get XYZ coordinates)
-        parent_uid = selected_node.parent_uid
+        # Reconstruct the selected branch (works for any node type: Clusters, Masks, etc.)
         try:
-            point_cloud = data_manager.reconstruct_branch(str(parent_uid))
+            point_cloud = data_manager.reconstruct_branch(str(selected_uid_uuid))
         except Exception as e:
             QMessageBox.critical(
                 main_window,
                 "Reconstruction Error",
-                f"Failed to reconstruct parent PointCloud:\n{str(e)}"
+                f"Failed to reconstruct branch:\n{str(e)}"
+            )
+            return
+
+        # Get cluster metadata from PointCloud attributes
+        # These are stored by ApplyClusters and preserved through get_subset() operations
+        cluster_names = point_cloud.get_attribute("_cluster_names")
+        cluster_colors = point_cloud.get_attribute("_cluster_colors")
+        cluster_labels = point_cloud.get_attribute("cluster_labels")
+
+        # Validate that cluster metadata exists
+        if cluster_names is None or cluster_labels is None:
+            QMessageBox.warning(
+                main_window,
+                "No Cluster Metadata",
+                "Selected branch has no cluster metadata.\n"
+                "Please select a branch derived from a Clusters node with semantic names\n"
+                "(e.g., from SemanticKITTI import or a filtered branch from one)."
+            )
+            return
+
+        if len(cluster_names) == 0:
+            QMessageBox.warning(
+                main_window,
+                "No Semantic Names",
+                "Selected branch has cluster labels but no semantic names.\n"
+                "Please select a branch with cluster_names "
+                "(e.g., from SemanticKITTI import)."
             )
             return
 
         points = point_cloud.points
 
         # Validate input
-        if len(input_clusters.labels) != len(points):
+        if len(cluster_labels) != len(points):
             QMessageBox.critical(
                 main_window,
                 "Data Mismatch",
-                f"Label array length ({len(input_clusters.labels)}) does not "
+                f"Label array length ({len(cluster_labels)}) does not "
                 f"match point count ({len(points)})"
             )
             return
@@ -155,7 +159,7 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"{'='*60}")
 
         # Get unique classes
-        unique_class_ids = np.unique(input_clusters.labels)
+        unique_class_ids = np.unique(cluster_labels)
         print(f"Found {len(unique_class_ids)} unique classes")
 
         # Initialize output arrays
@@ -170,13 +174,13 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"\nClustering each class:")
         for class_id in unique_class_ids:
             # Get class name from mapping
-            class_name = input_clusters.cluster_names.get(
+            class_name = cluster_names.get(
                 int(class_id),
                 f"class_{class_id}"
             )
 
             # Get mask for points of this class
-            class_mask = (input_clusters.labels == class_id)
+            class_mask = (cluster_labels == class_id)
             class_point_indices = np.where(class_mask)[0]
             class_points = points[class_mask]
 
@@ -255,7 +259,7 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"{'='*60}\n")
 
         # Build cluster_id -> class_name mapping efficiently using vectorized operations
-        cluster_names = {}
+        output_cluster_names = {}
 
         # Filter to non-noise points only
         valid_mask = output_cluster_labels >= 0
@@ -268,14 +272,16 @@ class ClusterByClassPlugin(ActionPlugin):
         # Build mapping using first occurrence indices (O(k) loop, no masking)
         for i, cluster_id in enumerate(unique_cluster_ids):
             class_id = valid_class_ids[first_indices[i]]
-            class_name = input_clusters.cluster_names.get(int(class_id), f"class_{class_id}")
-            cluster_names[int(cluster_id)] = class_name
+            class_name = cluster_names.get(int(class_id), f"class_{class_id}")
+            output_cluster_names[int(cluster_id)] = class_name
 
         # Create single Clusters object with cluster_names and cluster_colors
+        # Use cluster_colors from input if available, otherwise empty dict
+        output_cluster_colors = cluster_colors.copy() if cluster_colors else {}
         clusters = Clusters(
             labels=output_cluster_labels,
-            cluster_names=cluster_names,
-            cluster_colors=input_clusters.cluster_colors.copy()
+            cluster_names=output_cluster_names,
+            cluster_colors=output_cluster_colors
         )
 
         # Create Clusters DataNode (child of input Clusters)

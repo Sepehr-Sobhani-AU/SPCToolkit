@@ -148,6 +148,11 @@ class SplitClassesPlugin(ActionPlugin):
 
     Creates a lightweight ClassReference branch for each selected class.
     Each branch contains only a small reference object (~100 bytes) rather than copying data.
+
+    Works on:
+    - Clusters nodes directly
+    - Masks nodes that are children of Clusters nodes (filtered branches)
+    - Any branch where the reconstructed PointCloud has cluster metadata attributes
     """
 
     def get_name(self) -> str:
@@ -183,7 +188,7 @@ class SplitClassesPlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Branch Selected",
-                "Please select a Clusters branch with names before running this plugin."
+                "Please select a branch with cluster metadata before running this plugin."
             )
             return
 
@@ -197,48 +202,53 @@ class SplitClassesPlugin(ActionPlugin):
 
         selected_uid = selected_branches[0]
 
-        # Get the selected data node
-        selected_node = data_nodes.get_node(uuid.UUID(selected_uid))
-        if selected_node is None:
+        # Reconstruct the branch (works for any node type: Clusters, Masks, etc.)
+        try:
+            point_cloud = data_manager.reconstruct_branch(selected_uid)
+        except Exception as e:
             QMessageBox.critical(
                 main_window,
-                "Node Not Found",
-                f"Could not find data node with UID: {selected_uid}"
+                "Reconstruction Error",
+                f"Failed to reconstruct branch:\n{str(e)}"
             )
             return
 
-        # Validate that it's a Clusters node with names
-        if not isinstance(selected_node.data, Clusters):
+        # Get cluster metadata from PointCloud attributes
+        cluster_names = point_cloud.get_attribute("_cluster_names")
+        cluster_colors = point_cloud.get_attribute("_cluster_colors")
+        cluster_labels = point_cloud.get_attribute("cluster_labels")
+
+        # Validate that cluster metadata exists
+        if cluster_names is None or cluster_labels is None:
             QMessageBox.warning(
                 main_window,
-                "Invalid Branch Type",
-                f"Selected branch is not a Clusters branch.\n\n"
-                f"Expected: Clusters\n"
-                f"Got: {type(selected_node.data).__name__}\n\n"
-                f"Please select a Clusters branch with cluster names."
+                "No Cluster Metadata",
+                "Selected branch has no cluster metadata.\n"
+                "Please select a branch derived from a Clusters node with classifications\n"
+                "(e.g., from ML classification, manual classification, or SemanticKITTI import)."
             )
             return
 
-        if not selected_node.data.has_names():
+        if len(cluster_names) == 0:
             QMessageBox.warning(
                 main_window,
                 "No Cluster Names",
-                "Selected Clusters branch has no cluster names defined.\n\n"
-                "Please select a Clusters branch that has been classified\n"
+                "Selected branch has cluster labels but no semantic names.\n\n"
+                "Please select a branch that has been classified\n"
                 "(via ML classification, manual classification, or SemanticKITTI import)."
             )
             return
 
-        try:
-            clusters = selected_node.data
+        # Use cluster_colors if available, otherwise empty dict
+        if cluster_colors is None:
+            cluster_colors = {}
 
-            # Reconstruct the branch to get the point cloud
-            point_cloud = data_manager.reconstruct_branch(selected_uid)
+        try:
 
             # Get unique class names from cluster_names
             # We need to invert the mapping: group cluster_ids by their class_name
             class_to_cluster_ids = {}
-            for cluster_id, class_name in clusters.cluster_names.items():
+            for cluster_id, class_name in cluster_names.items():
                 if class_name not in class_to_cluster_ids:
                     class_to_cluster_ids[class_name] = []
                 class_to_cluster_ids[class_name].append(cluster_id)
@@ -311,7 +321,7 @@ class SplitClassesPlugin(ActionPlugin):
             suffix = "cls" if count_type == "clusters" else "pts"
             for class_id, class_name, count in selected_classes:
                 # Get color for this class
-                color = clusters.cluster_colors.get(class_name, np.array([0.5, 0.5, 0.5]))
+                color = cluster_colors.get(class_name, np.array([0.5, 0.5, 0.5]))
 
                 # Get ALL cluster_ids for this class (not just the first one)
                 all_cluster_ids = class_to_cluster_ids.get(class_name, [class_id])

@@ -25,6 +25,11 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
     specified maximum are randomly subsampled.
 
     File naming uses incremental numbering per class (tree_1.npy, tree_2.npy, etc.)
+
+    Works on:
+    - Clusters nodes directly
+    - Masks nodes that are children of Clusters nodes (filtered branches)
+    - Any branch where the reconstructed PointCloud has cluster metadata attributes
     """
 
     # Class variable to store the last used export directory for the session
@@ -67,7 +72,7 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Selection",
-                "Please select a Clusters branch with names to export."
+                "Please select a branch with cluster metadata to export."
             )
             return
 
@@ -81,26 +86,38 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
         else:
             selected_uid_uuid = selected_uid
 
-        data_node = global_variables.global_data_nodes.get_node(selected_uid_uuid)
-
-        # Check if it's a Clusters node with names
-        if data_node.data_type != "cluster_labels":
-            QMessageBox.warning(
+        # Reconstruct the branch (works for any node type: Clusters, Masks, etc.)
+        try:
+            point_cloud = data_manager.reconstruct_branch(str(selected_uid_uuid))
+        except Exception as e:
+            QMessageBox.critical(
                 main_window,
-                "Invalid Selection",
-                "Please select a Clusters branch with names to export.\n"
-                f"Selected branch type: {data_node.data_type}"
+                "Reconstruction Error",
+                f"Failed to reconstruct branch:\n{str(e)}"
             )
             return
 
-        clusters = data_node.data
+        # Get cluster metadata from PointCloud attributes
+        cluster_names = point_cloud.get_attribute("_cluster_names")
+        cluster_labels = point_cloud.get_attribute("cluster_labels")
+
+        # Validate that cluster metadata exists
+        if cluster_names is None or cluster_labels is None:
+            QMessageBox.warning(
+                main_window,
+                "No Cluster Metadata",
+                "Selected branch has no cluster metadata.\n"
+                "Please select a branch derived from a Clusters node with classifications\n"
+                "(e.g., from 'Classify Cluster' or ML classification)."
+            )
+            return
 
         # Check if there are any cluster names (classifications)
-        if not hasattr(clusters, 'cluster_names') or not clusters.cluster_names:
+        if len(cluster_names) == 0:
             QMessageBox.warning(
                 main_window,
                 "No Classifications",
-                "The selected Clusters branch has no cluster names defined.\n"
+                "The selected branch has no cluster names defined.\n"
                 "Please classify clusters first using 'Classify Cluster' or ML classification."
             )
             return
@@ -125,17 +142,6 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
             )
             return
 
-        # Reconstruct the branch to get the point cloud
-        try:
-            point_cloud = data_manager.reconstruct_branch(selected_uid)
-        except Exception as e:
-            QMessageBox.critical(
-                main_window,
-                "Reconstruction Error",
-                f"Failed to reconstruct branch:\n{str(e)}"
-            )
-            return
-
         # Get parameters
         max_points = int(params['max_points'])
 
@@ -147,10 +153,10 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
         errors = []  # Track any errors
 
         try:
-            for cluster_id, class_name in clusters.cluster_names.items():
+            for cluster_id, class_name in cluster_names.items():
                 try:
                     # Create mask for this cluster
-                    mask = clusters.labels == cluster_id
+                    mask = cluster_labels == cluster_id
                     num_points_in_cluster = np.sum(mask)
 
                     # Skip if no points found
@@ -206,9 +212,9 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
         # Build summary message
         if exported_count == 0:
             error_msg = "No clusters were exported!\n\n"
-            error_msg += f"Total classified clusters: {len(clusters.cluster_names)}\n"
+            error_msg += f"Total classified clusters: {len(cluster_names)}\n"
             error_msg += f"Point cloud shape: {point_cloud.points.shape}\n"
-            error_msg += f"Labels shape: {clusters.labels.shape}\n\n"
+            error_msg += f"Labels shape: {cluster_labels.shape}\n\n"
             if errors:
                 error_msg += "Errors:\n" + "\n".join(errors[:5])  # Show first 5 errors
             QMessageBox.warning(
