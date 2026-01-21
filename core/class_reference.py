@@ -7,6 +7,7 @@ duplicating point data, enabling memory-efficient class-based views.
 """
 
 import numpy as np
+from typing import List, Optional
 
 
 class ClassReference:
@@ -18,14 +19,25 @@ class ClassReference:
 
     Args:
         class_id (int): Integer ID of the semantic class (e.g., 0, 1, 2).
+                        For Clusters with cluster_names, this is the first cluster_id.
         class_name (str): Name of the class (e.g., "Tree", "Car", "Building").
         color (np.ndarray): RGB color for this class with shape (3,), values in [0, 1].
+        cluster_ids (List[int], optional): All cluster IDs that belong to this class.
+                                           Used when filtering Clusters with cluster_names.
     """
 
-    def __init__(self, class_id: int, class_name: str, color: np.ndarray):
+    def __init__(
+        self,
+        class_id: int,
+        class_name: str,
+        color: np.ndarray,
+        cluster_ids: Optional[List[int]] = None
+    ):
         self.class_id = int(class_id)
         self.class_name = str(class_name)
         self.color = np.asarray(color, dtype=np.float32)
+        # Store all cluster_ids for this class (for Clusters with cluster_names)
+        self.cluster_ids = cluster_ids if cluster_ids is not None else [self.class_id]
 
         # Validate inputs
         if not isinstance(self.class_id, (int, np.integer)):
@@ -40,7 +52,8 @@ class ClassReference:
     def __repr__(self):
         return (f"ClassReference(class_id={self.class_id}, "
                 f"class_name='{self.class_name}', "
+                f"cluster_ids={len(self.cluster_ids)} clusters, "
                 f"color={self.color})")
 
     def __str__(self):
-        return f"ClassReference: {self.class_name} (ID={self.class_id})"
+        return f"ClassReference: {self.class_name} ({len(self.cluster_ids)} clusters)"

@@ -313,11 +313,15 @@ class SplitClassesPlugin(ActionPlugin):
                 # Get color for this class
                 color = clusters.cluster_colors.get(class_name, np.array([0.5, 0.5, 0.5]))
 
-                # Create ClassReference object
+                # Get ALL cluster_ids for this class (not just the first one)
+                all_cluster_ids = class_to_cluster_ids.get(class_name, [class_id])
+
+                # Create ClassReference object with all cluster_ids
                 class_reference = ClassReference(
                     class_id=class_id,
                     class_name=class_name,
-                    color=color
+                    color=color,
+                    cluster_ids=all_cluster_ids
                 )
 
                 # Create DataNode with count in name (clusters or points)

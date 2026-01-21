@@ -58,7 +58,14 @@ class ApplyClassReference:
             )
 
         # Create mask for points of this class
-        class_mask = (cluster_ids == self.class_reference.class_id)
+        # Use cluster_ids list if available (for Clusters with cluster_names)
+        # Otherwise fall back to single class_id (for old FeatureClasses compatibility)
+        if hasattr(self.class_reference, 'cluster_ids') and self.class_reference.cluster_ids:
+            # Filter by all cluster_ids that belong to this class
+            class_mask = np.isin(cluster_ids, self.class_reference.cluster_ids)
+        else:
+            # Fall back to single class_id
+            class_mask = (cluster_ids == self.class_reference.class_id)
 
         # Get subset of points
         filtered_point_cloud = self.point_cloud.get_subset(class_mask)
