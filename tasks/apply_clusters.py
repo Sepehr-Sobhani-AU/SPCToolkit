@@ -54,11 +54,9 @@ class ApplyClusters:
             normals=self.point_cloud.normals
         )
 
-        # Add cluster labels as attribute
-        new_point_cloud.cluster_labels = self.clusters.labels
-
-        # Add cluster_ids attribute for downstream tasks (like ApplyClassReference)
-        # This replaces the old "feature_class_ids" attribute from FeatureClasses
-        new_point_cloud.add_attribute("cluster_ids", self.clusters.labels)
+        # Add cluster labels as attribute for downstream tasks (like ApplyClassReference)
+        # This replaces the old direct "cluster_labels" attribute and uses the attributes dict
+        # which is properly masked during get_subset() operations
+        new_point_cloud.add_attribute("cluster_labels", self.clusters.labels)
 
         return new_point_cloud

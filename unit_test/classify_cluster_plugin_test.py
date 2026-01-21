@@ -61,10 +61,11 @@ def test_classify_cluster_plugin():
     # Create a point cloud with cluster labels
     points = np.random.rand(1000, 3).astype(np.float32)
     point_cloud = PointCloud(points=points)
-    point_cloud.cluster_labels = np.zeros(1000, dtype=int)
-    point_cloud.cluster_labels[:300] = 0    # Cluster 0
-    point_cloud.cluster_labels[300:600] = 1  # Cluster 1
-    point_cloud.cluster_labels[600:] = 2     # Cluster 2
+    cluster_labels_data = np.zeros(1000, dtype=int)
+    cluster_labels_data[:300] = 0    # Cluster 0
+    cluster_labels_data[300:600] = 1  # Cluster 1
+    cluster_labels_data[600:] = 2     # Cluster 2
+    point_cloud.add_attribute("cluster_labels", cluster_labels_data)
 
     # Simulate classifying cluster 0 as "Tree"
     selected_cluster_ids = {0}
@@ -72,7 +73,7 @@ def test_classify_cluster_plugin():
 
     # Create initial Clusters with cluster_names
     clusters = plugin.create_or_update_clusters(
-        point_cloud.cluster_labels,
+        point_cloud.get_attribute("cluster_labels"),
         selected_cluster_ids,
         class_name,
         existing_clusters=None
@@ -92,7 +93,7 @@ def test_classify_cluster_plugin():
     class_name_2 = "Car"
 
     updated_clusters = plugin.create_or_update_clusters(
-        point_cloud.cluster_labels,
+        point_cloud.get_attribute("cluster_labels"),
         selected_cluster_ids_2,
         class_name_2,
         existing_clusters=clusters
@@ -114,7 +115,7 @@ def test_classify_cluster_plugin():
     class_name_3 = "Building"
 
     reclassified_clusters = plugin.create_or_update_clusters(
-        point_cloud.cluster_labels,
+        point_cloud.get_attribute("cluster_labels"),
         selected_cluster_ids_3,
         class_name_3,
         existing_clusters=updated_clusters
@@ -130,14 +131,14 @@ def test_classify_cluster_plugin():
     # Create fresh point cloud with 5 clusters
     points_multi = np.random.rand(500, 3).astype(np.float32)
     point_cloud_multi = PointCloud(points=points_multi)
-    point_cloud_multi.cluster_labels = np.repeat([0, 1, 2, 3, 4], 100)
+    point_cloud_multi.add_attribute("cluster_labels", np.repeat([0, 1, 2, 3, 4], 100))
 
     # Classify clusters 2, 3, 4 as "Pole"
     selected_cluster_ids_multi = {2, 3, 4}
     class_name_multi = "Pole"
 
     multi_clusters = plugin.create_or_update_clusters(
-        point_cloud_multi.cluster_labels,
+        point_cloud_multi.get_attribute("cluster_labels"),
         selected_cluster_ids_multi,
         class_name_multi,
         existing_clusters=None
@@ -170,7 +171,7 @@ def test_classify_cluster_plugin():
     assert named_colors.dtype == np.float32, "Colors should be float32"
 
     # Check that cluster 0 points have Building color
-    cluster_0_mask = point_cloud.cluster_labels == 0
+    cluster_0_mask = point_cloud.get_attribute("cluster_labels") == 0
     building_color = reclassified_clusters.cluster_colors["Building"]
     np.testing.assert_array_almost_equal(
         named_colors[cluster_0_mask][0],

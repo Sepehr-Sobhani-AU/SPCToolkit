@@ -111,7 +111,8 @@ class ClassifyClusterPlugin(ActionPlugin):
             return
 
         # Check if point cloud has cluster labels
-        if not hasattr(point_cloud, 'cluster_labels') or point_cloud.cluster_labels is None:
+        cluster_labels = point_cloud.get_attribute("cluster_labels")
+        if cluster_labels is None:
             QMessageBox.warning(
                 main_window,
                 "No Cluster Labels",
@@ -140,8 +141,8 @@ class ClassifyClusterPlugin(ActionPlugin):
         # Find which clusters contain the selected points
         selected_cluster_ids = set()
         for idx in selected_indices:
-            if idx < len(point_cloud.cluster_labels):
-                cluster_id = point_cloud.cluster_labels[idx]
+            if idx < len(cluster_labels):
+                cluster_id = cluster_labels[idx]
                 # Ignore noise points (cluster_id == -1)
                 if cluster_id != -1:
                     selected_cluster_ids.add(cluster_id)
@@ -168,7 +169,7 @@ class ClassifyClusterPlugin(ActionPlugin):
 
         # Create or update Clusters with names
         clusters = self.create_or_update_clusters(
-            point_cloud.cluster_labels,
+            cluster_labels,
             selected_cluster_ids,
             class_name,
             existing_clusters

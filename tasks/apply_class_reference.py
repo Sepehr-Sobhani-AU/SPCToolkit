@@ -12,7 +12,7 @@ class ApplyClassReference:
     """
     Task for filtering a point cloud by semantic class.
 
-    This task takes a PointCloud instance (which should have cluster_ids
+    This task takes a PointCloud instance (which should have cluster_labels
     from a parent Clusters node with names) and a ClassReference, and creates a
     filtered point cloud showing only points of that class.
     """
@@ -22,7 +22,7 @@ class ApplyClassReference:
         Initialize the task.
 
         Args:
-            point_cloud (PointCloud): The point cloud to filter (must have cluster_ids attribute)
+            point_cloud (PointCloud): The point cloud to filter (must have cluster_labels attribute)
             class_reference (ClassReference): The class reference for filtering
         """
         self.point_cloud = point_cloud
@@ -36,24 +36,24 @@ class ApplyClassReference:
             PointCloud: A new point cloud containing only points of the specified class
 
         Raises:
-            ValueError: If point cloud doesn't have cluster_ids attribute
+            ValueError: If point cloud doesn't have cluster_labels attribute
         """
         # Check if point cloud has required attribute
         if not hasattr(self.point_cloud, 'get_attribute'):
             raise ValueError(
-                "PointCloud must have cluster_ids attribute. "
+                "PointCloud must have cluster_labels attribute. "
                 "Ensure the parent is a Clusters node with names."
             )
 
         # Try new attribute name first, then fall back to old name for compatibility
-        cluster_ids = self.point_cloud.get_attribute("cluster_ids")
-        if cluster_ids is None:
+        cluster_labels = self.point_cloud.get_attribute("cluster_labels")
+        if cluster_labels is None:
             # Backward compatibility: try old attribute name
-            cluster_ids = self.point_cloud.get_attribute("feature_class_ids")
+            cluster_labels = self.point_cloud.get_attribute("feature_class_ids")
 
-        if cluster_ids is None:
+        if cluster_labels is None:
             raise ValueError(
-                "PointCloud must have cluster_ids attribute. "
+                "PointCloud must have cluster_labels attribute. "
                 "Ensure the parent is a Clusters node with names."
             )
 
@@ -62,10 +62,10 @@ class ApplyClassReference:
         # Otherwise fall back to single class_id (for old FeatureClasses compatibility)
         if hasattr(self.class_reference, 'cluster_ids') and self.class_reference.cluster_ids:
             # Filter by all cluster_ids that belong to this class
-            class_mask = np.isin(cluster_ids, self.class_reference.cluster_ids)
+            class_mask = np.isin(cluster_labels, self.class_reference.cluster_ids)
         else:
             # Fall back to single class_id
-            class_mask = (cluster_ids == self.class_reference.class_id)
+            class_mask = (cluster_labels == self.class_reference.class_id)
 
         # Get subset of points
         filtered_point_cloud = self.point_cloud.get_subset(class_mask)

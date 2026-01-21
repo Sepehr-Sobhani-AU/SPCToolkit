@@ -91,7 +91,6 @@ class PointCloud:
         if normals is not None:
             logger.debug(f"  Normals shape: {normals.shape}, memory: {normals.nbytes / 1024 / 1024:.2f} MB")
 
-        self.cluster_labels = []
         self.prediction = ''
         self.probability = 0
         self.model_weight = ''
@@ -536,12 +535,11 @@ class PointCloud:
 
         self._obb_calculated = False  # Invalidate OBB cache (points changed)
 
-    def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False, use_sklearn=False, use_gpu='auto'):
+    def dbscan(self, eps=0.05, min_points=10, return_clusters_object=False):
         """
         Apply DBSCAN clustering to the points in the cluster.
 
-        Uses the backend registry to automatically select the best available backend
-        (cuML GPU, scikit-learn CPU, or Open3D CPU) based on system hardware.
+        Uses sklearn DBSCAN with ball_tree algorithm for O(n log n) performance.
 
         Parameters:
         - eps (float): The maximum distance between two samples for one to be considered
@@ -550,9 +548,6 @@ class PointCloud:
                             as a core point. Default is 10.
         - return_clusters_object (bool): If True, returns a Clusters object containing the DBSCAN result.
                                          Default is False.
-        - use_sklearn (bool): Deprecated - backend is now selected automatically.
-        - use_gpu (str or bool): Deprecated - backend is now selected automatically based on
-                                 hardware detection at startup.
 
         Returns:
         - labels (np.ndarray) or (np.ndarray, Clusters): An array of cluster labels, and optionally a Clusters object.
@@ -571,10 +566,7 @@ class PointCloud:
             labels = dbscan_backend.run(self.points, eps, min_points)
         else:
             # Fallback if registry not initialized (e.g., during testing)
-            labels = self._dbscan_fallback(eps, min_points, use_gpu)
-
-        # Store the DBSCAN labels
-        self.cluster_labels = labels
+            labels = self._dbscan_fallback(eps, min_points)
 
         if return_clusters_object:
             from core.clusters import Clusters
@@ -584,57 +576,27 @@ class PointCloud:
         else:
             return labels
 
-    def _dbscan_fallback(self, eps, min_points, use_gpu='auto'):
+    def _dbscan_fallback(self, eps, min_points):
         """
         Fallback DBSCAN implementation when backend registry is not available.
 
+        Uses sklearn with ball_tree algorithm for O(n log n) performance.
         This is used during testing or if the registry is not initialized.
         """
         import time
         start_time = time.time()
 
-        # Try GPU acceleration with cuML first (if enabled)
-        if use_gpu == True or use_gpu == 'auto':
-            try:
-                from cuml.cluster import DBSCAN as cumlDBSCAN
-                import cupy as cp
-                import cuml
-
-                print(f"Using GPU-accelerated cuML DBSCAN (version {cuml.__version__})")
-                print(f"Processing {len(self.points):,} points with eps={eps}, min_samples={min_points}")
-
-                points_gpu = cp.asarray(self.points, dtype=cp.float32)
-                db = cumlDBSCAN(eps=eps, min_samples=min_points)
-                labels_gpu = db.fit_predict(points_gpu)
-
-                # Convert dtype on GPU before transfer (more efficient than CPU conversion)
-                labels_gpu_int32 = labels_gpu.astype(cp.int32)
-                labels = cp.asnumpy(labels_gpu_int32)
-
-                # Clean up GPU memory
-                del points_gpu, labels_gpu, labels_gpu_int32
-                cp.get_default_memory_pool().free_all_blocks()
-
-                self._print_dbscan_results(labels, start_time, "cuML GPU")
-                return labels
-
-            except ImportError as e:
-                if use_gpu == True:
-                    raise ImportError(f"GPU DBSCAN requested but cuML not available: {e}")
-                # Auto mode: silently fall back to CPU
-
-        # CPU implementations
         try:
             from sklearn.cluster import DBSCAN
             import sklearn
 
-            print(f"Using scikit-learn DBSCAN (version {sklearn.__version__})")
+            print(f"Using scikit-learn DBSCAN with ball_tree (version {sklearn.__version__})")
             print(f"Processing {len(self.points):,} points with eps={eps}, min_samples={min_points}")
 
-            db = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1)
+            db = DBSCAN(eps=eps, min_samples=min_points, algorithm='ball_tree', n_jobs=-1)
             labels = db.fit_predict(self.points)
 
-            self._print_dbscan_results(labels, start_time, "scikit-learn CPU")
+            self._print_dbscan_results(labels, start_time, "scikit-learn ball_tree")
             return labels
 
         except ImportError:
@@ -840,7 +802,6 @@ class PointCloud:
             if inplace:
                 self.points = np.array([])
                 self.parent = 0
-                self.cluster_labels = []
                 self.prediction = ''
                 self.probability = 0
                 self.model_weight = ''
@@ -974,7 +935,6 @@ class PointCloud:
         subset.uuid = self.uuid
         subset.parent_uuid = self.parent_uuid
         subset.child_uuid = self.child_uuid
-        subset.cluster_labels = self.cluster_labels.copy() if isinstance(self.cluster_labels, list) else self.cluster_labels
         subset.prediction = self.prediction
         subset.probability = self.probability
         subset.model_weight = self.model_weight

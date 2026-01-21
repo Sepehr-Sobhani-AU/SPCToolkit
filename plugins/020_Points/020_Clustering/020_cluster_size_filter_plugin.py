@@ -124,25 +124,27 @@ class ClusterSizeFilterPlugin(Plugin):
             # Print debug information
             print(f"[ClusterSizeFilter] DataNode data_type: {data_node.data_type}")
             print(f"[ClusterSizeFilter] DataNode data class: {point_cloud.__class__.__name__}")
-            print(f"[ClusterSizeFilter] Has cluster_labels: {hasattr(point_cloud, 'cluster_labels')}")
 
             # Validate cluster labels
-            if not hasattr(point_cloud, 'cluster_labels'):
+            cluster_labels = point_cloud.get_attribute("cluster_labels")
+            print(f"[ClusterSizeFilter] Has cluster_labels: {cluster_labels is not None}")
+
+            if cluster_labels is None:
                 print("[ClusterSizeFilter] ERROR: The point cloud does not have cluster labels.")
                 return self._create_fallback_mask(point_cloud), "masks", [data_node.uid]
 
-            if not hasattr(point_cloud.cluster_labels, '__len__'):
+            if not hasattr(cluster_labels, '__len__'):
                 print("[ClusterSizeFilter] ERROR: Cluster labels attribute is not a collection.")
                 return self._create_fallback_mask(point_cloud), "masks", [data_node.uid]
 
-            if len(point_cloud.cluster_labels) == 0:
+            if len(cluster_labels) == 0:
                 print("[ClusterSizeFilter] ERROR: Cluster labels array is empty.")
                 return self._create_fallback_mask(point_cloud), "masks", [data_node.uid]
 
             # Main processing block
             try:
                 # Get the cluster labels
-                labels = point_cloud.cluster_labels
+                labels = cluster_labels
 
                 # Count the number of points in each cluster
                 unique_labels, point_counts = np.unique(labels, return_counts=True)

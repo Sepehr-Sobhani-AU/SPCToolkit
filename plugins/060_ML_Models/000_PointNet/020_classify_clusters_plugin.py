@@ -210,7 +210,8 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             point_cloud = data_manager.reconstruct_branch(selected_uid)
 
             # Check if point cloud has cluster labels
-            if not hasattr(point_cloud, 'cluster_labels') or point_cloud.cluster_labels is None:
+            cluster_labels = point_cloud.get_attribute("cluster_labels")
+            if cluster_labels is None:
                 raise ValueError(
                     "The selected branch has no cluster labels.\n\n"
                     "Please:\n"
@@ -234,8 +235,8 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                 # Find which clusters contain the selected points
                 selected_cluster_ids = set()
                 for idx in selected_indices:
-                    if idx < len(point_cloud.cluster_labels):
-                        cluster_id = point_cloud.cluster_labels[idx]
+                    if idx < len(cluster_labels):
+                        cluster_id = cluster_labels[idx]
                         # Ignore noise points (cluster_id == -1)
                         if cluster_id != -1:
                             selected_cluster_ids.add(cluster_id)
@@ -251,7 +252,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
             else:  # All Clusters
                 # Get all unique cluster IDs (excluding noise)
-                unique_clusters = np.unique(point_cloud.cluster_labels)
+                unique_clusters = np.unique(cluster_labels)
                 clusters_to_classify = [int(cid) for cid in unique_clusters if cid != -1]
                 print(f"\nProcessing mode: All clusters")
                 print(f"Total clusters: {len(clusters_to_classify)}")
@@ -329,7 +330,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
             # Create Clusters object with cluster_names
             clusters = Clusters(
-                labels=point_cloud.cluster_labels.copy(),
+                labels=cluster_labels.copy(),
                 cluster_names=cluster_names,
                 cluster_colors=cluster_colors
             )

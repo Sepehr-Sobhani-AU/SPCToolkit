@@ -66,21 +66,22 @@ class SeparateSelectedClustersPlugin(Plugin):
         selected_indices = viewer_widget.picked_points_indices
 
         # Check if the point cloud has cluster labels
-        if not hasattr(point_cloud, 'cluster_labels') or point_cloud.cluster_labels is None:
+        cluster_labels = point_cloud.get_attribute("cluster_labels")
+        if cluster_labels is None:
             raise ValueError("Point cloud has no cluster labels. Clustering must be performed first.")
 
         # Get unique cluster IDs of the selected points
         selected_cluster_ids = set()
         for idx in selected_indices:
-            if idx < len(point_cloud.cluster_labels):
-                selected_cluster_ids.add(point_cloud.cluster_labels[idx])
+            if idx < len(cluster_labels):
+                selected_cluster_ids.add(cluster_labels[idx])
 
         # Create a boolean mask where True indicates a point in a selected cluster
         total_points = point_cloud.size
         cluster_mask = np.zeros(total_points, dtype=bool)
 
         for i in range(total_points):
-            if point_cloud.cluster_labels[i] in selected_cluster_ids:
+            if cluster_labels[i] in selected_cluster_ids:
                 cluster_mask[i] = True
 
         # Create a Masks object with the result

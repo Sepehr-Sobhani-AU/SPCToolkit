@@ -36,12 +36,13 @@ def test_extract_cluster_data():
     points = np.random.rand(1000, 3).astype(np.float32) * 10  # Random points
     point_cloud = PointCloud(points=points)
 
-    # Add cluster labels
-    point_cloud.cluster_labels = np.zeros(1000, dtype=int)
-    point_cloud.cluster_labels[:500] = 0  # First cluster
-    point_cloud.cluster_labels[500:] = 1  # Second cluster
+    # Add cluster labels as attribute
+    cluster_labels = np.zeros(1000, dtype=int)
+    cluster_labels[:500] = 0  # First cluster
+    cluster_labels[500:] = 1  # Second cluster
+    point_cloud.add_attribute("cluster_labels", cluster_labels)
 
-    cluster_mask = point_cloud.cluster_labels == 0
+    cluster_mask = point_cloud.get_attribute("cluster_labels") == 0
     max_points = 10000
 
     try:
@@ -64,9 +65,9 @@ def test_extract_cluster_data():
     print("\n[TEST 2] No eigenvalues/normals required")
     points_simple = np.random.rand(100, 3).astype(np.float32)
     point_cloud_simple = PointCloud(points=points_simple)  # No normals, no eigenvalues
-    point_cloud_simple.cluster_labels = np.zeros(100, dtype=int)
+    point_cloud_simple.add_attribute("cluster_labels", np.zeros(100, dtype=int))
 
-    cluster_mask_simple = point_cloud_simple.cluster_labels == 0
+    cluster_mask_simple = point_cloud_simple.get_attribute("cluster_labels") == 0
 
     try:
         cluster_data_simple, _ = plugin.extract_cluster_data(
@@ -82,9 +83,9 @@ def test_extract_cluster_data():
     print("\n[TEST 3] Subsampling large clusters")
     large_points = np.random.rand(5000, 3).astype(np.float32)
     point_cloud_large = PointCloud(points=large_points)
-    point_cloud_large.cluster_labels = np.zeros(5000, dtype=int)
+    point_cloud_large.add_attribute("cluster_labels", np.zeros(5000, dtype=int))
 
-    cluster_mask_large = point_cloud_large.cluster_labels == 0
+    cluster_mask_large = point_cloud_large.get_attribute("cluster_labels") == 0
     max_points_limit = 2000
 
     try:
@@ -109,9 +110,9 @@ def test_extract_cluster_data():
         [7.0, 8.0, 9.0]
     ], dtype=np.float32)
     point_cloud_known = PointCloud(points=known_points)
-    point_cloud_known.cluster_labels = np.zeros(3, dtype=int)
+    point_cloud_known.add_attribute("cluster_labels", np.zeros(3, dtype=int))
 
-    cluster_mask_known = point_cloud_known.cluster_labels == 0
+    cluster_mask_known = point_cloud_known.get_attribute("cluster_labels") == 0
 
     try:
         cluster_data_known, _ = plugin.extract_cluster_data(
