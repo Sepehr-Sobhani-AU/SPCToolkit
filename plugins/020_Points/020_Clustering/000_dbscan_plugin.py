@@ -70,13 +70,6 @@ class DBSCANPlugin(Plugin):
                 "max": 1000000,
                 "label": "Target Batch Size",
                 "description": "Target number of points per batch for processing (smaller values use less memory)"
-            },
-            "use_gpu": {
-                "type": "choice",
-                "options": ["Auto", "Force GPU", "CPU Only"],
-                "default": "Auto",
-                "label": "GPU Acceleration",
-                "description": "Auto: Use GPU if cuML available, Force GPU: Require GPU, CPU Only: Disable GPU"
             }
         }
 
@@ -106,16 +99,7 @@ class DBSCANPlugin(Plugin):
         points = point_cloud.points
         eps = params["eps"]
         min_samples = params["min_samples"]
-        target_batch_size = params.get("target_batch_size", 25000)
-
-        # Convert GPU mode string to parameter value
-        gpu_mode = params.get("use_gpu", "Auto")
-        if gpu_mode == "Force GPU":
-            use_gpu = True
-        elif gpu_mode == "CPU Only":
-            use_gpu = False
-        else:  # "Auto"
-            use_gpu = 'auto'
+        target_batch_size = params.get("target_batch_size", 250000)
 
         # Fixed batch overlap at 10% - this is a programmer decision, not exposed to users
         BATCH_OVERLAP = 0.1
@@ -129,7 +113,6 @@ class DBSCANPlugin(Plugin):
         print(f"  Total points:     {len(points):,}")
         print(f"  Parameters:       eps={eps}, min_samples={min_samples}")
         print(f"  Batch size:       {target_batch_size:,}")
-        print(f"  GPU mode:         {gpu_mode}")
         print(f"{'='*60}\n")
 
         # Define progress callback for reporting progress
@@ -143,8 +126,8 @@ class DBSCANPlugin(Plugin):
             """Wrapper for DBSCAN to use with batch processor"""
             # Create a temporary point cloud for this batch
             batch_pc = PointCloud(points=batch_points)
-            # Run DBSCAN on the batch with GPU acceleration if enabled
-            return batch_pc.dbscan(eps=eps, min_points=min_points, use_gpu=use_gpu)
+            # Run DBSCAN on the batch (backend registry auto-selects GPU/CPU)
+            return batch_pc.dbscan(eps=eps, min_points=min_points)
 
         # Create a batch processor with appropriate spatial grid settings
         batch_processor = BatchProcessor(
