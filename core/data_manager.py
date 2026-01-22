@@ -511,6 +511,10 @@ class DataManager(QObject):
                 return len(node.data.labels)
             elif hasattr(node.data, 'points'):
                 return len(node.data.points)
+        # For nodes without size info (class_reference, container), return conservative estimate
+        # The actual count will be determined during reconstruction; buffer will resize if needed
+        if node.data_type in ("class_reference", "container"):
+            return 100000  # Conservative estimate - buffer will resize if needed
         return 0
 
     def render_visible_with_lod(self, sample_rate: float = None):
@@ -683,6 +687,15 @@ class DataManager(QObject):
                     offset += n_to_add
                 else:
                     # Full resolution - fill vertex array directly
+                    # Safety: resize buffer if needed (class_reference nodes may have 0 estimate)
+                    if offset + n > len(vertices):
+                        new_size = int((offset + n) * 1.2) + 100000
+                        logger.warning(f"    Resizing vertex buffer: {len(vertices):,} -> {new_size:,}")
+                        new_vertices = np.empty((new_size, 6), dtype=np.float32)
+                        new_vertices[:offset] = vertices[:offset]
+                        vertices = new_vertices
+                        del new_vertices
+
                     vertices[offset:offset + n, :3] = point_cloud.points
                     if point_cloud.colors is not None:
                         vertices[offset:offset + n, 3:] = point_cloud.colors
