@@ -136,9 +136,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # Get all dynamic stats from single source (one pynvml call)
             stats = HardwareDetector.get_dynamic_stats()
 
-            # Debug: print to console to verify updates
-            print(f"[StatusBar] RAM: {stats['ram_percent']:.0f}%, VRAM: {stats['vram_used_mb']}MB/{stats['vram_total_mb']}MB")
-
             # Calculate free memory from stats
             ram_free_gb = stats['ram_total_gb'] - stats['ram_used_gb']
             gpu_free_mb = stats['vram_total_mb'] - stats['vram_used_mb']
