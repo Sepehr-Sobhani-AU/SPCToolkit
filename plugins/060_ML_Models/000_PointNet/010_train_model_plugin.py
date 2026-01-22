@@ -322,7 +322,7 @@ class TrainPointNetPlugin(ActionPlugin):
                 train_indices, val_indices = train_test_split(
                     np.arange(num_samples),
                     test_size=val_split,
-                    random_state=42,
+                    random_state=random_seed,
                     stratify=labels
                 )
 
