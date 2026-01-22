@@ -376,15 +376,24 @@ class PointCloud:
             # Determine attribute shape and dtype from first cloud that has it
             attr_shape = ()
             attr_dtype = np.float32
+            is_array_attr = False
             for pc in point_clouds:
                 if hasattr(pc, 'attributes') and attr_name in pc.attributes:
                     sample = pc.attributes[attr_name]
+                    # Skip non-array attributes (like _cluster_names, _cluster_colors dicts)
+                    if not isinstance(sample, np.ndarray):
+                        break
+                    is_array_attr = True
                     if sample.ndim == 1:
                         attr_shape = ()  # Scalar per point
                     else:
                         attr_shape = sample.shape[1:]  # Shape after first dim
                     attr_dtype = sample.dtype
                     break
+
+            # Skip non-array attributes
+            if not is_array_attr:
+                continue
 
             # Pre-allocate merged array
             output_shape = (total_points,) + attr_shape
