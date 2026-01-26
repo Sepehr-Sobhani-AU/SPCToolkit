@@ -714,7 +714,7 @@ class DataManager(QObject):
         self.viewer_widget.update()
 
         if zoom_extent:
-            self.viewer_widget.zoom_to_extent()
+            self.viewer_widget.zoom_to_extent(preserve_rotation=True)
 
         logger.debug("_render_visible_data() completed")
     # def on_branch_deleted(self, uids: list[str]):

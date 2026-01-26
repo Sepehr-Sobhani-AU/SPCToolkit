@@ -15,6 +15,8 @@ import traceback
 import gc
 import numpy as np
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtCore import QSettings
+import pykitti
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
@@ -149,17 +151,24 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         logger.info("SemanticKITTI Import Started")
         logger.info(f"Parameters: {params}")
 
+        # Load last used directory from settings
+        settings = QSettings("SPCToolkit", "SemanticKITTI")
+        last_dir = settings.value("last_directory", "")
+
         # Multi-file selection dialog
         file_paths, _ = QFileDialog.getOpenFileNames(
             main_window,
             "Select SemanticKITTI .bin Files",
-            "",
+            last_dir,
             "SemanticKITTI Files (*.bin);;All Files (*)"
         )
 
         if not file_paths:
             logger.info("No files selected, aborting import")
             return
+
+        # Save the directory for next time
+        settings.setValue("last_directory", os.path.dirname(file_paths[0]))
 
         # Sort files to maintain order (000000.bin, 000001.bin, etc.)
         file_paths = sorted(file_paths)
@@ -193,6 +202,25 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         label_path = os.path.join(parent_dir, 'labels', filename)
         return label_path if os.path.exists(label_path) else None
 
+    def _get_sequence_info(self, bin_path: str) -> Tuple[str, str]:
+        """
+        Extract base directory and sequence number from a .bin file path.
+
+        Args:
+            bin_path: Path like .../dataset/sequences/00/velodyne/000000.bin
+
+        Returns:
+            Tuple of (base_dir, sequence) e.g., ('.../dataset', '00')
+            Note: base_dir is the directory CONTAINING the 'sequences' folder
+        """
+        # Path structure: basedir/sequences/XX/velodyne/NNNNNN.bin
+        velodyne_dir = os.path.dirname(bin_path)  # .../dataset/sequences/00/velodyne
+        sequence_dir = os.path.dirname(velodyne_dir)  # .../dataset/sequences/00
+        sequences_dir = os.path.dirname(sequence_dir)  # .../dataset/sequences
+        basedir = os.path.dirname(sequences_dir)  # .../dataset (parent of sequences)
+        sequence = os.path.basename(sequence_dir)  # '00'
+        return basedir, sequence
+
     def _get_poses_path(self, bin_path: str) -> Optional[str]:
         """
         Get poses.txt path for a sequence folder.
@@ -208,64 +236,11 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         poses_path = os.path.join(parent_dir, 'poses.txt')
         return poses_path if os.path.exists(poses_path) else None
 
-    def _get_calib_path(self, bin_path: str) -> Optional[str]:
-        """
-        Get calib.txt path for a sequence folder.
-
-        Args:
-            bin_path: Path to any .bin file in the sequence
-
-        Returns:
-            Path to calib.txt if it exists, None otherwise
-        """
-        dir_path = os.path.dirname(bin_path)
-        parent_dir = os.path.dirname(dir_path)
-        calib_path = os.path.join(parent_dir, 'calib.txt')
-        return calib_path if os.path.exists(calib_path) else None
-
-    def _load_calib(self, calib_path: str) -> Optional[np.ndarray]:
-        """
-        Load calibration matrix (Tr: velodyne to camera) from calib.txt.
-
-        Args:
-            calib_path: Path to calib.txt
-
-        Returns:
-            4x4 transformation matrix from velodyne to camera, or None if not found
-        """
-        try:
-            with open(calib_path, 'r') as f:
-                for line in f:
-                    if line.startswith('Tr:'):
-                        values = [float(x) for x in line.split()[1:]]
-                        if len(values) == 12:
-                            Tr = np.eye(4)
-                            Tr[:3, :4] = np.array(values).reshape(3, 4)
-                            return Tr
-        except:
-            pass
-        return None
-
-    def _load_labels(self, label_path: str) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Load .label file and extract semantic labels and instance IDs.
-
-        Args:
-            label_path: Path to .label file
-
-        Returns:
-            Tuple of (semantic_labels, instance_ids)
-        """
-        labels = np.fromfile(label_path, dtype=np.uint32)
-        semantic = labels & 0xFFFF  # Lower 16 bits
-        instance = labels >> 16     # Upper 16 bits
-        return semantic, instance
-
     def _load_poses(self, poses_path: str) -> List[np.ndarray]:
         """
         Load poses.txt and return list of 4x4 transformation matrices.
 
-        KITTI poses represent camera-to-world transformations.
+        KITTI poses represent camera-to-world transformations (T_w_cam0).
 
         Args:
             poses_path: Path to poses.txt
@@ -282,6 +257,21 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     T[:3, :4] = np.array(values).reshape(3, 4)
                     poses.append(T)
         return poses
+
+    def _load_labels(self, label_path: str) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load .label file and extract semantic labels and instance IDs.
+
+        Args:
+            label_path: Path to .label file
+
+        Returns:
+            Tuple of (semantic_labels, instance_ids)
+        """
+        labels = np.fromfile(label_path, dtype=np.uint32)
+        semantic = labels & 0xFFFF  # Lower 16 bits
+        instance = labels >> 16     # Upper 16 bits
+        return semantic, instance
 
     def _apply_pose(self, points: np.ndarray, pose: np.ndarray) -> np.ndarray:
         """
@@ -343,40 +333,52 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
         # Load poses and calibration if needed
         poses = None
-        Tr_velo_to_cam = None
+        T_cam0_velo = None
         trajectory_min_bound = None
+
         if apply_poses:
-            poses_path = self._get_poses_path(file_paths[0])
-            if poses_path:
-                logger.info(f"Loading poses from: {poses_path}")
+            try:
+                # Load calibration using pykitti (handles calib.txt parsing correctly)
+                basedir, sequence = self._get_sequence_info(file_paths[0])
+                logger.info(f"Loading pykitti calibration: basedir={basedir}, sequence={sequence}")
+                pykitti_dataset = pykitti.odometry(basedir, sequence)
+                T_cam0_velo = pykitti_dataset.calib.T_cam0_velo
+                logger.info(f"Loaded calibration T_cam0_velo")
+
+                # Load poses manually from sequence folder (pykitti expects different location)
+                poses_path = self._get_poses_path(file_paths[0])
+                if not poses_path:
+                    raise FileNotFoundError("poses.txt not found in sequence folder")
                 poses = self._load_poses(poses_path)
-                logger.info(f"Loaded {len(poses)} poses")
+                logger.info(f"Loaded {len(poses)} poses from {poses_path}")
 
-                # Load calibration (velodyne to camera transform)
-                calib_path = self._get_calib_path(file_paths[0])
-                if calib_path:
-                    Tr_velo_to_cam = self._load_calib(calib_path)
-                    logger.info("Loaded calibration matrix")
+                # Compute T_w_velo for each pose (velodyne to world)
+                # T_w_velo = T_w_cam0 @ T_cam0_velo
+                poses_velo = [pose @ T_cam0_velo for pose in poses]
 
-                # Calculate consistent origin from trajectory (in KITTI coords)
-                scanner_positions = np.array([pose[:3, 3] for pose in poses])
-                trajectory_min_bound_kitti = scanner_positions.min(axis=0)
+                # Calculate trajectory min bound from velodyne-world positions
+                # After T_w_velo, points are in world coords but with velodyne-like axes
+                # Extract velodyne sensor positions in world
+                velo_positions = np.array([pose[:3, 3] for pose in poses_velo])
 
-                # Convert to viewer coordinates: [X, Y, Z] -> [X, Z, -Y]
+                # World coords after T_w_velo maintain velodyne axes: X forward, Y left, Z up
+                # Convert to viewer coords (X forward, Y up, Z right):
                 trajectory_min_bound = np.array([
-                    trajectory_min_bound_kitti[0],   # X unchanged
-                    trajectory_min_bound_kitti[2],   # Y = Z_old
-                    -trajectory_min_bound_kitti[1]   # Z = -Y_old
+                    velo_positions[:, 0].min(),      # Viewer X = World X (forward)
+                    velo_positions[:, 2].min(),      # Viewer Y = World Z (up)
+                    -velo_positions[:, 1].max()      # Viewer Z = -World Y (right = -left)
                 ])
                 logger.info(f"Trajectory min bound: {trajectory_min_bound}")
-            else:
-                logger.warning("poses.txt not found")
+
+            except Exception as e:
+                logger.warning(f"Failed to load poses/calibration: {e}")
                 QMessageBox.warning(
                     main_window,
                     "Poses Not Found",
-                    "poses.txt not found. Importing without pose transformation."
+                    f"Could not load poses: {e}\nImporting without pose transformation."
                 )
                 apply_poses = False
+                poses = None
 
         success_count = 0
         failed_files = []
@@ -424,27 +426,24 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     logger.debug(f"  Subsample: {pre_subsample_count} -> {len(points)} points ({100*subsample_ratio:.1f}%)")
 
                 # Apply pose if requested
-                if apply_poses and poses:
+                if apply_poses and poses is not None:
                     frame_num = self._extract_frame_number(os.path.basename(file_path))
                     if frame_num < len(poses):
                         logger.debug(f"  Applying pose transformation for frame {frame_num}")
-                        # Compose calibration with pose: world = pose @ Tr @ velodyne
-                        if Tr_velo_to_cam is not None:
-                            T_combined = poses[frame_num] @ Tr_velo_to_cam
-                        else:
-                            T_combined = poses[frame_num]
-                        points = self._apply_pose(points, T_combined)
+                        # T_w_velo = T_w_cam0 @ T_cam0_velo
+                        # Result is in world coords with velodyne-like axes (X forward, Y left, Z up)
+                        pose = poses[frame_num]
+                        T_w_velo = pose @ T_cam0_velo
+                        points = self._apply_pose(points, T_w_velo)
 
-                # Convert KITTI coordinate system (X forward, Y left, Z up)
-                # to viewer coordinate system (X forward, Y up, Z right)
-                # Rotation: 90 degrees around X axis (counter-clockwise)
-                # New: [X, Y, Z] = [X_old, Z_old, -Y_old]
-                # Create new array to avoid in-place modification issues
+                # Convert coordinate system to viewer coordinates
+                # Both posed and non-posed points are now in velodyne-like coords (X forward, Y left, Z up)
+                # Convert to viewer coords (X forward, Y up, Z right)
                 logger.debug(f"  Converting coordinate system...")
                 points_converted = np.column_stack([
-                    points[:, 0],   # X unchanged
-                    points[:, 2],   # Y = Z_old
-                    -points[:, 1]   # Z = -Y_old
+                    points[:, 0],    # Viewer X = Velo X (forward)
+                    points[:, 2],    # Viewer Y = Velo Z (up)
+                    -points[:, 1]    # Viewer Z = -Velo Y (right = -left)
                 ])
 
                 # Translate to origin for float32 precision
@@ -547,38 +546,40 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         logger.info(f"  load_labels: {load_labels}")
         logger.info(f"  subsample_ratio: {subsample_ratio}")
 
-        # Load poses (mandatory for merge)
-        poses_path = self._get_poses_path(file_paths[0])
-        if not poses_path:
-            QMessageBox.critical(
-                main_window,
-                "Poses Required",
-                "poses.txt not found. Merged import requires poses for alignment."
-            )
+        # Load poses and calibration (mandatory for merge)
+        try:
+            # Load calibration using pykitti (handles calib.txt parsing correctly)
+            basedir, sequence = self._get_sequence_info(file_paths[0])
+            logger.info(f"Loading pykitti calibration: basedir={basedir}, sequence={sequence}")
+            pykitti_dataset = pykitti.odometry(basedir, sequence)
+            T_cam0_velo = pykitti_dataset.calib.T_cam0_velo
+            logger.info(f"  Loaded calibration T_cam0_velo")
+
+            # Load poses manually from sequence folder (pykitti expects different location)
+            poses_path = self._get_poses_path(file_paths[0])
+            if not poses_path:
+                raise FileNotFoundError("poses.txt not found in sequence folder")
+            poses = self._load_poses(poses_path)
+            logger.info(f"  Loaded {len(poses)} poses from {poses_path}")
+
+            # Compute T_w_velo for each pose (velodyne to world)
+            # T_w_velo = T_w_cam0 @ T_cam0_velo
+            # After this, world coords have velodyne-like axes (X forward, Y left, Z up)
+            poses_velo = [pose @ T_cam0_velo for pose in poses]
+
+            # Calculate trajectory min bound from velodyne-world positions
+            velo_positions = np.array([pose[:3, 3] for pose in poses_velo])
+
+            # Convert to viewer coords (X forward, Y up, Z right):
+            trajectory_min_bound = np.array([
+                velo_positions[:, 0].min(),      # Viewer X = World X (forward)
+                velo_positions[:, 2].min(),      # Viewer Y = World Z (up)
+                -velo_positions[:, 1].max()      # Viewer Z = -World Y (right = -left)
+            ])
+            logger.info(f"  Trajectory min bound: {trajectory_min_bound}")
+        except Exception as e:
+            QMessageBox.critical(main_window, "Error", f"Failed to load poses/calibration: {e}")
             return
-
-        poses = self._load_poses(poses_path)
-        logger.info(f"  Loaded {len(poses)} poses")
-
-        # Load calibration (velodyne to camera transform)
-        Tr_velo_to_cam = None
-        calib_path = self._get_calib_path(file_paths[0])
-        if calib_path:
-            Tr_velo_to_cam = self._load_calib(calib_path)
-            logger.info("  Loaded calibration matrix")
-
-        # Calculate consistent origin from trajectory (scanner positions)
-        scanner_positions = np.array([pose[:3, 3] for pose in poses])
-        trajectory_min_bound_kitti = scanner_positions.min(axis=0)
-
-        # Convert trajectory_min_bound from KITTI to viewer coordinates
-        # KITTI: X forward, Y left, Z up -> Viewer: X forward, Y up, Z right
-        trajectory_min_bound = np.array([
-            trajectory_min_bound_kitti[0],   # X unchanged
-            trajectory_min_bound_kitti[2],   # Y = Z_old
-            -trajectory_min_bound_kitti[1]   # Z = -Y_old
-        ])
-        logger.info(f"  Trajectory min bound: {trajectory_min_bound}")
 
         # ================================================================
         # PASS 1: Calculate exact point count from file sizes (no I/O)
@@ -656,15 +657,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 if frame_num >= len(poses):
                     raise ValueError(f"No pose available for frame {frame_num}")
 
-                # Compose calibration with pose: world = pose @ Tr @ velodyne
-                if Tr_velo_to_cam is not None:
-                    T_combined = poses[frame_num] @ Tr_velo_to_cam
-                else:
-                    T_combined = poses[frame_num]
-                points_world = self._apply_pose(points, T_combined)
+                # T_w_velo = T_w_cam0 @ T_cam0_velo
+                # Result is in world coords with velodyne-like axes (X forward, Y left, Z up)
+                T_w_velo = poses_velo[frame_num]
+                points_world = self._apply_pose(points, T_w_velo)
 
-                # Convert coordinate system and write directly to pre-allocated arrays
-                # KITTI: [X forward, Y left, Z up] -> Viewer: [X forward, Y up, Z right]
+                # Convert velodyne-like world coords to viewer coords
+                # Viewer X = World X (forward), Viewer Y = World Z (up), Viewer Z = -World Y (right)
                 n = len(points_world)
                 points_final[offset:offset + n, 0] = (points_world[:, 0] - trajectory_min_bound[0]).astype(np.float32)
                 points_final[offset:offset + n, 1] = (points_world[:, 2] - trajectory_min_bound[1]).astype(np.float32)
