@@ -2,9 +2,9 @@
 """
 Cluster by Class Action Plugin.
 
-For pre-classified point clouds (e.g., SemanticKITTI), runs DBSCAN clustering
-on each semantic class separately and produces a single Clusters node with
-cluster_names mapping each cluster ID to its original class name.
+For pre-classified point clouds (e.g., SemanticKITTI), runs DBSCAN or HDBSCAN
+clustering on each semantic class separately and produces a single Clusters node
+with cluster_names mapping each cluster ID to its original class name.
 """
 
 from typing import Dict, Any
@@ -20,20 +20,106 @@ from config.config import global_variables
 from PyQt5.QtWidgets import QMessageBox
 
 
+def run_clustering_direct(points: np.ndarray, algorithm: str, eps: float, min_samples: int,
+                          min_cluster_size: int) -> np.ndarray:
+    """
+    Run clustering using the specified algorithm (without batching).
+
+    Args:
+        points: Point cloud array (n, 3)
+        algorithm: "DBSCAN" or "HDBSCAN"
+        eps: Epsilon for DBSCAN
+        min_samples: Minimum samples for both algorithms
+        min_cluster_size: Minimum cluster size (clusters smaller than this become noise)
+
+    Returns:
+        Cluster labels array
+    """
+    if algorithm == "HDBSCAN":
+        try:
+            from cuml.cluster import HDBSCAN as cumlHDBSCAN
+            import cupy as cp
+
+            cp.get_default_memory_pool().free_all_blocks()
+            points_gpu = cp.asarray(points, dtype=cp.float32)
+
+            hdb = cumlHDBSCAN(
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples,
+                cluster_selection_method='eom'
+            )
+            labels_gpu = hdb.fit_predict(points_gpu)
+            labels = cp.asnumpy(labels_gpu)
+
+            del points_gpu, labels_gpu
+            cp.get_default_memory_pool().free_all_blocks()
+
+            return labels
+
+        except ImportError:
+            # Fallback to CPU hdbscan if cuML not available
+            try:
+                from hdbscan import HDBSCAN
+
+                hdb = HDBSCAN(
+                    min_cluster_size=min_cluster_size,
+                    min_samples=min_samples,
+                    cluster_selection_method='eom',
+                    core_dist_n_jobs=-1
+                )
+                return hdb.fit_predict(points)
+            except ImportError:
+                raise ImportError("Neither cuML nor hdbscan package available for HDBSCAN")
+
+    else:  # DBSCAN
+        pc = PointCloud(points=points)
+        labels = pc.dbscan(eps=eps, min_points=min_samples)
+
+        # Apply min_cluster_size filter - mark small clusters as noise
+        labels = filter_small_clusters(labels, min_cluster_size)
+
+        return labels
+
+
+def filter_small_clusters(labels: np.ndarray, min_cluster_size: int) -> np.ndarray:
+    """
+    Filter out clusters smaller than min_cluster_size by marking them as noise (-1).
+
+    Args:
+        labels: Cluster labels array
+        min_cluster_size: Minimum cluster size
+
+    Returns:
+        Filtered labels array with small clusters marked as noise
+    """
+    if min_cluster_size <= 1:
+        return labels
+
+    # Count points per cluster
+    unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
+
+    # Find clusters that are too small
+    small_clusters = unique_labels[counts < min_cluster_size]
+
+    if len(small_clusters) > 0:
+        # Create mask for points in small clusters
+        small_mask = np.isin(labels, small_clusters)
+        # Mark them as noise
+        labels = labels.copy()
+        labels[small_mask] = -1
+
+    return labels
+
+
 class ClusterByClassPlugin(ActionPlugin):
     """
     Cluster by Class Action Plugin.
 
     Takes any branch derived from a Clusters node with semantic names
     (e.g., from SemanticKITTI import, or a filtered Masks branch from one),
-    runs DBSCAN clustering separately on each class, and produces a single
-    Clusters node with globally unique cluster IDs and cluster_names mapping
-    each cluster to its original semantic class name.
-
-    Works on:
-    - Clusters nodes directly
-    - Masks nodes that are children of Clusters nodes (filtered branches)
-    - Any branch where the reconstructed PointCloud has cluster metadata attributes
+    runs DBSCAN or HDBSCAN clustering separately on each class, and produces
+    a single Clusters node with globally unique cluster IDs and cluster_names
+    mapping each cluster to its original semantic class name.
     """
 
     def get_name(self) -> str:
@@ -43,13 +129,20 @@ class ClusterByClassPlugin(ActionPlugin):
     def get_parameters(self) -> Dict[str, Any]:
         """Define parameters for clustering."""
         return {
+            "algorithm": {
+                "type": "dropdown",
+                "options": {"DBSCAN": "DBSCAN (requires eps)", "HDBSCAN": "HDBSCAN (auto-detects density)"},
+                "default": "DBSCAN",
+                "label": "Clustering Algorithm",
+                "description": "DBSCAN requires eps parameter, HDBSCAN auto-detects cluster density"
+            },
             "eps": {
                 "type": "float",
                 "default": 0.5,
                 "min": 0.01,
                 "max": 100.0,
-                "label": "Epsilon (Neighborhood Size)",
-                "description": "Maximum distance between points to be considered neighbors"
+                "label": "Epsilon (DBSCAN only)",
+                "description": "Maximum distance between points to be considered neighbors (ignored for HDBSCAN)"
             },
             "min_samples": {
                 "type": "int",
@@ -57,7 +150,15 @@ class ClusterByClassPlugin(ActionPlugin):
                 "min": 1,
                 "max": 1000,
                 "label": "Minimum Samples",
-                "description": "Minimum points required to form a cluster"
+                "description": "Minimum points required to form a dense region"
+            },
+            "min_cluster_size": {
+                "type": "int",
+                "default": 50,
+                "min": 2,
+                "max": 10000,
+                "label": "Min Cluster Size",
+                "description": "Minimum size of clusters (smaller clusters become noise)"
             },
             "target_batch_size": {
                 "type": "int",
@@ -92,7 +193,7 @@ class ClusterByClassPlugin(ActionPlugin):
         else:
             selected_uid_uuid = selected_uid
 
-        # Reconstruct the selected branch (works for any node type: Clusters, Masks, etc.)
+        # Reconstruct the selected branch
         try:
             point_cloud = data_manager.reconstruct_branch(str(selected_uid_uuid))
         except Exception as e:
@@ -104,7 +205,6 @@ class ClusterByClassPlugin(ActionPlugin):
             return
 
         # Get cluster metadata from PointCloud attributes
-        # These are stored by ApplyClusters and preserved through get_subset() operations
         cluster_names = point_cloud.get_attribute("_cluster_names")
         cluster_colors = point_cloud.get_attribute("_cluster_colors")
         cluster_labels = point_cloud.get_attribute("cluster_labels")
@@ -143,18 +243,24 @@ class ClusterByClassPlugin(ActionPlugin):
             return
 
         # Extract parameters
+        algorithm = params.get("algorithm", "DBSCAN")
         eps = params["eps"]
         min_samples = params["min_samples"]
+        min_cluster_size = params.get("min_cluster_size", 50)
         target_batch_size = params.get("target_batch_size", 250000)
 
         import time
         start_time = time.time()
 
         print(f"\n{'='*60}")
-        print(f"Starting Cluster by Class")
+        print(f"Starting Cluster by Class ({algorithm})")
         print(f"{'='*60}")
+        print(f"  Algorithm:        {algorithm}")
         print(f"  Total points:     {len(points):,}")
-        print(f"  Parameters:       eps={eps}, min_samples={min_samples}")
+        if algorithm == "DBSCAN":
+            print(f"  Parameters:       eps={eps}, min_samples={min_samples}, min_cluster_size={min_cluster_size}")
+        else:
+            print(f"  Parameters:       min_cluster_size={min_cluster_size}, min_samples={min_samples}")
         print(f"  Batch size:       {target_batch_size:,}")
         print(f"{'='*60}")
 
@@ -164,13 +270,13 @@ class ClusterByClassPlugin(ActionPlugin):
 
         # Initialize output arrays
         output_cluster_labels = np.full(len(points), -1, dtype=np.int32)
-        output_class_labels = np.full(len(points), -1, dtype=np.int32)  # Preserve original class IDs
+        output_class_labels = np.full(len(points), -1, dtype=np.int32)
         next_cluster_id = 0
 
         # Fixed batch overlap at 10%
         BATCH_OVERLAP = 0.1
 
-        # Process each class with DBSCAN
+        # Process each class with clustering
         print(f"\nClustering each class:")
         for class_id in unique_class_ids:
             # Get class name from mapping
@@ -185,13 +291,13 @@ class ClusterByClassPlugin(ActionPlugin):
             class_points = points[class_mask]
 
             # Skip if too few points
-            if len(class_points) < min_samples:
-                print(f"  - {class_name}: Skipped ({len(class_points)} points < {min_samples} min_samples)")
+            if len(class_points) < min_cluster_size:
+                print(f"  - {class_name}: Skipped ({len(class_points)} points < {min_cluster_size} min_cluster_size)")
                 continue
 
             print(f"  - {class_name}: {len(class_points):,} points...", end=" ", flush=True)
 
-            # Run DBSCAN on this class
+            # Run clustering on this class
             if len(class_points) > target_batch_size:
                 # Use batch processor for large point clouds
                 batch_processor = BatchProcessor(
@@ -200,24 +306,37 @@ class ClusterByClassPlugin(ActionPlugin):
                     overlap_percent=BATCH_OVERLAP
                 )
 
-                def dbscan_func(batch_points, eps, min_points, **kwargs):
-                    """Wrapper for DBSCAN to use with batch processor"""
-                    batch_pc = PointCloud(points=batch_points)
-                    return batch_pc.dbscan(eps=eps, min_points=min_points)
+                if algorithm == "HDBSCAN":
+                    def hdbscan_func(batch_points, min_cluster_size, min_samples, **kwargs):
+                        return run_clustering_direct(
+                            batch_points, "HDBSCAN", 0, min_samples, min_cluster_size
+                        )
 
-                local_labels = batch_processor.cluster_in_batches(
-                    clustering_func=dbscan_func,
-                    min_points=min_samples,
-                    eps=eps
-                )
+                    local_labels = batch_processor.cluster_in_batches(
+                        clustering_func=hdbscan_func,
+                        min_cluster_size=min_cluster_size,
+                        min_samples=min_samples
+                    )
+                else:
+                    def dbscan_func(batch_points, eps, min_points, **kwargs):
+                        batch_pc = PointCloud(points=batch_points)
+                        return batch_pc.dbscan(eps=eps, min_points=min_points)
+
+                    local_labels = batch_processor.cluster_in_batches(
+                        clustering_func=dbscan_func,
+                        min_points=min_samples,
+                        eps=eps
+                    )
+                    # Apply min_cluster_size filter after batching
+                    local_labels = filter_small_clusters(local_labels, min_cluster_size)
             else:
-                # Direct DBSCAN for smaller point clouds
-                class_pc = PointCloud(points=class_points)
-                local_labels = class_pc.dbscan(eps=eps, min_points=min_samples)
+                local_labels = run_clustering_direct(
+                    class_points, algorithm, eps, min_samples, min_cluster_size
+                )
 
             # Map local labels to global cluster IDs
             unique_local_labels = np.unique(local_labels)
-            unique_local_labels = unique_local_labels[unique_local_labels >= 0]  # Exclude -1 (noise)
+            unique_local_labels = unique_local_labels[unique_local_labels >= 0]
 
             # Create mapping from local to global IDs
             local_to_global = {}
@@ -227,10 +346,10 @@ class ClusterByClassPlugin(ActionPlugin):
 
             # Apply global cluster labels AND preserve class labels
             for i, local_label in enumerate(local_labels):
-                if local_label >= 0:  # Not noise
+                if local_label >= 0:
                     global_point_idx = class_point_indices[i]
                     output_cluster_labels[global_point_idx] = local_to_global[local_label]
-                    output_class_labels[global_point_idx] = class_id  # Preserve original class ID
+                    output_class_labels[global_point_idx] = class_id
 
             n_clusters = len(unique_local_labels)
             print(f"Found {n_clusters} clusters")
@@ -240,8 +359,8 @@ class ClusterByClassPlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Clusters Found",
-                "DBSCAN found no clusters for any class.\n"
-                "Try adjusting eps or min_samples parameters."
+                f"{algorithm} found no clusters for any class.\n"
+                "Try adjusting parameters."
             )
             return
 
@@ -249,7 +368,7 @@ class ClusterByClassPlugin(ActionPlugin):
         elapsed_time = time.time() - start_time
 
         print(f"\n{'='*60}")
-        print(f"CLUSTER BY CLASS COMPLETED")
+        print(f"CLUSTER BY CLASS COMPLETED ({algorithm})")
         print(f"{'='*60}")
         print(f"  Total points:      {len(points):,}")
         print(f"  Total instances:   {next_cluster_id}")
@@ -258,25 +377,21 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"  Points/second:     {len(points)/elapsed_time:,.0f}")
         print(f"{'='*60}\n")
 
-        # Build cluster_id -> class_name mapping efficiently using vectorized operations
+        # Build cluster_id -> class_name mapping
         output_cluster_names = {}
 
-        # Filter to non-noise points only
         valid_mask = output_cluster_labels >= 0
         valid_cluster_ids = output_cluster_labels[valid_mask]
         valid_class_ids = output_class_labels[valid_mask]
 
-        # Get unique clusters and the index of their first occurrence (O(n log n) instead of O(n*k))
         unique_cluster_ids, first_indices = np.unique(valid_cluster_ids, return_index=True)
 
-        # Build mapping using first occurrence indices (O(k) loop, no masking)
         for i, cluster_id in enumerate(unique_cluster_ids):
             class_id = valid_class_ids[first_indices[i]]
             class_name = cluster_names.get(int(class_id), f"class_{class_id}")
             output_cluster_names[int(cluster_id)] = class_name
 
-        # Create single Clusters object with cluster_names and cluster_colors
-        # Use cluster_colors from input if available, otherwise empty dict
+        # Create Clusters object
         output_cluster_colors = cluster_colors.copy() if cluster_colors else {}
         clusters = Clusters(
             labels=output_cluster_labels,
@@ -284,13 +399,13 @@ class ClusterByClassPlugin(ActionPlugin):
             cluster_colors=output_cluster_colors
         )
 
-        # Create Clusters DataNode (child of input Clusters)
+        # Create Clusters DataNode
         clusters_node = DataNode(
             data=clusters,
             data_type="cluster_labels",
             parent_uid=selected_uid_uuid,
             depends_on=[selected_uid_uuid],
-            tags=["cluster_by_class"]
+            tags=["cluster_by_class", algorithm.lower()]
         )
 
         # Add Clusters node to tree
@@ -306,6 +421,7 @@ class ClusterByClassPlugin(ActionPlugin):
             main_window,
             "Success",
             f"Clustering complete!\n\n"
+            f"Algorithm: {algorithm}\n"
             f"Created {next_cluster_id} cluster instances across {len(unique_class_ids)} classes.\n\n"
             f"Processing time: {elapsed_time:.2f} seconds\n"
             f"Processing speed: {len(points)/elapsed_time:,.0f} points/sec\n\n"

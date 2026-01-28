@@ -3,8 +3,8 @@
 Cluster by Value Action Plugin.
 
 For point clouds with numeric attributes (e.g., intensity, classification),
-runs DBSCAN clustering on each unique value separately and produces a single
-Clusters node with cluster_names mapping each cluster ID to its source value.
+runs DBSCAN or HDBSCAN clustering on each unique value separately and produces
+a single Clusters node with cluster_names mapping each cluster ID to its source value.
 """
 
 from typing import Dict, Any
@@ -20,12 +20,103 @@ from config.config import global_variables
 from PyQt5.QtWidgets import QMessageBox
 
 
+def run_clustering_direct(points: np.ndarray, algorithm: str, eps: float, min_samples: int,
+                          min_cluster_size: int) -> np.ndarray:
+    """
+    Run clustering using the specified algorithm (without batching).
+
+    Args:
+        points: Point cloud array (n, 3)
+        algorithm: "DBSCAN" or "HDBSCAN"
+        eps: Epsilon for DBSCAN
+        min_samples: Minimum samples for both algorithms
+        min_cluster_size: Minimum cluster size (clusters smaller than this become noise)
+
+    Returns:
+        Cluster labels array
+    """
+    if algorithm == "HDBSCAN":
+        try:
+            from cuml.cluster import HDBSCAN as cumlHDBSCAN
+            import cupy as cp
+
+            cp.get_default_memory_pool().free_all_blocks()
+            points_gpu = cp.asarray(points, dtype=cp.float32)
+
+            hdb = cumlHDBSCAN(
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples,
+                cluster_selection_method='eom'
+            )
+            labels_gpu = hdb.fit_predict(points_gpu)
+            labels = cp.asnumpy(labels_gpu)
+
+            del points_gpu, labels_gpu
+            cp.get_default_memory_pool().free_all_blocks()
+
+            return labels
+
+        except ImportError:
+            # Fallback to CPU hdbscan if cuML not available
+            try:
+                from hdbscan import HDBSCAN
+
+                hdb = HDBSCAN(
+                    min_cluster_size=min_cluster_size,
+                    min_samples=min_samples,
+                    cluster_selection_method='eom',
+                    core_dist_n_jobs=-1
+                )
+                return hdb.fit_predict(points)
+            except ImportError:
+                raise ImportError("Neither cuML nor hdbscan package available for HDBSCAN")
+
+    else:  # DBSCAN
+        pc = PointCloud(points=points)
+        labels = pc.dbscan(eps=eps, min_points=min_samples)
+
+        # Apply min_cluster_size filter - mark small clusters as noise
+        labels = filter_small_clusters(labels, min_cluster_size)
+
+        return labels
+
+
+def filter_small_clusters(labels: np.ndarray, min_cluster_size: int) -> np.ndarray:
+    """
+    Filter out clusters smaller than min_cluster_size by marking them as noise (-1).
+
+    Args:
+        labels: Cluster labels array
+        min_cluster_size: Minimum cluster size
+
+    Returns:
+        Filtered labels array with small clusters marked as noise
+    """
+    if min_cluster_size <= 1:
+        return labels
+
+    # Count points per cluster
+    unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
+
+    # Find clusters that are too small
+    small_clusters = unique_labels[counts < min_cluster_size]
+
+    if len(small_clusters) > 0:
+        # Create mask for points in small clusters
+        small_mask = np.isin(labels, small_clusters)
+        # Mark them as noise
+        labels = labels.copy()
+        labels[small_mask] = -1
+
+    return labels
+
+
 class ClusterByValuePlugin(ActionPlugin):
     """
     Cluster by Value Action Plugin.
 
     Takes a PointCloud node with numeric attributes,
-    runs DBSCAN clustering separately on each unique value, and produces
+    runs DBSCAN or HDBSCAN clustering separately on each unique value, and produces
     a single Clusters node with globally unique cluster IDs and cluster_names
     mapping each cluster to its source attribute value.
     """
@@ -47,13 +138,20 @@ class ClusterByValuePlugin(ActionPlugin):
                 "label": "Attribute to Cluster By",
                 "description": "Select the attribute whose unique values will define separate clustering groups"
             },
+            "algorithm": {
+                "type": "dropdown",
+                "options": {"DBSCAN": "DBSCAN (requires eps)", "HDBSCAN": "HDBSCAN (auto-detects density)"},
+                "default": "DBSCAN",
+                "label": "Clustering Algorithm",
+                "description": "DBSCAN requires eps parameter, HDBSCAN auto-detects cluster density"
+            },
             "eps": {
                 "type": "float",
                 "default": 0.5,
                 "min": 0.01,
                 "max": 100.0,
-                "label": "Epsilon (Neighborhood Size)",
-                "description": "Maximum distance between points to be considered neighbors"
+                "label": "Epsilon (DBSCAN only)",
+                "description": "Maximum distance between points to be considered neighbors (ignored for HDBSCAN)"
             },
             "min_samples": {
                 "type": "int",
@@ -61,7 +159,15 @@ class ClusterByValuePlugin(ActionPlugin):
                 "min": 1,
                 "max": 1000,
                 "label": "Minimum Samples",
-                "description": "Minimum points required to form a cluster"
+                "description": "Minimum points required to form a dense region"
+            },
+            "min_cluster_size": {
+                "type": "int",
+                "default": 50,
+                "min": 2,
+                "max": 10000,
+                "label": "Min Cluster Size",
+                "description": "Minimum size of clusters (smaller clusters become noise)"
             },
             "target_batch_size": {
                 "type": "int",
@@ -76,9 +182,6 @@ class ClusterByValuePlugin(ActionPlugin):
     def _get_available_attributes(self) -> Dict[str, str]:
         """
         Get available categorical attributes from the selected point cloud.
-
-        Includes both numeric (integer) and string attributes that have
-        a reasonable number of unique values for clustering.
 
         Returns:
             Dict mapping attribute keys to display names
@@ -100,31 +203,25 @@ class ClusterByValuePlugin(ActionPlugin):
             if selected_node.data_type == "point_cloud":
                 point_cloud = selected_node.data
             else:
-                # Try to reconstruct to get attributes
                 point_cloud = data_manager.reconstruct_branch(str(selected_uid))
 
             # Collect available attributes
             attribute_options = {}
 
-            # Check the attributes dictionary
             if hasattr(point_cloud, 'attributes') and point_cloud.attributes:
                 for attr_name, attr_values in point_cloud.attributes.items():
                     if isinstance(attr_values, np.ndarray):
                         unique_count = len(np.unique(attr_values))
 
-                        # Include integer attributes
                         if np.issubdtype(attr_values.dtype, np.integer):
                             attribute_options[attr_name] = f"{attr_name} ({unique_count} unique values)"
-                        # Include string/object attributes (e.g., "Car", "Tree")
-                        elif attr_values.dtype.kind in ('U', 'S', 'O'):  # Unicode, byte string, or object
+                        elif attr_values.dtype.kind in ('U', 'S', 'O'):
                             attribute_options[attr_name] = f"{attr_name} ({unique_count} unique values)"
-                        # Include float attributes with small number of unique values (likely categorical)
                         elif np.issubdtype(attr_values.dtype, np.floating) and unique_count <= 256:
                             attribute_options[attr_name] = f"{attr_name} ({unique_count} unique values)"
-                    # Handle list of strings or other sequences
                     elif isinstance(attr_values, (list, tuple)) and len(attr_values) > 0:
                         unique_count = len(set(attr_values))
-                        if unique_count <= 1000:  # Reasonable limit for categorical
+                        if unique_count <= 1000:
                             attribute_options[attr_name] = f"{attr_name} ({unique_count} unique values)"
 
             return attribute_options
@@ -204,19 +301,25 @@ class ClusterByValuePlugin(ActionPlugin):
             return
 
         # Extract parameters
+        algorithm = params.get("algorithm", "DBSCAN")
         eps = params["eps"]
         min_samples = params["min_samples"]
+        min_cluster_size = params.get("min_cluster_size", 50)
         target_batch_size = params.get("target_batch_size", 250000)
 
         import time
         start_time = time.time()
 
         print(f"\n{'='*60}")
-        print(f"Starting Cluster by Value")
+        print(f"Starting Cluster by Value ({algorithm})")
         print(f"{'='*60}")
+        print(f"  Algorithm:        {algorithm}")
         print(f"  Attribute:        {attribute_name}")
         print(f"  Total points:     {len(points):,}")
-        print(f"  Parameters:       eps={eps}, min_samples={min_samples}")
+        if algorithm == "DBSCAN":
+            print(f"  Parameters:       eps={eps}, min_samples={min_samples}, min_cluster_size={min_cluster_size}")
+        else:
+            print(f"  Parameters:       min_cluster_size={min_cluster_size}, min_samples={min_samples}")
         print(f"  Batch size:       {target_batch_size:,}")
         print(f"{'='*60}")
 
@@ -229,7 +332,7 @@ class ClusterByValuePlugin(ActionPlugin):
         output_value_labels = np.full(len(points), -1, dtype=np.int32)
         next_cluster_id = 0
 
-        # Create value-to-id mapping and name mapping for Clusters
+        # Create value-to-id mapping and name mapping
         value_to_class_id = {}
         value_names = {}
         cluster_colors = {}
@@ -246,23 +349,19 @@ class ClusterByValuePlugin(ActionPlugin):
 
         for i, value in enumerate(unique_values):
             value_to_class_id[value] = i
-            # Format value nicely for display
-            # For string attributes, use the value directly (e.g., "Car", "Tree")
-            # For numeric attributes, show "attribute=value"
             if is_string_attr:
                 value_names[i] = str(value)
             elif isinstance(value, (np.floating, float)):
                 value_names[i] = f"{attribute_name}={value:.2f}"
             else:
                 value_names[i] = f"{attribute_name}={value}"
-            # Generate a color for this value
             np.random.seed(int(hash(str(value))) % (2**31))
             cluster_colors[value_names[i]] = np.random.rand(3).astype(np.float32)
 
         # Fixed batch overlap at 10%
         BATCH_OVERLAP = 0.1
 
-        # Process each unique value with DBSCAN
+        # Process each unique value with clustering
         print(f"\nClustering each value:")
         for value in unique_values:
             class_id = value_to_class_id[value]
@@ -274,13 +373,13 @@ class ClusterByValuePlugin(ActionPlugin):
             value_points = points[value_mask]
 
             # Skip if too few points
-            if len(value_points) < min_samples:
-                print(f"  - {class_name}: Skipped ({len(value_points)} points < {min_samples} min_samples)")
+            if len(value_points) < min_cluster_size:
+                print(f"  - {class_name}: Skipped ({len(value_points)} points < {min_cluster_size} min_cluster_size)")
                 continue
 
             print(f"  - {class_name}: {len(value_points):,} points...", end=" ", flush=True)
 
-            # Run DBSCAN on this value group
+            # Run clustering on this value group
             if len(value_points) > target_batch_size:
                 # Use batch processor for large point clouds
                 batch_processor = BatchProcessor(
@@ -289,24 +388,37 @@ class ClusterByValuePlugin(ActionPlugin):
                     overlap_percent=BATCH_OVERLAP
                 )
 
-                def dbscan_func(batch_points, eps, min_points, **kwargs):
-                    """Wrapper for DBSCAN to use with batch processor"""
-                    batch_pc = PointCloud(points=batch_points)
-                    return batch_pc.dbscan(eps=eps, min_points=min_points)
+                if algorithm == "HDBSCAN":
+                    def hdbscan_func(batch_points, min_cluster_size, min_samples, **kwargs):
+                        return run_clustering_direct(
+                            batch_points, "HDBSCAN", 0, min_samples, min_cluster_size
+                        )
 
-                local_labels = batch_processor.cluster_in_batches(
-                    clustering_func=dbscan_func,
-                    min_points=min_samples,
-                    eps=eps
-                )
+                    local_labels = batch_processor.cluster_in_batches(
+                        clustering_func=hdbscan_func,
+                        min_cluster_size=min_cluster_size,
+                        min_samples=min_samples
+                    )
+                else:
+                    def dbscan_func(batch_points, eps, min_points, **kwargs):
+                        batch_pc = PointCloud(points=batch_points)
+                        return batch_pc.dbscan(eps=eps, min_points=min_points)
+
+                    local_labels = batch_processor.cluster_in_batches(
+                        clustering_func=dbscan_func,
+                        min_points=min_samples,
+                        eps=eps
+                    )
+                    # Apply min_cluster_size filter after batching
+                    local_labels = filter_small_clusters(local_labels, min_cluster_size)
             else:
-                # Direct DBSCAN for smaller point clouds
-                value_pc = PointCloud(points=value_points)
-                local_labels = value_pc.dbscan(eps=eps, min_points=min_samples)
+                local_labels = run_clustering_direct(
+                    value_points, algorithm, eps, min_samples, min_cluster_size
+                )
 
             # Map local labels to global cluster IDs
             unique_local_labels = np.unique(local_labels)
-            unique_local_labels = unique_local_labels[unique_local_labels >= 0]  # Exclude -1 (noise)
+            unique_local_labels = unique_local_labels[unique_local_labels >= 0]
 
             # Create mapping from local to global IDs
             local_to_global = {}
@@ -316,7 +428,7 @@ class ClusterByValuePlugin(ActionPlugin):
 
             # Apply global cluster labels AND preserve value labels
             for i, local_label in enumerate(local_labels):
-                if local_label >= 0:  # Not noise
+                if local_label >= 0:
                     global_point_idx = value_point_indices[i]
                     output_cluster_labels[global_point_idx] = local_to_global[local_label]
                     output_value_labels[global_point_idx] = class_id
@@ -329,8 +441,8 @@ class ClusterByValuePlugin(ActionPlugin):
             QMessageBox.warning(
                 main_window,
                 "No Clusters Found",
-                "DBSCAN found no clusters for any value.\n"
-                "Try adjusting eps or min_samples parameters."
+                f"{algorithm} found no clusters for any value.\n"
+                "Try adjusting parameters."
             )
             return
 
@@ -338,7 +450,7 @@ class ClusterByValuePlugin(ActionPlugin):
         elapsed_time = time.time() - start_time
 
         print(f"\n{'='*60}")
-        print(f"CLUSTER BY VALUE COMPLETED")
+        print(f"CLUSTER BY VALUE COMPLETED ({algorithm})")
         print(f"{'='*60}")
         print(f"  Attribute:         {attribute_name}")
         print(f"  Total points:      {len(points):,}")
@@ -348,37 +460,34 @@ class ClusterByValuePlugin(ActionPlugin):
         print(f"  Points/second:     {len(points)/elapsed_time:,.0f}")
         print(f"{'='*60}\n")
 
-        # Build cluster_id -> value_name mapping efficiently using vectorized operations
+        # Build cluster_id -> value_name mapping
         cluster_names = {}
 
-        # Filter to non-noise points only
         valid_mask = output_cluster_labels >= 0
         valid_cluster_ids = output_cluster_labels[valid_mask]
         valid_value_ids = output_value_labels[valid_mask]
 
-        # Get unique clusters and the index of their first occurrence (O(n log n) instead of O(n*k))
         unique_cluster_ids, first_indices = np.unique(valid_cluster_ids, return_index=True)
 
-        # Build mapping using first occurrence indices (O(k) loop, no masking)
         for i, cluster_id in enumerate(unique_cluster_ids):
             value_class_id = valid_value_ids[first_indices[i]]
             value_name = value_names.get(int(value_class_id), f"value_{value_class_id}")
             cluster_names[int(cluster_id)] = value_name
 
-        # Create single Clusters object with cluster_names and cluster_colors
+        # Create Clusters object
         clusters = Clusters(
             labels=output_cluster_labels,
             cluster_names=cluster_names,
             cluster_colors=cluster_colors
         )
 
-        # Create Clusters DataNode (child of selected node)
+        # Create Clusters DataNode
         clusters_node = DataNode(
             data=clusters,
             data_type="cluster_labels",
             parent_uid=selected_uid_uuid,
             depends_on=[selected_uid_uuid],
-            tags=["cluster_by_value", attribute_name]
+            tags=["cluster_by_value", attribute_name, algorithm.lower()]
         )
 
         # Add Clusters node to tree
@@ -394,6 +503,7 @@ class ClusterByValuePlugin(ActionPlugin):
             main_window,
             "Success",
             f"Clustering complete!\n\n"
+            f"Algorithm: {algorithm}\n"
             f"Attribute: {attribute_name}\n"
             f"Created {next_cluster_id} cluster instances across {len(unique_values)} unique values.\n\n"
             f"Processing time: {elapsed_time:.2f} seconds\n"
