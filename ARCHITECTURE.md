@@ -1,741 +1,558 @@
-# SPCToolkit Architecture Overview
+# SPCToolkit Architecture
 
-This document provides a high-level overview of the SPCToolkit architecture for developers and maintainers.
+This document describes the core framework architecture of SPCToolkit. It covers the main components, their relationships, and data flows.
+
+> **Note:** Diagrams use [Mermaid](https://mermaid.js.org/) syntax. View in GitHub, VS Code with Mermaid extension, or [mermaid.live](https://mermaid.live).
 
 ---
 
 ## Table of Contents
 
-1. [System Overview](#1-system-overview)
-2. [Directory Structure](#2-directory-structure)
-3. [Core Data Model](#3-core-data-model)
-4. [Component Relationships](#4-component-relationships)
-5. [Data Flow Diagrams](#5-data-flow-diagrams)
-6. [Plugin System](#6-plugin-system)
-7. [Services Layer](#7-services-layer)
-8. [GUI Architecture](#8-gui-architecture)
-9. [Threading Model](#9-threading-model)
-10. [Key Design Decisions](#10-key-design-decisions)
+1. [High-Level Overview](#1-high-level-overview)
+2. [Initialization Sequence](#2-initialization-sequence)
+3. [Data Flow: Loading a Point Cloud](#3-data-flow-loading-a-point-cloud)
+4. [Data Flow: Running an Analysis](#4-data-flow-running-an-analysis)
+5. [Data Flow: Visibility & Reconstruction](#5-data-flow-visibility--reconstruction)
+6. [Component Relationships](#6-component-relationships)
+7. [Plugin Integration](#7-plugin-integration)
+8. [Quick Reference](#8-quick-reference)
 
 ---
 
-## 1. System Overview
+## 1. High-Level Overview
 
-SPCToolkit is a PyQt5-based point cloud processing application with these key characteristics:
+The system is organized into layers: UI, Core Framework, Services, Data, and Plugins.
 
-- **Plugin-based architecture** for extensibility
-- **Tree-based hierarchical data management** for organizing point cloud derivatives
-- **On-demand reconstruction** for memory efficiency
-- **Hardware-aware backend selection** for GPU/CPU optimization
-- **Singleton communication pattern** (avoids Qt custom signals)
+```mermaid
+flowchart TB
+    subgraph UI["User Interface Layer"]
+        MW[MainWindow]
+        TW[TreeStructureWidget]
+        PV[PCDViewerWidget]
+        DB[DialogBoxesManager]
+    end
 
-### High-Level Architecture
+    subgraph Core["Core Framework Layer"]
+        DM[DataManager]
+        DN[DataNodes]
+        NRM[NodeReconstructionManager]
+        ATM[AnalysisThreadManager]
+    end
 
+    subgraph Services["Services Layer"]
+        FM[FileManager]
+        PM[PluginManager]
+        AM[AnalysisManager]
+    end
+
+    subgraph Data["Data Layer"]
+        PC[PointCloud]
+        Node[DataNode]
+        Clusters
+        Masks
+        Values
+    end
+
+    subgraph Plugins["Plugin Layer"]
+        AP[AnalysisPlugins]
+        ActP[ActionPlugins]
+    end
+
+    GV[global_variables\nSingleton Access]
+
+    MW --> TW
+    MW --> PV
+    MW --> DB
+    MW --> DM
+
+    DM --> DN
+    DM --> NRM
+    DM --> ATM
+    DM --> FM
+    DM --> PM
+
+    DN --> Node
+    Node --> PC
+    Node --> Clusters
+    Node --> Masks
+    Node --> Values
+
+    PM --> AP
+    PM --> ActP
+
+    GV -.->|provides access to| DM
+    GV -.->|provides access to| TW
+    GV -.->|provides access to| PV
+    GV -.->|provides access to| FM
+    GV -.->|provides access to| MW
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           MainWindow                                 │
-├─────────────┬─────────────────────────────────┬─────────────────────┤
-│ TreeWidget  │         PCDViewerWidget         │    MenuBar          │
-│  (Left)     │      (Center - OpenGL)          │  (from Plugins)     │
-└──────┬──────┴────────────────┬────────────────┴──────────┬──────────┘
-       │                       │                           │
-       ▼                       ▼                           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                          DataManager                                  │
-│  (Central Coordinator - manages data, visibility, reconstruction)     │
-└───────┬──────────────┬────────────────┬────────────────┬─────────────┘
-        │              │                │                │
-        ▼              ▼                ▼                ▼
-   ┌─────────┐   ┌──────────┐   ┌─────────────┐   ┌─────────────────┐
-   │DataNodes│   │FileManager│  │AnalysisThread│  │NodeReconstruction│
-   │         │   │          │   │  Manager     │   │    Manager       │
-   └────┬────┘   └──────────┘   └──────┬──────┘   └────────┬────────┘
-        │                              │                   │
-        ▼                              ▼                   ▼
-   ┌─────────┐                  ┌─────────────┐      ┌──────────┐
-   │DataNode │                  │  Plugins    │      │  Tasks   │
-   │(PointCloud,               │(DBSCAN, etc)│      │(Apply*)  │
-   │ Clusters,                 └─────────────┘      └──────────┘
-   │ Masks...)│
-   └──────────┘
+
+### Layer Responsibilities
+
+| Layer | Purpose | Key Files |
+|-------|---------|-----------|
+| **UI** | User interaction, visualization | `gui/main_window.py`, `gui/widgets/*` |
+| **Core** | Data coordination, threading | `core/data_manager.py`, `core/data_node.py` |
+| **Services** | File I/O, plugin discovery | `services/file_manager.py`, `plugins/plugin_manager.py` |
+| **Data** | Data structures | `core/point_cloud.py`, `core/clusters.py`, `core/masks.py` |
+| **Plugins** | Extensible functionality | `plugins/*/` |
+
+---
+
+## 2. Initialization Sequence
+
+The application initializes components in a specific order to ensure dependencies are ready.
+
+```mermaid
+sequenceDiagram
+    participant M as main.py
+    participant MW as MainWindow
+    participant GV as global_variables
+
+    M->>M: Configure logging
+    M->>GV: Set global_hardware_info
+    M->>GV: Set global_backend_registry
+    M->>M: Create PluginManager
+
+    M->>MW: Create MainWindow(plugin_manager)
+
+    activate MW
+    MW->>GV: global_file_manager = FileManager()
+    MW->>GV: global_tree_structure_widget = TreeStructureWidget()
+    MW->>GV: global_pcd_viewer_widget = PCDViewerWidget()
+    MW->>MW: Create DialogBoxesManager
+    MW->>GV: global_data_manager = DataManager(...)
+    MW->>GV: global_main_window = self
+    MW->>GV: global_analysis_thread_manager = AnalysisThreadManager()
+    MW->>MW: setup_ui()
+    MW->>MW: populate_menus_from_plugins()
+    deactivate MW
+
+    M->>MW: show()
+    M->>M: app.exec_()
+```
+
+### Global Variables Assignment Locations
+
+| Variable | Assigned In | Line |
+|----------|-------------|------|
+| `global_file_manager` | `gui/main_window.py` | ~39 |
+| `global_tree_structure_widget` | `gui/main_window.py` | ~43 |
+| `global_pcd_viewer_widget` | `gui/main_window.py` | ~46 |
+| `global_data_manager` | `gui/main_window.py` | ~56 |
+| `global_main_window` | `gui/main_window.py` | ~59 |
+| `global_analysis_thread_manager` | `gui/main_window.py` | ~63 |
+| `global_data_nodes` | `core/data_manager.py` | ~56 |
+| `global_hardware_info` | `main.py` | ~69 |
+| `global_backend_registry` | `main.py` | ~77 |
+
+---
+
+## 3. Data Flow: Loading a Point Cloud
+
+When a user opens a file, the data flows through FileManager to DataManager to the UI.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MW as MainWindow
+    participant FM as FileManager
+    participant DM as DataManager
+    participant DN as DataNodes
+    participant TW as TreeWidget
+    participant PV as Viewer
+
+    User->>MW: File > Open
+    MW->>FM: open_point_cloud_file()
+    FM->>FM: Qt File Dialog
+    FM->>FM: o3d.io.read_point_cloud()
+    FM->>FM: Create PointCloud object
+
+    FM-->>DM: SIGNAL: point_cloud_loaded(path, pc)
+
+    activate DM
+    DM->>DM: Create DataNode(data=pc)
+    DM->>DN: add_node(data_node)
+    DN-->>DM: return uid
+    DM->>TW: add_branch(uid, name, is_root=True)
+    DM->>DM: Calculate memory size
+    DM->>TW: update_cache_tooltip(uid, size)
+    deactivate DM
+```
+
+### Key Points
+
+- **FileManager** handles file dialogs and Open3D I/O
+- **DataNode** wraps the PointCloud with metadata (uid, parent, dependencies)
+- **DataNodes** is the collection manager (UUID -> DataNode mapping)
+- **TreeWidget** displays the hierarchical structure
+
+---
+
+## 4. Data Flow: Running an Analysis
+
+Analysis plugins run in a background thread to keep the UI responsive.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MW as MainWindow
+    participant DB as DialogBoxesManager
+    participant DM as DataManager
+    participant ATM as AnalysisThreadManager
+    participant Thread as BackgroundThread
+    participant Plugin
+
+    User->>MW: Click Analysis Menu Item
+    MW->>DB: open_dialog_box(plugin_name)
+    DB->>DB: Create DynamicDialog
+    User->>DB: Enter params, click OK
+
+    DB-->>DM: SIGNAL: analysis_params(name, params)
+
+    activate DM
+    DM->>MW: disable_menus(), disable_tree()
+    DM->>MW: show_processing_overlay()
+    DM->>ATM: start_analysis(plugin, node, params)
+    DM->>DM: Start QTimer polling (100ms)
+    deactivate DM
+
+    activate Thread
+    ATM->>Thread: Start background thread
+    Thread->>Thread: Reconstruct if needed
+    Thread->>Plugin: execute(data_node, params)
+    Plugin-->>Thread: return (result, type, deps)
+    Thread->>ATM: Mark completed (set flag)
+    deactivate Thread
+
+    Note over DM: QTimer polls every 100ms
+
+    DM->>ATM: check_completion()
+    ATM-->>DM: Completed! Call handle_result()
+
+    activate DM
+    DM->>DM: Create result DataNode
+    DM->>DN: add_node(result_node)
+    DM->>TW: add_branch(uid, parent, name)
+    DM->>TW: Update visibility
+    DM->>MW: enable_menus(), enable_tree()
+    DM->>MW: hide_processing_overlay()
+    deactivate DM
+```
+
+### Threading Model
+
+- **Thread Type:** Python `threading.Thread` (NOT QThread)
+- **Communication:** Flag polling via QTimer (100ms), NOT callbacks
+- **Thread Safety:** Plugins only READ data, return NEW objects
+- **No Deep Copy:** Memory efficient - relies on read-only access
+
+---
+
+## 5. Data Flow: Visibility & Reconstruction
+
+When a user toggles visibility, derived data (masks, clusters) must be reconstructed to PointCloud for rendering.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant TW as TreeWidget
+    participant DM as DataManager
+    participant NRM as NodeReconstructionManager
+    participant PV as Viewer
+
+    User->>TW: Toggle checkbox
+    TW->>TW: Update visibility_status dict
+
+    TW-->>DM: SIGNAL: branch_visibility_changed(status)
+
+    activate DM
+    DM->>DM: disable UI, show overlay
+
+    loop For each visible UID
+        DM->>DM: Get DataNode
+        alt Node has cached PointCloud
+            DM->>DM: Use cached (fast path)
+        else Need reconstruction
+            DM->>NRM: reconstruct_branch(uid)
+            NRM->>NRM: Find root or cached ancestor
+            NRM->>NRM: Apply task chain
+            NRM-->>DM: return PointCloud
+            DM->>DM: Cache result on node
+        end
+        DM->>DM: Apply LOD if needed
+    end
+
+    DM->>PV: set_point_vertices(combined)
+    DM->>PV: update()
+    DM->>DM: enable UI, hide overlay
+    deactivate DM
+```
+
+### Reconstruction Process
+
+1. **Check Cache:** If node has `cached_point_cloud`, use it immediately
+2. **Find Ancestor:** Walk up tree looking for cached ancestor or root PointCloud
+3. **Apply Tasks:** Use `NodeReconstructionManager.tasks_registry` to apply transformations
+4. **Cache Result:** Store reconstructed PointCloud on node for future use
+
+### Task Registry
+
+| Data Type | Task Class | Transformation |
+|-----------|------------|----------------|
+| `masks` | ApplyMasks | Filter points (subset) |
+| `cluster_labels` | ApplyClusters | Apply cluster/semantic colors |
+| `eigenvalues` | ApplyEigenvalues | Color by eigenvalues |
+| `values` | ApplyValues | Color by scalar values |
+| `colors` | ApplyColors | Apply RGB colors |
+| `dist_to_ground` | ApplyDistToGround | Color by height |
+| `class_reference` | ApplyClassReference | Filter by semantic class |
+
+---
+
+## 6. Component Relationships
+
+Static class diagram showing the main components and their relationships.
+
+```mermaid
+classDiagram
+    class GlobalVariables {
+        +global_main_window
+        +global_data_manager
+        +global_file_manager
+        +global_tree_structure_widget
+        +global_pcd_viewer_widget
+        +global_data_nodes
+        +global_analysis_thread_manager
+    }
+
+    class MainWindow {
+        +plugin_manager
+        +file_manager
+        +tree_widget
+        +pcd_viewer_widget
+        +dialog_boxes_manager
+        +data_manager
+        +setup_ui()
+        +open_dialog_box()
+        +disable_menus()
+        +enable_menus()
+    }
+
+    class DataManager {
+        +data_nodes: DataNodes
+        +analysis_manager
+        +node_reconstruction_manager
+        +selected_branches: List
+        +apply_analysis()
+        +reconstruct_branch()
+        +handle_analysis_result()
+    }
+
+    class DataNodes {
+        +data_nodes: Dict~UUID,DataNode~
+        +add_node()
+        +get_node()
+        +remove_node()
+    }
+
+    class DataNode {
+        +uid: UUID
+        +data: Any
+        +data_type: str
+        +parent_uid: UUID
+        +depends_on: List
+        +cached_point_cloud
+        +is_cached: bool
+        +memory_size: int
+    }
+
+    class PointCloud {
+        +points: ndarray
+        +colors: ndarray
+        +normals: ndarray
+        +attributes: Dict
+        +dbscan()
+        +get_subset()
+        +calculate_eigenvalues()
+    }
+
+    GlobalVariables --> MainWindow
+    GlobalVariables --> DataManager
+    MainWindow --> DataManager
+    DataManager --> DataNodes
+    DataNodes --> DataNode
+    DataNode --> PointCloud
+```
+
+### Data Type Hierarchy
+
+```mermaid
+flowchart TB
+    DN[DataNode\nwrapper]
+    DN --> PC[PointCloud\nprimary data]
+    DN --> CL[Clusters\nlabels + names]
+    DN --> MA[Masks\nboolean array]
+    DN --> EV[Eigenvalues\nn,3 array]
+    DN --> VA[Values\nscalars]
+    DN --> CO[Colors\nRGB]
+    DN --> DG[DistToGround\nheights]
+    DN --> CR[ClassReference\nclass filter]
 ```
 
 ---
 
-## 2. Directory Structure
+## 7. Plugin Integration
 
-```
-SPCToolkit/
-├── main.py                 # Application entry point
-├── CLAUDE.md               # Developer instructions
-├── ARCHITECTURE.md         # This file
-│
-├── core/                   # Core data structures and managers
-│   ├── point_cloud.py      # PointCloud class (primary data)
-│   ├── clusters.py         # Clusters class (clustering + optional semantic names)
-│   ├── masks.py            # Masks class (boolean selection)
-│   ├── eigenvalues.py      # Eigenvalues class
-│   ├── values.py           # Values class (scalar per-point)
-│   ├── colors.py           # Colors class
-│   ├── class_reference.py  # ClassReference (lightweight filter by class)
-│   ├── dist_to_ground.py   # DistToGround class
-│   ├── data_node.py        # DataNode (tree node wrapper)
-│   ├── data_nodes.py       # DataNodes collection manager
-│   ├── data_manager.py     # Central coordinator
-│   ├── analysis_manager.py # Plugin execution coordinator
-│   ├── analysis_thread_manager.py  # Background threading
-│   └── node_reconstruction_manager.py  # Reconstruction pipeline
-│
-├── services/               # Utility services
-│   ├── file_manager.py     # Point cloud I/O, project save/load
-│   ├── hardware_detector.py # GPU/CPU capability detection
-│   ├── backend_registry.py # Algorithm backend selection
-│   ├── batch_processor.py  # Spatial batching for large data
-│   ├── memory_manager.py   # RAM/VRAM tracking
-│   └── backends/           # Algorithm implementations
-│       └── dbscan_backends.py
-│
-├── tasks/                  # Reconstruction tasks
-│   ├── apply_masks.py      # Masks → filtered PointCloud
-│   ├── apply_clusters.py   # Clusters → colored PointCloud (handles named clusters)
-│   ├── apply_eigenvalues.py
-│   ├── apply_values.py
-│   ├── apply_colors.py
-│   ├── apply_dist_to_ground.py
-│   └── apply_class_reference.py  # Filter by semantic class
-│
-├── plugins/                # Plugin-based extensions
-│   ├── interfaces.py       # Plugin, ActionPlugin base classes
-│   ├── plugin_manager.py   # Discovery and loading
-│   ├── 000_File/           # File menu plugins
-│   ├── 010_View/           # View menu plugins
-│   ├── 015_Branch/         # Branch menu plugins
-│   ├── 020_Points/         # Points menu (Subsampling, Filtering, etc.)
-│   ├── 030_Selection/      # Selection menu plugins
-│   ├── 040_Clusters/       # Clusters menu plugins
-│   ├── 050_Processing/     # Processing menu plugins
-│   ├── 060_ML_Models/      # ML model plugins
-│   └── 090_Help/           # Help menu plugins
-│
-├── gui/                    # Qt5 GUI components
-│   ├── main_window.py      # Main application window
-│   ├── widgets/
-│   │   ├── tree_structure_widget.py  # Hierarchical data tree
-│   │   ├── pcd_viewer_widget.py      # OpenGL 3D viewer
-│   │   └── process_overlay_widget.py # Processing status overlay
-│   ├── dialog_boxes/
-│   │   └── dialog_boxes_manager.py   # Dynamic parameter dialogs
-│   └── dialogs/            # Specialized dialog windows
-│
-├── config/
-│   └── config.py           # GlobalVariables singleton
-│
-├── models/                 # ML model files
-├── unit_test/              # Unit tests
-└── redundant/              # Legacy code (archived)
+Plugins are discovered automatically from the folder structure and registered in menus.
+
+```mermaid
+flowchart LR
+    subgraph Filesystem
+        PF[plugins/Category/plugin.py]
+    end
+
+    subgraph Discovery
+        PM[PluginManager]
+        PM -->|walks| PF
+        PM -->|importlib| Classes
+        Classes -->|inspect.issubclass| Register
+    end
+
+    subgraph Registration
+        Register --> analysis_plugins
+        Register --> action_plugins
+        Register --> menu_structure
+    end
+
+    subgraph MenuBuilding
+        menu_structure --> MainWindow
+        MainWindow -->|create QAction| MenuItem
+        MenuItem -->|triggered| open_dialog_box
+    end
+
+    subgraph Execution
+        open_dialog_box --> DialogBoxesManager
+        DialogBoxesManager -->|SIGNAL| DataManager
+        DataManager --> AnalysisThreadManager
+        AnalysisThreadManager -->|background| Plugin.execute
+    end
 ```
 
----
+### Plugin Types
 
-## 3. Core Data Model
+| Type | Base Class | Execution | Returns |
+|------|------------|-----------|---------|
+| **AnalysisPlugin** | `AnalysisPlugin` | Background thread | `(result, type, deps)` |
+| **ActionPlugin** | `ActionPlugin` | Main thread | `None` |
 
-### 3.1 Data Type Hierarchy
-
-```
-                    ┌─────────────┐
-                    │  DataNode   │
-                    │  (wrapper)  │
-                    └──────┬──────┘
-                           │ contains
-                           ▼
-    ┌──────────────────────────────────────────────────────┐
-    │                    Data Types                         │
-    ├─────────────┬───────────┬───────────┬───────────────┤
-    │ PointCloud  │ Clusters  │   Masks   │  Eigenvalues  │
-    │ (primary)   │ (labels + │ (boolean) │  (n,3 array)  │
-    │             │  names*)  │           │               │
-    ├─────────────┼───────────┼───────────┼───────────────┤
-    │   Values    │  Colors   │DistToGrnd │ClassReference │
-    │ (scalars)   │ (RGB)     │ (heights) │ (class filter)│
-    └─────────────┴───────────┴───────────┴───────────────┘
-
-* Clusters optionally includes cluster_names (Dict[int, str])
-  and cluster_colors (Dict[str, RGB]) for semantic labeling
-```
-
-### 3.2 DataNode Structure
-
-```python
-DataNode:
-├── uid: str              # Unique identifier (UUID)
-├── data: Any             # PointCloud, Clusters, Masks, etc.
-├── data_type: str        # "point_cloud", "cluster_labels", "masks", etc.
-├── parent_uid: str       # Parent node reference (None for root)
-├── depends_on: List[str] # Dependency UIDs
-├── tags: List[str]       # Classification tags
-├── params: str           # Human-readable description
-├── is_cached: bool       # Runtime cache flag
-├── cached_point_cloud    # Runtime reconstruction cache
-└── memory_size: int      # Persistent memory size
-```
-
-### 3.3 Tree Structure Example
-
-```
-Project Tree:
-├── scan_001.ply [PointCloud]           ← Root (loaded file)
-│   ├── DBSCAN (eps=0.5) [Clusters]     ← Derived from root
-│   │   └── Cluster_0 [ClassReference]  ← Derived from clusters
-│   └── Ground Filter [Masks]           ← Derived from root
-│       └── Eigenvalues [Eigenvalues]   ← Derived from masked points
-└── scan_002.ply [PointCloud]           ← Another root
-    └── ...
-```
-
----
-
-## 4. Component Relationships
-
-### 4.1 Class Dependency Graph
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                         MainWindow                                │
-├──────────────────────────────────────────────────────────────────┤
-│  Creates and owns:                                                │
-│  ├── FileManager                                                  │
-│  ├── TreeStructureWidget                                          │
-│  ├── PCDViewerWidget                                              │
-│  ├── DataManager ─────────────────────────────────────────────┐   │
-│  │   ├── Uses: DataNodes (collection)                         │   │
-│  │   │         └── Contains: DataNode instances               │   │
-│  │   ├── Uses: AnalysisManager → PluginManager                │   │
-│  │   ├── Uses: NodeReconstructionManager → Task classes       │   │
-│  │   └── Coordinates: FileManager, TreeWidget, ViewerWidget   │   │
-│  ├── AnalysisThreadManager                                    │   │
-│  ├── PluginManager                                            │   │
-│  └── BackendRegistry → HardwareInfo                           │   │
-└──────────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────────────┐
-│                    GlobalVariables Singleton                      │
-├──────────────────────────────────────────────────────────────────┤
-│  global_file_manager          → FileManager instance              │
-│  global_pcd_viewer_widget     → PCDViewerWidget instance          │
-│  global_tree_structure_widget → TreeStructureWidget instance      │
-│  global_data_nodes            → DataNodes instance                │
-│  global_data_manager          → DataManager instance              │
-│  global_main_window           → MainWindow instance               │
-│  global_analysis_thread_manager → AnalysisThreadManager instance  │
-│  global_hardware_info         → HardwareInfo instance             │
-│  global_backend_registry      → BackendRegistry instance          │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### 4.2 Communication Pattern
-
-```
-PREFERRED: Singleton Pattern
-─────────────────────────────
-Any Component ──→ global_variables.global_data_manager.method()
-                 global_variables.global_pcd_viewer_widget.update()
-
-ACCEPTABLE: Callbacks (when singleton doesn't fit)
-──────────────────────────────────────────────────
-Component A ──callback──→ Component B
-
-AVOID: Custom Qt Signals/Slots
-──────────────────────────────
-❌ class MyClass(QObject):
-       custom_signal = pyqtSignal()
-```
-
----
-
-## 5. Data Flow Diagrams
-
-### 5.1 Loading Point Cloud
-
-```
-User clicks: File > Import Point Cloud
-                    │
-                    ▼
-            ┌───────────────┐
-            │  FileManager  │
-            │ open_point_   │
-            │ cloud_file()  │
-            └───────┬───────┘
-                    │ Open3D reads PLY
-                    │ Translate to origin
-                    ▼
-            ┌───────────────┐
-            │  DataManager  │
-            │ _on_point_    │
-            │ cloud_loaded()│
-            └───────┬───────┘
-                    │ Create DataNode (root)
-                    │ Add to DataNodes
-                    ▼
-    ┌───────────────┴───────────────┐
-    ▼                               ▼
-┌─────────────┐             ┌─────────────┐
-│ TreeWidget  │             │ ViewerWidget│
-│ add_branch()│             │ set_points()│
-└─────────────┘             └─────────────┘
-```
-
-### 5.2 Running Analysis Plugin
-
-```
-User clicks: Points > Clustering > DBSCAN
-                    │
-                    ▼
-          ┌─────────────────┐
-          │DialogBoxesManager│
-          │ open_dialog_box()│
-          └────────┬────────┘
-                   │ Show parameter dialog
-                   │ User clicks OK
-                   ▼
-          ┌─────────────────┐
-          │  DataManager    │
-          │ apply_analysis()│
-          └────────┬────────┘
-                   │ Disable UI
-                   │ Show overlay
-                   ▼
-     ┌─────────────────────────┐
-     │AnalysisThreadManager    │
-     │ start_analysis()        │
-     └───────────┬─────────────┘
-                 │ Background thread
-                 ▼
-         ┌───────────────┐
-         │ DBSCANPlugin  │
-         │  execute()    │◄─── Backend selection via
-         └───────┬───────┘     BackendRegistry
-                 │ Returns (Clusters, "cluster_labels", [deps])
-                 ▼
-     ┌─────────────────────────┐
-     │ QTimer polling detects  │
-     │ completion (100ms)      │
-     └───────────┬─────────────┘
-                 │
-                 ▼
-          ┌─────────────────┐
-          │  DataManager    │
-          │ handle_result() │
-          └────────┬────────┘
-                   │ Create DataNode (derived)
-                   │ Enable UI, hide overlay
-                   ▼
-   ┌───────────────┴───────────────┐
-   ▼                               ▼
-┌─────────────┐             ┌─────────────┐
-│ TreeWidget  │             │ (Ready for  │
-│ add_branch()│             │ selection)  │
-└─────────────┘             └─────────────┘
-```
-
-### 5.3 Branch Reconstruction (Visualization)
-
-```
-User selects: Clusters node in tree
-                    │
-                    ▼
-          ┌─────────────────┐
-          │  DataManager    │
-          │reconstruct_branch()│
-          └────────┬────────┘
-                   │
-                   ▼
-    ┌──────────────────────────────┐
-    │ Build path: root → target    │
-    │                              │
-    │ [PointCloud] → [Clusters]    │
-    └──────────────┬───────────────┘
-                   │
-                   ▼
-    ┌──────────────────────────────┐
-    │ NodeReconstructionManager    │
-    │                              │
-    │ For each node in path:       │
-    │   task = tasks_registry[type]│
-    │   pc = task.apply(pc, data)  │
-    └──────────────┬───────────────┘
-                   │
-                   ▼
-         ┌─────────────────┐
-         │  ApplyClusters  │
-         │    (Task)       │
-         └────────┬────────┘
-                  │ Returns PointCloud with cluster colors
-                  ▼
-          ┌─────────────────┐
-          │ ViewerWidget    │
-          │ set_points()    │
-          └─────────────────┘
-```
-
-### 5.4 Reconstruction Task Registry
-
-```
-NodeReconstructionManager.tasks_registry:
-┌─────────────────┬───────────────────┬─────────────────────────────────┐
-│   Data Type     │    Task Class     │      Transformation             │
-├─────────────────┼───────────────────┼─────────────────────────────────┤
-│ "masks"         │ ApplyMasks        │ Filter points (subset)          │
-│ "cluster_labels"│ ApplyClusters     │ Apply cluster/semantic colors   │
-│ "eigenvalues"   │ ApplyEigenvalues  │ Color by eigenvalues            │
-│ "values"        │ ApplyValues       │ Color by scalar values          │
-│ "colors"        │ ApplyColors       │ Apply RGB colors                │
-│ "dist_to_ground"│ ApplyDistToGround │ Color by height                 │
-│ "class_reference"│ApplyClassReference│ Filter by semantic class       │
-└─────────────────┴───────────────────┴─────────────────────────────────┘
-
-Note: ApplyClusters handles both simple clusters (per-point colors) and
-named clusters (semantic colors via cluster_names/cluster_colors).
-```
-
----
-
-## 6. Plugin System
-
-### 6.1 Folder-Based Menu Structure
+### Folder Structure = Menu Hierarchy
 
 ```
 plugins/
-├── 000_File/                    → Menu: "File"
-│   ├── 000_import_plugin.py     →   "Import Point Cloud"
-│   └── 020_save_plugin.py       →   "Save Project"
-├── 020_Points/                  → Menu: "Points"
-│   ├── 000_Subsampling/         →   Submenu: "Subsampling"
-│   │   └── 000_voxel_plugin.py  →     "Voxel Downsample"
-│   └── 020_Clustering/          →   Submenu: "Clustering"
-│       └── 000_dbscan_plugin.py →     "DBSCAN"
-└── ...
-
-Numbering (000_, 010_, etc.) controls menu order.
-Folder depth controls menu nesting.
+├── 000_File/                        -> Menu: "File"
+│   ├── 000_import_plugin.py         ->   "Import Point Cloud"
+│   └── 010_save_plugin.py           ->   "Save Project"
+├── 010_View/                        -> Menu: "View"
+│   └── 000_zoom_to_extent_plugin.py ->   "Zoom To Extent"
+└── 020_Points/                      -> Menu: "Points"
+    └── 010_Clustering/              ->   Submenu: "Clustering"
+        └── 000_dbscan_plugin.py     ->     "DBSCAN"
 ```
 
-### 6.2 Plugin Interfaces
+Numbering (000_, 010_, etc.) controls menu order. Folder depth controls menu nesting.
+
+### Plugin Interfaces
 
 ```python
 # Analysis Plugin (processes data, returns results)
-class Plugin(ABC):
+class AnalysisPlugin(ABC):
     def get_name(self) -> str: ...
     def get_parameters(self) -> Dict[str, Any]: ...
-    def execute(self, data_node: DataNode, params: Dict) -> Tuple[Any, str, List]: ...
-    #                                                         ↑     ↑    ↑
-    #                                                      result  type  deps
+    def execute(self, data_node, params) -> Tuple[result, type, deps]: ...
 
 # Action Plugin (performs actions, no return)
 class ActionPlugin(ABC):
     def get_name(self) -> str: ...
     def get_parameters(self) -> Dict[str, Any]: ...  # Can return {}
-    def execute(self, main_window, params: Dict) -> None: ...
-```
-
-### 6.3 Parameter Schema
-
-```python
-def get_parameters(self) -> Dict[str, Any]:
-    return {
-        "eps": {
-            "type": "float",
-            "default": 0.5,
-            "min": 0.01,
-            "max": 10.0,
-            "label": "Epsilon",
-            "description": "Maximum neighbor distance"
-        },
-        "method": {
-            "type": "choice",
-            "options": ["Method A", "Method B"],
-            "default": "Method A",
-            "label": "Method"
-        }
-    }
+    def execute(self, main_window, params) -> None: ...
 ```
 
 ---
 
-## 7. Services Layer
+## 8. Quick Reference
 
-### 7.1 BackendRegistry (Hardware-Aware Selection)
+### "I want to do X -> Look in Y"
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    HardwareDetector                              │
-│  Detects: NVIDIA GPU, CUDA, CuPy, RAPIDS cuML, PyTorch CUDA     │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    BackendRegistry                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  FULL GPU (Linux + NVIDIA + RAPIDS):                            │
-│  ├── DBSCAN: sklearn (O(n log n) faster than GPU brute-force)   │
-│  ├── KNN: cuML (GPU)                                            │
-│  ├── Masking: CuPy (GPU)                                        │
-│  └── Eigenvalues: PyTorch CUDA (GPU)                            │
-│                                                                  │
-│  PARTIAL GPU (NVIDIA without RAPIDS):                           │
-│  ├── DBSCAN: sklearn (CPU)                                      │
-│  ├── KNN: scipy (CPU)                                           │
-│  ├── Masking: CuPy (GPU)                                        │
-│  └── Eigenvalues: PyTorch CUDA (GPU)                            │
-│                                                                  │
-│  CPU ONLY:                                                       │
-│  ├── DBSCAN: sklearn                                            │
-│  ├── KNN: scipy                                                 │
-│  ├── Masking: NumPy                                             │
-│  └── Eigenvalues: NumPy                                         │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Task | Location |
+|------|----------|
+| Load a point cloud | `FileManager.open_point_cloud_file()` |
+| Run an analysis plugin | `DataManager.apply_analysis()` |
+| Add a node to the tree | `DataManager._on_point_cloud_loaded()` or `handle_analysis_result()` |
+| Render points in viewer | `PCDViewerWidget.set_point_vertices()` |
+| Create a new analysis plugin | `plugins/YourCategory/your_plugin.py` (inherit `AnalysisPlugin`) |
+| Create a new action plugin | `plugins/YourCategory/your_plugin.py` (inherit `ActionPlugin`) |
+| Access any global manager | `from config.config import global_variables` |
+| Reconstruct a branch | `DataManager.reconstruct_branch(uid)` |
+| Get selected tree items | `DataManager.selected_branches` |
+| Disable UI during processing | `MainWindow.disable_menus()`, `disable_tree()` |
 
-### 7.2 BatchProcessor (Spatial Batching)
+### Signal Connections
 
-```
-Large Point Cloud (e.g., 50M points)
-            │
-            ▼
-┌───────────────────────────────────────┐
-│        BatchProcessor                  │
-│  ┌─────┬─────┬─────┬─────┐           │
-│  │ B1  │ B2  │ B3  │ B4  │  Grid     │
-│  ├─────┼─────┼─────┼─────┤  with     │
-│  │ B5  │ B6  │ B7  │ B8  │  10%      │
-│  ├─────┼─────┼─────┼─────┤  overlap  │
-│  │ B9  │ B10 │ B11 │ B12 │           │
-│  └─────┴─────┴─────┴─────┘           │
-└───────────────────────────────────────┘
-            │
-            │ Process each batch
-            │ Merge results
-            ▼
-      Final Result
-```
+| Signal | Source | Handler | Purpose |
+|--------|--------|---------|---------|
+| `point_cloud_loaded` | FileManager | DataManager._on_point_cloud_loaded | File loaded |
+| `analysis_params` | DialogBoxesManager | DataManager.apply_analysis | Dialog OK clicked |
+| `branch_visibility_changed` | TreeStructureWidget | DataManager._on_branch_visibility_changed | Checkbox toggled |
+| `branch_selection_changed` | TreeStructureWidget | DataManager._on_branch_selection_changed | Tree selection |
+| `branch_added` | TreeStructureWidget | DataManager._on_branch_added | New branch added |
 
-### 7.3 MemoryManager
+### Key Files
 
-```python
-MemoryManager:
-├── get_available_ram_mb()   # System RAM check
-├── get_available_gpu_mb()   # VRAM availability
-└── estimate_render_memory() # Memory for rendering
-```
+| File | Purpose |
+|------|---------|
+| `main.py` | Application entry point |
+| `gui/main_window.py` | Main window, menu building |
+| `core/data_manager.py` | Central data coordinator |
+| `core/data_node.py` | Single data unit wrapper |
+| `core/data_nodes.py` | Collection manager |
+| `core/point_cloud.py` | Primary data structure |
+| `core/node_reconstruction_manager.py` | Rebuilds PointCloud from derived data |
+| `core/analysis_thread_manager.py` | Background thread management |
+| `services/file_manager.py` | File I/O operations |
+| `plugins/plugin_manager.py` | Plugin discovery and registration |
+| `plugins/interfaces.py` | Plugin base classes |
+| `config/config.py` | GlobalVariables singleton |
 
 ---
 
-## 8. GUI Architecture
+## Architectural Principles
 
-### 8.1 MainWindow Layout
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Menu Bar: [File] [View] [Branch] [Points] [Selection] [Clusters]│
-├─────────────┬───────────────────────────────────────────────────┤
-│             │                                                    │
-│  TreeWidget │              PCDViewerWidget                       │
-│  (QTreeWidget)            (QOpenGLWidget)                       │
-│             │                                                    │
-│  ☑ scan.ply │         ┌─────────────────────┐                   │
-│    ☑ DBSCAN │         │                     │                   │
-│      □ Cls0 │         │   3D Point Cloud    │                   │
-│      ☑ Cls1 │         │    Visualization    │                   │
-│    □ Filter │         │                     │                   │
-│             │         └─────────────────────┘                   │
-│             │                                                    │
-├─────────────┴───────────────────────────────────────────────────┤
-│ Status Bar: GPU: 45% (3.6GB/8GB) | RAM: 32% (10GB/32GB)         │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 8.2 Widget Responsibilities
-
-```
-TreeStructureWidget:
-├── Display hierarchical data structure
-├── Visibility checkboxes (column 0)
-├── Cache status checkboxes (column 1)
-├── Multi-select support (Ctrl+Click)
-└── Emits: branch_added, visibility_changed, selection_changed
-
-PCDViewerWidget:
-├── OpenGL 3D rendering (VBO-based)
-├── Camera controls (rotate, pan, zoom)
-├── Point picking (Shift+Click)
-├── Hotkeys: F (zoom extent), Ctrl+R (reset), ESC (deselect)
-└── Methods: set_points(), zoom_to_extent(), reset_view()
-
-ProcessOverlayWidget:
-├── Semi-transparent status overlay
-├── Shows during long operations
-└── Non-blocking (visual feedback only)
-```
-
-### 8.3 UI Protection During Processing
-
-```
-During Analysis:
-┌──────────────────────────────────────────────────────────────┐
-│ Menu Bar: [DISABLED]                                          │
-├────────────┬─────────────────────────────────────────────────┤
-│            │                                                  │
-│ TreeWidget │        PCDViewerWidget                          │
-│ [DISABLED] │         [ENABLED]                               │
-│            │                                                  │
-│ ┌────────────────────┐                                       │
-│ │ Running DBSCAN... │ ← ProcessOverlayWidget                │
-│ └────────────────────┘                                       │
-│            │                                                  │
-└────────────┴─────────────────────────────────────────────────┘
-
-✓ Viewer remains enabled for camera manipulation
-✗ Menus disabled to prevent concurrent operations
-✗ Tree disabled to prevent selection changes
-```
+1. **Singleton Pattern:** Use `global_variables` for inter-component communication (avoid custom signals)
+2. **Background Threading:** Long operations run in threads with QTimer polling
+3. **Plugin Extensibility:** Folder structure defines menu hierarchy
+4. **Caching:** Reconstructed PointClouds are cached on DataNodes
+5. **Read-Only Threading:** Plugins only read data, return new objects
 
 ---
 
-## 9. Threading Model
-
-### 9.1 Background Threading Architecture
+## Communication Pattern
 
 ```
-Main Thread (Qt Event Loop)           Background Thread
-─────────────────────────────         ─────────────────
-        │
-        │ User triggers analysis
-        ▼
-┌───────────────────┐
-│ DataManager       │
-│ apply_analysis()  │
-│ • Disable UI      │
-│ • Show overlay    │
-└─────────┬─────────┘
-          │
-          │ AnalysisThreadManager.start_analysis()
-          │
-          ▼
-┌───────────────────┐                 ┌───────────────────┐
-│ Create Thread     │────────────────▶│ AnalysisThread    │
-│ Start QTimer      │                 │ • Run plugin      │
-│ (polling 100ms)   │                 │ • Store result    │
-└─────────┬─────────┘                 │ • Set completed   │
-          │                           └───────────────────┘
-          │ QTimer.timeout
-          ▼
-┌───────────────────┐
-│ Check completion  │◄─────────────── is_completed = True
-│ • Hide overlay    │
-│ • Enable UI       │
-│ • Process result  │
-└───────────────────┘
+PREFERRED: Singleton Pattern
+─────────────────────────────
+global_variables.global_data_manager.method()
+global_variables.global_pcd_viewer_widget.update()
+
+ACCEPTABLE: Callbacks (when singleton doesn't fit)
+──────────────────────────────────────────────────
+component_a.process(on_complete=callback_function)
+
+AVOID: Custom Qt Signals/Slots
+──────────────────────────────
+class MyClass(QObject):
+    custom_signal = pyqtSignal()  # Don't do this
 ```
-
-### 9.2 Thread Safety Rules
-
-```
-✓ SAFE:
-  - Plugins READ data (read-only is thread-safe)
-  - Plugins return NEW objects (no modification)
-  - Reconstruction in background thread
-
-✗ AVOID:
-  - Modifying DataNodes from background thread
-  - UI updates from background thread
-  - Shared mutable state
-```
-
----
-
-## 10. Key Design Decisions
-
-### 10.1 On-Demand Reconstruction
-
-**Why**: Memory efficiency for large datasets
-
-```
-Traditional Approach:          SPCToolkit Approach:
-────────────────────          ────────────────────
-Store each view as            Store only:
-separate PointCloud:          • Root PointCloud
-• 50M points × 3 views        • Lightweight derived data
-• 450MB × 3 = 1.35GB          • Reconstruct on demand
-                              • ~500MB total
-```
-
-### 10.2 Singleton Over Signals
-
-**Why**: Simpler debugging, explicit control flow
-
-```
-Signal/Slot (AVOID):           Singleton (PREFER):
-────────────────────           ────────────────────
-self.signal.emit(data)         global_variables.global_data_manager.method(data)
-# Who receives this?           # Explicit destination
-# Hard to trace                # Easy to trace
-```
-
-### 10.3 Plugin-Based Architecture
-
-**Why**: Easy extensibility without core changes
-
-```
-Adding new analysis:
-1. Create plugins/Category/your_plugin.py
-2. Implement Plugin interface
-3. Restart application
-4. Menu item appears automatically
-```
-
-### 10.4 Functional Task Pattern
-
-**Why**: Immutability enables safe concurrency
-
-```python
-# Tasks NEVER modify input
-def apply(self, point_cloud: PointCloud, data: Any) -> PointCloud:
-    # Create and return NEW PointCloud
-    return PointCloud(
-        points=point_cloud.points[mask],
-        colors=new_colors
-    )
-```
-
-### 10.5 Hardware-Aware Backends
-
-**Why**: Optimal performance across different systems
-
-```
-User's GPU: RTX 3080 (8GB)
-├── CuPy available → Use GPU for masking
-├── PyTorch CUDA available → Use GPU for eigenvalues
-└── RAPIDS not available → Use sklearn for DBSCAN
-```
-
----
-
-## Quick Reference
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| Entry Point | `main.py` | Application startup |
-| Data Model | `core/point_cloud.py` | Primary data structure |
-| Central Coordinator | `core/data_manager.py` | Orchestrates everything |
-| Plugin Discovery | `plugins/plugin_manager.py` | Loads plugins |
-| Plugin Interface | `plugins/interfaces.py` | Base classes |
-| Reconstruction | `core/node_reconstruction_manager.py` | Builds visualizations |
-| 3D Viewer | `gui/widgets/pcd_viewer_widget.py` | OpenGL rendering |
-| Tree View | `gui/widgets/tree_structure_widget.py` | Data hierarchy |
-| Global Access | `config/config.py` | Singleton pattern |
-| Hardware Detection | `services/hardware_detector.py` | GPU/CPU capabilities |
-| Backend Selection | `services/backend_registry.py` | Algorithm selection |
 
 ---
 
