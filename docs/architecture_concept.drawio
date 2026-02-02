@@ -244,6 +244,15 @@
         <mxCell id="arrow-plugins-core-label" parent="DKNL86ZRpR8sS9cm1DVU-1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#9673a6;" value="uses Core entities" vertex="1">
           <mxGeometry height="20" width="100" x="270" y="945" as="geometry" />
         </mxCell>
+        <mxCell id="arrow-app-infra" edge="1" parent="DKNL86ZRpR8sS9cm1DVU-1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#666666;dashed=1;curved=1;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="1100" y="500" as="sourcePoint" />
+            <mxPoint x="1100" y="560" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-app-infra-label" parent="DKNL86ZRpR8sS9cm1DVU-1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666666;" value="queries" vertex="1">
+          <mxGeometry height="20" width="50" x="1110" y="520" as="geometry" />
+        </mxCell>
         <mxCell id="legend-box" parent="DKNL86ZRpR8sS9cm1DVU-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;strokeWidth=2;" value="" vertex="1">
           <mxGeometry height="140" width="360" x="540" y="980" as="geometry" />
         </mxCell>
