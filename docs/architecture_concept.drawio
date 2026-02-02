@@ -73,12 +73,6 @@
         <mxCell id="render-coord-detail" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#555555;" value="• Visibility state&#xa;• Vertex preparation&#xa;• LOD coordination" vertex="1">
           <mxGeometry height="50" width="180" x="1020" y="480" as="geometry" />
         </mxCell>
-        <mxCell id="project-manager" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;strokeWidth=2;fontStyle=1;fontSize=13;" value="ProjectManager" vertex="1">
-          <mxGeometry height="55" width="160" x="1240" y="420" as="geometry" />
-        </mxCell>
-        <mxCell id="project-manager-detail" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#555555;" value="• Save/Load&#xa;• File tracking" vertex="1">
-          <mxGeometry height="40" width="160" x="1240" y="480" as="geometry" />
-        </mxCell>
         <mxCell id="core-layer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;strokeWidth=3;opacity=60;" value="" vertex="1">
           <mxGeometry height="380" width="1100" x="120" y="580" as="geometry" />
         </mxCell>
@@ -166,31 +160,19 @@
         <mxCell id="tasks-desc" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666666;" value="Transform derived&#xa;nodes to PointCloud" vertex="1">
           <mxGeometry height="40" width="120" x="780" y="880" as="geometry" />
         </mxCell>
-        <mxCell id="interfaces-section" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;strokeWidth=2;fontStyle=1;fontSize=13;verticalAlign=top;spacingTop=5;" value="interfaces/" vertex="1">
-          <mxGeometry height="150" width="220" x="980" y="650" as="geometry" />
-        </mxCell>
-        <mxCell id="interface-file" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=1;fontSize=11;fontStyle=2;" value="IFileRepository" vertex="1">
-          <mxGeometry height="30" width="130" x="1000" y="690" as="geometry" />
-        </mxCell>
-        <mxCell id="interface-plugin" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=1;fontSize=11;fontStyle=2;" value="IAnalysisPlugin" vertex="1">
-          <mxGeometry height="30" width="130" x="1000" y="730" as="geometry" />
-        </mxCell>
-        <mxCell id="interfaces-desc" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666666;" value="Abstract ports.&#xa;Implemented by&#xa;Infrastructure." vertex="1">
-          <mxGeometry height="50" width="120" x="1000" y="770" as="geometry" />
-        </mxCell>
         <mxCell id="infra-layer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;strokeWidth=3;opacity=60;" value="" vertex="1">
           <mxGeometry height="380" width="550" x="1250" y="580" as="geometry" />
         </mxCell>
         <mxCell id="infra-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#333333;" value="INFRASTRUCTURE LAYER" vertex="1">
           <mxGeometry height="25" width="250" x="1270" y="590" as="geometry" />
         </mxCell>
-        <mxCell id="infra-rule" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;" value="Rule: Implements Core interfaces. Handles external concerns." vertex="1">
+        <mxCell id="infra-rule" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;" value="Rule: Handles external concerns (I/O, hardware, threading)." vertex="1">
           <mxGeometry height="20" width="400" x="1270" y="615" as="geometry" />
         </mxCell>
         <mxCell id="infra-file" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;strokeWidth=2;fontSize=12;fontStyle=1;" value="FileManager" vertex="1">
           <mxGeometry height="40" width="140" x="1280" y="660" as="geometry" />
         </mxCell>
-        <mxCell id="infra-file-note" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="implements IFileRepository" vertex="1">
+        <mxCell id="infra-file-note" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="project save/load only" vertex="1">
           <mxGeometry height="20" width="140" x="1280" y="700" as="geometry" />
         </mxCell>
         <mxCell id="infra-hardware" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;strokeWidth=2;fontSize=12;" value="HardwareDetector" vertex="1">
@@ -238,7 +220,7 @@
         <mxCell id="plugin-action" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;strokeWidth=2;fontSize=12;fontStyle=2;" value="ActionPlugin" vertex="1">
           <mxGeometry height="35" width="130" x="160" y="1100" as="geometry" />
         </mxCell>
-        <mxCell id="plugin-examples" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#555555;" value="DBSCAN, SOR, Eigenvalue,&#xa;Subsample, HDBSCAN,&#xa;SaveProject, LoadProject..." vertex="1">
+        <mxCell id="plugin-examples" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#555555;" value="DBSCAN, SOR, Eigenvalue,&#xa;Import PLY/PCD/LAS,&#xa;Export PLY/PCD..." vertex="1">
           <mxGeometry height="60" width="180" x="320" y="1065" as="geometry" />
         </mxCell>
         <mxCell id="arrow-gui-app" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;curved=1;" value="">
@@ -267,15 +249,6 @@
         </mxCell>
         <mxCell id="arrow-app-infra-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666666;" value="uses" vertex="1">
           <mxGeometry height="20" width="40" x="1200" y="530" as="geometry" />
-        </mxCell>
-        <mxCell id="arrow-infra-core" edge="1" parent="1" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#9673a6;exitX=0;exitY=0.5;entryX=1;entryY=0.5;dashed=1;endFill=0;" value="">
-          <mxGeometry height="50" relative="1" width="50" as="geometry">
-            <mxPoint x="1280" y="680" as="sourcePoint" />
-            <mxPoint x="1200" y="705" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="arrow-infra-core-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#9673a6;fontStyle=2;" value="implements" vertex="1">
-          <mxGeometry height="20" width="70" x="1210" y="660" as="geometry" />
         </mxCell>
         <mxCell id="arrow-plugins-core" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#9673a6;exitX=0.5;exitY=0;entryX=0.2;entryY=1;curved=1;" value="">
           <mxGeometry height="50" relative="1" width="50" as="geometry">
@@ -336,24 +309,6 @@
         </mxCell>
         <mxCell id="principle-text" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;spacingTop=5;spacingLeft=5;" value="1. Dependencies point INWARD only (GUI → App → Core)&#xa;2. Core has NO external dependencies (can run standalone)&#xa;3. Infrastructure IMPLEMENTS Core interfaces&#xa;4. Plugins are ISOLATED (only use Core entities + interfaces)&#xa;5. GUI calls Application layer, NEVER Core directly" vertex="1">
           <mxGeometry height="90" width="420" x="1080" y="1040" as="geometry" />
-        </mxCell>
-        <mxCell id="hKJeB1kai1Ji1aOTx1Ia-5" edge="1" parent="1" style="shape=flexArrow;endArrow=classic;html=1;rounded=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" value="">
-          <mxGeometry height="50" relative="1" width="50" as="geometry">
-            <mxPoint x="949.9966666666666" y="580" as="sourcePoint" />
-            <mxPoint x="868.33" y="650" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="hKJeB1kai1Ji1aOTx1Ia-6" edge="1" parent="1" style="shape=flexArrow;endArrow=classic;html=1;rounded=0;" value="">
-          <mxGeometry height="50" relative="1" width="50" as="geometry">
-            <mxPoint x="730" y="765" as="sourcePoint" />
-            <mxPoint x="780" y="715" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="hKJeB1kai1Ji1aOTx1Ia-9" edge="1" parent="1" style="shape=flexArrow;endArrow=classic;html=1;rounded=0;" value="">
-          <mxGeometry height="50" relative="1" width="50" as="geometry">
-            <mxPoint x="950" y="760" as="sourcePoint" />
-            <mxPoint x="1000" y="710" as="targetPoint" />
-          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
