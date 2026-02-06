@@ -27,34 +27,46 @@ class DialogBoxesManager(QObject):
         super().__init__(parent)
         self.plugin_manager = plugin_manager
 
+    def get_analysis_params(self, analysis_type: str):
+        """
+        Open a dialog and return analysis parameters, or None if cancelled.
+
+        If the plugin has no parameters, returns an empty dict.
+
+        Args:
+            analysis_type: The type of analysis to create a dialog for.
+
+        Returns:
+            Dict of parameters, or None if cancelled or plugin not found.
+        """
+        analysis_plugins = self.plugin_manager.get_analysis_plugins()
+
+        if analysis_type not in analysis_plugins:
+            print(f"Warning: No plugin found for analysis type '{analysis_type}'")
+            return None
+
+        plugin_class = analysis_plugins[analysis_type]
+        plugin_instance = plugin_class()
+        parameter_schema = plugin_instance.get_parameters()
+
+        # No parameters needed — return empty dict
+        if not parameter_schema or len(parameter_schema) == 0:
+            return {}
+
+        # Open dialog for parameter input
+        dialog = DynamicDialog(f"{analysis_type.title()} Parameters", parameter_schema)
+        if dialog.exec_():
+            return dialog.get_parameters()
+
+        return None  # User cancelled
+
     def open_dialog_box(self, analysis_type: str):
         """
         Open a dialog box for the specified analysis type.
 
-        If the plugin has no parameters, execute it immediately without showing a dialog.
-
-        Args:
-            analysis_type (str): The type of analysis to create a dialog for
+        Backward compat: emits analysis_params signal.
+        New code should use get_analysis_params() instead.
         """
-        # Get available analysis plugins
-        analysis_plugins = self.plugin_manager.get_analysis_plugins()
-
-        if analysis_type in analysis_plugins:
-            # Create an instance of the plugin to get its parameters
-            plugin_class = analysis_plugins[analysis_type]
-            plugin_instance = plugin_class()
-            parameter_schema = plugin_instance.get_parameters()
-
-            # If no parameters needed, execute immediately
-            if not parameter_schema or len(parameter_schema) == 0:
-                # Execute plugin directly with empty parameters
-                self.analysis_params.emit(analysis_type, {})
-            else:
-                # Create and open a dynamic dialog for parameter input
-                dialog = DynamicDialog(f"{analysis_type.title()} Parameters", parameter_schema)
-                if dialog.exec_():
-                    # If the user clicked OK, get the parameters and emit the signal
-                    params = dialog.get_parameters()
-                    self.analysis_params.emit(analysis_type, params)
-        else:
-            print(f"Warning: No plugin found for analysis type '{analysis_type}'")
+        params = self.get_analysis_params(analysis_type)
+        if params is not None:
+            self.analysis_params.emit(analysis_type, params)

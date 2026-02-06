@@ -986,7 +986,11 @@ class PCDViewerWidget(QOpenGLWidget):
         if new_rate < self._current_sample_rate - 0.05:
             logger.debug(f"LOD: {self._current_sample_rate:.1%} -> {new_rate:.1%} (zoom out)")
             self._current_sample_rate = new_rate
-            data_manager.render_visible_with_lod(new_rate)
+            main_window = global_variables.global_main_window
+            if main_window and hasattr(main_window, 'render_visible_with_lod'):
+                main_window.render_visible_with_lod(new_rate)
+            else:
+                data_manager.render_visible_with_lod(new_rate)
 
     def closeEvent(self, event):
         """

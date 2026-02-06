@@ -2,17 +2,29 @@
 """
   Create main window for the PCD Toolkit application with dynamic menus from plugins.
 """
-# define the global variables
+import logging
+import traceback
+
 from config.config import global_variables
 
 from PyQt5 import QtWidgets, QtCore
+from PyQt5.QtCore import Qt
 from gui.widgets import PCDViewerWidget, TreeStructureWidget, ProcessOverlayWidget
 from core.data_manager import DataManager
-from core.analysis_thread_manager import AnalysisThreadManager
 from services.file_manager import FileManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from plugins.plugin_manager import PluginManager
 from infrastructure.hardware_detector import HardwareDetector
+
+# Application layer
+from core.services.reconstruction_service import ReconstructionService
+from core.services.cache_service import CacheService
+from core.services.analysis_service import AnalysisService
+from application.application_controller import ApplicationController
+from application.analysis_executor import AnalysisExecutor
+from application.rendering_coordinator import RenderingCoordinator
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -46,6 +58,8 @@ class MainWindow(QtWidgets.QMainWindow):
         global_variables.global_pcd_viewer_widget = self.pcd_viewer_widget
 
         self.dialog_boxes_manager = DialogBoxesManager(plugin_manager)
+
+        # Create DataManager (backward compat — plugins still use global_data_manager)
         self.data_manager = DataManager(
             self.file_manager,
             self.tree_widget,
@@ -58,9 +72,55 @@ class MainWindow(QtWidgets.QMainWindow):
         # Store reference to main window in global variables
         global_variables.global_main_window = self
 
-        # Create analysis thread manager for background processing
-        self.analysis_thread_manager = AnalysisThreadManager()
-        global_variables.global_analysis_thread_manager = self.analysis_thread_manager
+        # === Application Layer Setup ===
+        # Share the same DataNodes created by DataManager
+        data_nodes = global_variables.global_data_nodes
+
+        reconstruction_service = ReconstructionService(data_nodes)
+        cache_service = CacheService(data_nodes)
+        analysis_service = AnalysisService()
+
+        self.controller = ApplicationController(
+            data_nodes=data_nodes,
+            reconstruction_service=reconstruction_service,
+            cache_service=cache_service,
+            plugin_manager=plugin_manager
+        )
+        global_variables.global_application_controller = self.controller
+
+        self.analysis_executor = AnalysisExecutor(
+            reconstruction_service=reconstruction_service,
+            cache_service=cache_service,
+            analysis_service=analysis_service
+        )
+        self.controller.analysis_executor = self.analysis_executor
+
+        self.rendering_coordinator = RenderingCoordinator(
+            data_nodes=data_nodes,
+            reconstruction_service=reconstruction_service,
+            cache_service=cache_service
+        )
+        self.controller.rendering_coordinator = self.rendering_coordinator
+
+        # Disconnect DataManager signal connections (MainWindow handles these now)
+        self.file_manager.point_cloud_loaded.disconnect(self.data_manager._on_point_cloud_loaded)
+        self.data_manager.analysis_manager.analysis_completed.disconnect(
+            self.data_manager._on_analysis_completed)
+        self.tree_widget.branch_visibility_changed.disconnect(
+            self.data_manager._on_branch_visibility_changed)
+        self.tree_widget.branch_added.disconnect(self.data_manager._on_branch_added)
+        self.tree_widget.branch_selection_changed.disconnect(
+            self.data_manager._on_branch_selection_changed)
+        self.dialog_boxes_manager.analysis_params.disconnect(self.data_manager.apply_analysis)
+
+        # Connect signals to MainWindow handlers (which use ApplicationController)
+        self.file_manager.point_cloud_loaded.connect(self._on_point_cloud_loaded)
+        self.tree_widget.branch_visibility_changed.connect(self._on_branch_visibility_changed)
+        self.tree_widget.branch_added.connect(self._on_branch_added)
+        self.tree_widget.branch_selection_changed.connect(self._on_branch_selection_changed)
+
+        # LOD state (synced with rendering_coordinator)
+        self._current_sample_rate = 1.0
 
         # Create overlay widgets for blocking UI during processing
         self.tree_overlay = ProcessOverlayWidget(parent=self)
@@ -403,8 +463,10 @@ class MainWindow(QtWidgets.QMainWindow):
             # Handle action plugin directly
             self.execute_action_plugin(plugin_name)
         else:
-            # Handle data processing plugin through dialog manager
-            self.dialog_boxes_manager.open_dialog_box(plugin_name)
+            # Get params via dialog (direct call, no signal)
+            params = self.dialog_boxes_manager.get_analysis_params(plugin_name)
+            if params is not None:
+                self._start_analysis(plugin_name, params)
 
     def execute_action_plugin(self, plugin_name: str):
         """
@@ -463,6 +525,218 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         self.tree_widget.setEnabled(True)
 
+    # === Signal Handlers (forwarding to Application Layer) ===
+
+    def _on_point_cloud_loaded(self, file_path: str, point_cloud):
+        """Handle point cloud loaded signal from FileManager."""
+        try:
+            uid = self.controller.add_point_cloud(point_cloud, point_cloud.name)
+            memory_size = self.controller.get_cache_memory_usage(uid)
+            self.tree_widget.add_branch(uid, "", point_cloud.name, is_root=True)
+            self.tree_widget.update_cache_tooltip(uid, memory_size)
+        except Exception as e:
+            logger.error(f"Failed to load point cloud: {file_path}. Error: {e}")
+
+    def _on_branch_visibility_changed(self, visibility_status: dict):
+        """Handle visibility changes from tree widget."""
+        self.tree_overlay.position_over(self.tree_widget)
+        self.tree_overlay.show_processing("Updating visibility...")
+        self.disable_menus()
+        self.disable_tree()
+        try:
+            self._render_visible_data(visibility_status, zoom_extent=False)
+        finally:
+            self.tree_overlay.hide_processing()
+            self.enable_menus()
+            self.enable_tree()
+
+    def _on_branch_added(self, visibility_status: dict):
+        """Handle new branch additions from tree widget."""
+        logger.info("_on_branch_added() triggered")
+        self.tree_overlay.position_over(self.tree_widget)
+        self.tree_overlay.show_processing("Rendering new branch...")
+        self.disable_menus()
+        self.disable_tree()
+        try:
+            self._render_visible_data(visibility_status, zoom_extent=True)
+        except Exception as e:
+            logger.error(f"_on_branch_added() FAILED: {e}")
+            logger.error(traceback.format_exc())
+            raise
+        finally:
+            self.tree_overlay.hide_processing()
+            self.enable_menus()
+            self.enable_tree()
+
+    def _on_branch_selection_changed(self, uids: list):
+        """Handle branch selection changes from tree widget."""
+        self.controller.set_selected_branches(uids)
+        # Backward compat: sync DataManager.selected_branches for plugins
+        self.data_manager.selected_branches = uids
+
+    # === Rendering ===
+
+    def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False):
+        """Prepare and display vertex data for all visible nodes."""
+        vertices = self.rendering_coordinator.prepare_vertices(
+            visibility_status=visibility_status,
+            sample_rate=self._current_sample_rate,
+            camera_distance=self.pcd_viewer_widget.camera_distance,
+            zoom_factor=self.pcd_viewer_widget.zoom_factor,
+            max_extent=self.pcd_viewer_widget.max_extent or 1.0
+        )
+
+        # Sync LOD state
+        self._current_sample_rate = self.rendering_coordinator.current_sample_rate
+        self.pcd_viewer_widget._current_sample_rate = self._current_sample_rate
+
+        # Sync to DataManager for backward compat (viewer widget reads LOD state)
+        self.data_manager._total_visible_points = self.rendering_coordinator.total_visible_points
+        self.data_manager._point_budget = self.rendering_coordinator._point_budget
+        self.data_manager._current_sample_rate = self._current_sample_rate
+
+        # Update tree cache UI for auto-cached nodes
+        for uid, vis in visibility_status.items():
+            if vis:
+                node = self.controller.get_node(uid)
+                if node and node.is_cached:
+                    item = self.tree_widget.branches_dict.get(uid)
+                    if item:
+                        self.tree_widget.blockSignals(True)
+                        item.setCheckState(1, Qt.Checked)
+                        self.tree_widget.blockSignals(False)
+                    memory_usage = self.controller.get_cache_memory_usage(uid)
+                    self.tree_widget.update_cache_tooltip(uid, memory_usage)
+
+        # Send to viewer
+        if vertices is not None:
+            self.pcd_viewer_widget.set_point_vertices(vertices)
+            self.pcd_viewer_widget.update()
+        else:
+            self.pcd_viewer_widget.set_points(None)
+            self.pcd_viewer_widget.update()
+
+        if zoom_extent and vertices is not None:
+            self.pcd_viewer_widget.zoom_to_extent(preserve_rotation=True)
+
+    def render_visible_with_lod(self, sample_rate: float = None):
+        """
+        Re-render visible data with specified LOD sample rate.
+
+        Called by PCDViewerWidget when zoom changes.
+        """
+        if sample_rate is not None:
+            self._current_sample_rate = sample_rate
+
+        visibility_status = self.tree_widget.visibility_status
+        self._render_visible_data(visibility_status, zoom_extent=False)
+
+    # === Analysis Execution ===
+
+    def _start_analysis(self, analysis_type: str, params: dict):
+        """Start analysis with UI protection."""
+        self.tree_overlay.position_over(self.tree_widget)
+        self.tree_overlay.show_processing(f"Running {analysis_type}...")
+        self.disable_menus()
+        self.disable_tree()
+
+        self.controller.run_analysis(
+            plugin_name=analysis_type,
+            params=params,
+            on_error=self._on_analysis_error
+        )
+
+        # Start polling for completion
+        self._start_completion_polling()
+
+    def _start_completion_polling(self):
+        """Start QTimer to poll for analysis thread completion."""
+        if not hasattr(self, '_completion_timer'):
+            self._completion_timer = QtCore.QTimer()
+            self._completion_timer.timeout.connect(self._check_analysis_completion)
+        self._completion_timer.start(100)  # Poll every 100ms
+
+    def _check_analysis_completion(self):
+        """Check if analysis thread completed and process results."""
+        if not self.analysis_executor.check_and_process_completion():
+            return
+
+        self._completion_timer.stop()
+
+        # Re-enable UI
+        self.tree_overlay.hide_processing()
+        self.enable_menus()
+        self.enable_tree()
+
+        # Check for error
+        error = self.analysis_executor.get_error()
+        if error:
+            logger.error(f"Analysis failed: {error}")
+            self.analysis_executor.cleanup()
+            return
+
+        # Process result
+        result_data = self.analysis_executor.get_result()
+        if result_data:
+            self._handle_analysis_result(result_data)
+        self.analysis_executor.cleanup()
+
+    def _handle_analysis_result(self, result_data: dict):
+        """Handle completed analysis result."""
+        result = result_data['result']
+        result_type = result_data['result_type']
+        dependencies = result_data['dependencies']
+        parent_node = result_data['data_node']
+        analysis_type = result_data['analysis_type']
+        params = result_data['params']
+
+        # Add result to data tree via ApplicationController
+        uid = self.controller.add_analysis_result(
+            result, result_type, dependencies, parent_node, analysis_type, params
+        )
+
+        # Update tree widget
+        parent_uid_str = str(parent_node.uid)
+        result_node = self.controller.get_node(uid)
+        self.tree_widget.add_branch(uid, parent_uid_str, result_node.params if result_node else f"{analysis_type},{params}")
+
+        # Show memory usage for new node
+        if result_node and hasattr(result_node, 'memory_size') and result_node.memory_size:
+            self.tree_widget.update_cache_tooltip(uid, result_node.memory_size)
+
+        # Update parent cache UI if auto-cached during analysis
+        if parent_node.is_cached:
+            item = self.tree_widget.branches_dict.get(parent_uid_str)
+            if item:
+                self.tree_widget.blockSignals(True)
+                item.setCheckState(1, Qt.Checked)
+                self.tree_widget.blockSignals(False)
+            memory_usage = self.controller.get_cache_memory_usage(parent_uid_str)
+            self.tree_widget.update_cache_tooltip(parent_uid_str, memory_usage)
+
+        # Hide parent and show only the new child result
+        if parent_uid_str in self.tree_widget.visibility_status:
+            self.tree_widget.visibility_status[parent_uid_str] = False
+        self.tree_widget.visibility_status[uid] = True
+
+        # Update checkboxes
+        parent_item = self.tree_widget.branches_dict.get(parent_uid_str)
+        if parent_item:
+            parent_item.setCheckState(0, Qt.Unchecked)
+        child_item = self.tree_widget.branches_dict.get(uid)
+        if child_item:
+            child_item.setCheckState(0, Qt.Checked)
+
+        # Trigger visibility update to render the child
+        self.tree_widget.branch_visibility_changed.emit(self.tree_widget.visibility_status)
+
+    def _on_analysis_error(self, error_msg: str):
+        """Handle analysis error callback."""
+        logger.error(f"Analysis error: {error_msg}")
+        self.tree_overlay.hide_processing()
+        self.enable_menus()
+        self.enable_tree()
+
     def closeEvent(self, event):
         """
         Handle application close with proper memory cleanup.
@@ -477,6 +751,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Clear global references to allow garbage collection
         from config.config import global_variables
+        global_variables.global_application_controller = None
         global_variables.global_data_manager = None
         global_variables.global_data_nodes = None
         global_variables.global_file_manager = None
