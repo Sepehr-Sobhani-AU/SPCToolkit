@@ -41,7 +41,7 @@ logger.info(f"Logging to file: {LOG_FILE}")
 # IMPORTANT: Detect hardware BEFORE importing PyQt5/OpenGL
 # This avoids conflicts with PyCharm debugger's Qt support
 from infrastructure.hardware_detector import HardwareDetector
-from services.backend_registry import BackendRegistry
+from plugins.backends.backend_registry import BackendRegistry
 from config.config import global_variables
 
 # Pre-detect hardware before Qt initialization

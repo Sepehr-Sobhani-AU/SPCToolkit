@@ -10,7 +10,7 @@ import logging
 from typing import Dict
 
 from infrastructure.hardware_detector import HardwareInfo
-from services.backends import (
+from plugins.backends import (
     DBSCANBackend,
     KNNBackend,
     MaskingBackend,
