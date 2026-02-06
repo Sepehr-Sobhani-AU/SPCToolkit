@@ -19,7 +19,7 @@ from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 
 # Local application imports
-from services.eigenvalue_utils import EigenvalueUtils
+from core.services.eigenvalue_utils import EigenvalueUtils
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
