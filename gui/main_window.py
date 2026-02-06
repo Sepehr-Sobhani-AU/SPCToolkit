@@ -793,7 +793,6 @@ class MainWindow(QtWidgets.QMainWindow):
         global_variables.global_pcd_viewer_widget = None
         global_variables.global_tree_structure_widget = None
         global_variables.global_main_window = None
-        global_variables.global_analysis_thread_manager = None
 
         # Clear EigenvalueUtils singleton cache (KD-tree, indices)
         try:
