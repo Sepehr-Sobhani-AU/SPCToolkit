@@ -7,7 +7,7 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
-from services.batch_processor import BatchProcessor
+from core.services.batch_processor import BatchProcessor
 
 
 class DBSCANPlugin(Plugin):

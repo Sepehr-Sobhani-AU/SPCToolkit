@@ -15,7 +15,7 @@ from plugins.interfaces import ActionPlugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
-from services.batch_processor import BatchProcessor
+from core.services.batch_processor import BatchProcessor
 from config.config import global_variables
 from PyQt5.QtWidgets import QMessageBox
 

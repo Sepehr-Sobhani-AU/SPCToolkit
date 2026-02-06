@@ -13,7 +13,7 @@ import torch
 from scipy.spatial import KDTree
 from typing import Dict, Tuple, Optional, Union, List, Callable
 
-from services.batch_processor import BatchProcessor
+from core.services.batch_processor import BatchProcessor
 
 
 class EigenvalueUtils:
