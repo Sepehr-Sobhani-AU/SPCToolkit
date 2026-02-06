@@ -34,7 +34,7 @@ class LODManager:
         Returns:
             Max points that fit in current available memory with safety margin.
         """
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
 
         max_points, limiting, details = MemoryManager.compute_unified_point_budget()
 
@@ -124,7 +124,7 @@ class LODManager:
     @staticmethod
     def _subsample_indices_gpu(n_points: int, target_count: int) -> np.ndarray:
         """GPU-based random index generation using CuPy."""
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
         import cupy as cp
 
         logger.debug(f"LOD GPU subsampling: {n_points:,} -> {target_count:,}")

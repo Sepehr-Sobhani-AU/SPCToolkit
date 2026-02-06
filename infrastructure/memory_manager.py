@@ -57,7 +57,7 @@ class MemoryManager:
             Available GPU memory in MB, or 0 if unable to determine.
         """
         try:
-            from services.hardware_detector import HardwareDetector
+            from infrastructure.hardware_detector import HardwareDetector
             return HardwareDetector.get_free_gpu_memory_mb()
         except ImportError:
             logger.warning("HardwareDetector not available")

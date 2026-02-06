@@ -32,7 +32,7 @@ class CuPyMasking(MaskingBackend):
 
     def apply_mask(self, points: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Apply boolean mask to filter points using CuPy on GPU."""
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
 
         # Check GPU memory using centralized manager
         required_mb = self._estimate_gpu_memory_mb(points, mask)
@@ -59,7 +59,7 @@ class CuPyMasking(MaskingBackend):
 
     def apply_mask_to_array(self, array: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Apply boolean mask to any array using CuPy on GPU."""
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
 
         # Check GPU memory using centralized manager
         required_mb = self._estimate_gpu_memory_mb(array, mask)
@@ -100,7 +100,7 @@ class CuPyMasking(MaskingBackend):
         Returns:
             Dict mapping names to masked arrays (None values preserved)
         """
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
         import cupy as cp
 
         # Filter out None values and check if any arrays to process

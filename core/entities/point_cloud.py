@@ -975,7 +975,7 @@ class PointCloud:
 
         # Single cleanup after all masking operations (instead of per-array cleanup)
         if masking_backend is not None and masking_backend.is_gpu:
-            from services.memory_manager import MemoryManager
+            from infrastructure.memory_manager import MemoryManager
             MemoryManager.cleanup()
 
         return subset
@@ -1094,7 +1094,7 @@ class PointCloud:
 
         # Single cleanup after all masking operations (instead of per-array cleanup)
         if masking_backend is not None and masking_backend.is_gpu:
-            from services.memory_manager import MemoryManager
+            from infrastructure.memory_manager import MemoryManager
             MemoryManager.cleanup()
 
         logger.debug(f"_apply_mask_inplace() completed")

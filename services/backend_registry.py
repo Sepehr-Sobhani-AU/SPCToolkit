@@ -9,7 +9,7 @@ throughout the application.
 import logging
 from typing import Dict
 
-from services.hardware_detector import HardwareInfo
+from infrastructure.hardware_detector import HardwareInfo
 from services.backends import (
     DBSCANBackend,
     KNNBackend,

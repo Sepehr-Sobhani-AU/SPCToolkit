@@ -544,7 +544,7 @@ class DataManager(QObject):
         """
         import time
         from PyQt5.QtCore import Qt
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
 
         logger.debug(f"_render_visible_data() called (sample_rate={sample_rate:.1%})")
 

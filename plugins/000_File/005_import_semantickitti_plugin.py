@@ -721,7 +721,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         logger.info(f"Merged data: {total_points:,} points, {data_size_mb:.1f} MB")
 
         try:
-            from services.hardware_detector import HardwareDetector
+            from infrastructure.hardware_detector import HardwareDetector
 
             # Estimate GPU memory needed
             vbo_required = data_size_mb * 1.5

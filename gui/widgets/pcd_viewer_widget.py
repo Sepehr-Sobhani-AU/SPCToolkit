@@ -443,7 +443,7 @@ class PCDViewerWidget(QOpenGLWidget):
             AssertionError: If the `points` array does not have the correct shape or data type.
             AssertionError: If the `colors` array is provided but does not have the correct shape or data type.
         """
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
 
         logger.debug("PCDViewerWidget.set_points() called")
 
@@ -525,7 +525,7 @@ class PCDViewerWidget(QOpenGLWidget):
         Raises:
             AssertionError: If the array does not have shape Nx6 or is not float32.
         """
-        from services.memory_manager import MemoryManager
+        from infrastructure.memory_manager import MemoryManager
 
         logger.debug("PCDViewerWidget.set_point_vertices() called")
 

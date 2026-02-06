@@ -39,7 +39,7 @@ class CuMLDBSCAN(DBSCANBackend):
         Returns:
             bool: True if enough memory, False otherwise
         """
-        from services.hardware_detector import HardwareDetector
+        from infrastructure.hardware_detector import HardwareDetector
 
         # Estimate required memory
         # cuML DBSCAN is memory efficient but still needs:

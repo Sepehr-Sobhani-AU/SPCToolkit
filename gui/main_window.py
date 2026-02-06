@@ -12,7 +12,7 @@ from core.analysis_thread_manager import AnalysisThreadManager
 from services.file_manager import FileManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from plugins.plugin_manager import PluginManager
-from services.hardware_detector import HardwareDetector
+from infrastructure.hardware_detector import HardwareDetector
 
 
 class MainWindow(QtWidgets.QMainWindow):
