@@ -693,6 +693,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _check_analysis_completion(self):
         """Check if analysis thread completed and process results."""
+        # Update progress bar from thread state
+        percent, message = self.analysis_executor.get_progress()
+        if message:
+            self.show_progress(message, percent)
+
         if not self.analysis_executor.check_and_process_completion():
             return
 

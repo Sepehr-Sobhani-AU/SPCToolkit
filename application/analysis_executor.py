@@ -41,6 +41,10 @@ class AnalysisExecutor:
         self._result_data: Optional[Dict[str, Any]] = None
         self._error_data: Optional[Dict[str, Any]] = None
 
+        # Thread-safe progress state (read by polling timer)
+        self._progress_percent: Optional[int] = None  # None = indeterminate
+        self._progress_message: str = ""
+
     def execute(self,
                 plugin_class: Type,
                 data_node: DataNode,
@@ -72,6 +76,8 @@ class AnalysisExecutor:
         self._is_completed = False
         self._result_data = None
         self._error_data = None
+        self._progress_percent = None
+        self._progress_message = ""
 
         thread = threading.Thread(
             target=self._run_in_thread,
@@ -122,6 +128,15 @@ class AnalysisExecutor:
             return self._error_data.get('error', 'Unknown error')
         return None
 
+    def get_progress(self) -> tuple:
+        """
+        Get current progress state (thread-safe read).
+
+        Returns:
+            (percent, message) — percent is None for indeterminate, 0-100 for determinate.
+        """
+        return self._progress_percent, self._progress_message
+
     def cleanup(self):
         """Clean up state after processing completion. Call from main thread."""
         self._is_completed = False
@@ -129,6 +144,8 @@ class AnalysisExecutor:
         self._error_data = None
         self._is_running = False
         self._thread = None
+        self._progress_percent = None
+        self._progress_message = ""
 
     def _run_in_thread(self, plugin_class: Type, data_node: DataNode,
                        params: Dict[str, Any], analysis_type: str):
@@ -143,6 +160,8 @@ class AnalysisExecutor:
 
             # Reconstruct if data is not a point_cloud
             if data_node_to_process.data_type != "point_cloud":
+                self._progress_percent = 10
+                self._progress_message = f"Reconstructing branch..."
                 logger.info("Reconstructing branch in background thread...")
                 point_cloud = self._reconstruction_service.reconstruct(
                     str(data_node_to_process.uid)
@@ -165,10 +184,15 @@ class AnalysisExecutor:
                 data_node_to_process = reconstructed_data_node
 
             # Execute analysis via AnalysisService
+            self._progress_percent = 20
+            self._progress_message = f"Running {analysis_type}..."
             logger.info(f"Executing plugin '{analysis_type}' in background thread...")
             result, result_type, dependencies = self._analysis_service.execute(
                 plugin_class, data_node_to_process, params
             )
+
+            self._progress_percent = 100
+            self._progress_message = f"Completed {analysis_type}"
 
             # Store result for main thread
             self._result_data = {
