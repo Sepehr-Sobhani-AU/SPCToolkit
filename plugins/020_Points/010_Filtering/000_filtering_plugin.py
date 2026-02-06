@@ -2,9 +2,9 @@
 from typing import Dict, Any, List, Tuple
 
 from plugins.interfaces import Plugin
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
-from core.masks import Masks
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
+from core.entities.masks import Masks
 
 
 class FilteringPlugin(Plugin):

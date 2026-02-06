@@ -6,7 +6,7 @@ including methods for adding, retrieving, removing, and validating dependencies 
 import uuid
 import logging
 from typing import Dict, List, Optional
-from core.data_node import DataNode
+from core.entities.data_node import DataNode
 
 # Get logger for this module
 logger = logging.getLogger(__name__)

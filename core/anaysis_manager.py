@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 from PyQt5.QtCore import pyqtSignal, QObject
 
-from core.data_node import DataNode
+from core.entities.data_node import DataNode
 from plugins.plugin_manager import PluginManager
 
 

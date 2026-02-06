@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 from gui.dialogs.training_data_preview_window import DataPreviewWindow
 from gui.dialogs.data_generation_progress_dialog import DataGenerationProgressDialog
 

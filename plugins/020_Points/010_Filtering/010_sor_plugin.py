@@ -1,10 +1,10 @@
 # plugins/analysis/sor_plugin.py
 from typing import Dict, Any, List, Tuple
 
-from core.masks import Masks
+from core.entities.masks import Masks
 from plugins.interfaces import Plugin
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
 
 
 class SORPlugin(Plugin):

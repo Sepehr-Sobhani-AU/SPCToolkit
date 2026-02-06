@@ -1,7 +1,7 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Tuple
-from core.data_node import DataNode
+from core.entities.data_node import DataNode
 
 
 class Plugin(ABC):

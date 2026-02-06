@@ -10,8 +10,8 @@
     The main function demonstrates how to use the different task classes and execute them.
 """
 
-from core.point_cloud import PointCloud
-from core.data_node import DataNode
+from core.entities.point_cloud import PointCloud
+from core.entities.data_node import DataNode
 
 from tasks.apply_values import ApplyValues
 from tasks.apply_clusters import ApplyClusters

@@ -5,7 +5,7 @@ import open3d as o3d
 import pickle
 import os
 
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 
 
 class FileManager(QObject):

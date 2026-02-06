@@ -1,7 +1,7 @@
 # TODO: Docstrings
 
-from core.point_cloud import PointCloud
-from core.masks import Masks
+from core.entities.point_cloud import PointCloud
+from core.entities.masks import Masks
 
 
 class ApplyMasks:

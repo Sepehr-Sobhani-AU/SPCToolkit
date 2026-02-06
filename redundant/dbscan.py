@@ -1,6 +1,6 @@
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
-from core.clusters import Clusters
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
+from core.entities.clusters import Clusters
 
 
 class Dbscan:

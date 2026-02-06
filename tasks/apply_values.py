@@ -3,8 +3,8 @@
 Task for applying Values data to a point cloud.
 """
 
-from core.point_cloud import PointCloud
-from core.values import Values
+from core.entities.point_cloud import PointCloud
+from core.entities.values import Values
 import numpy as np
 
 

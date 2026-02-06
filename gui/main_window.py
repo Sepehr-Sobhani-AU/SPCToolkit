@@ -487,7 +487,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Clear EigenvalueUtils singleton cache (KD-tree, indices)
         try:
-            from core.point_cloud import _eigenvalue_utils_instance
+            from core.entities.point_cloud import _eigenvalue_utils_instance
             if _eigenvalue_utils_instance is not None:
                 _eigenvalue_utils_instance.clear_cache()
                 logger.info("EigenvalueUtils cache cleared")

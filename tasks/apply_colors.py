@@ -1,6 +1,6 @@
 # tasks/apply_colors.py
-from core.point_cloud import PointCloud
-from core.colors import Colors
+from core.entities.point_cloud import PointCloud
+from core.entities.colors import Colors
 
 
 class ApplyColors:

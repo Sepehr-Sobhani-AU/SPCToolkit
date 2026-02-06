@@ -2,9 +2,9 @@
 Subsample the point cloud data in the given DataNode.
 """
 
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
-from core.masks import Masks
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
+from core.entities.masks import Masks
 
 
 class Subsampling:

@@ -13,9 +13,9 @@ are useful for:
 from typing import Dict, Any, List, Tuple
 
 from plugins.interfaces import Plugin
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
-from core.eigenvalues import Eigenvalues
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
+from core.entities.eigenvalues import Eigenvalues
 
 
 class ComputeEigenvaluesPlugin(Plugin):

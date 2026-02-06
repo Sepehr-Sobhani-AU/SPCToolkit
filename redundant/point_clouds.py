@@ -27,7 +27,7 @@ import uuid
 from PyQt5.QtCore import QObject, pyqtSignal
 
 # Local application imports
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 
 
 class PointClouds(QObject):

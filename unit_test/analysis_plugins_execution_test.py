@@ -1,8 +1,8 @@
 # test_analysis_plugins.py
 from plugins.plugin_manager import PluginManager
 from core.anaysis_manager import AnalysisManager
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
 import numpy as np
 
 

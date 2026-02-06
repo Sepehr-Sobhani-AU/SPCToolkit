@@ -3,7 +3,7 @@
 Task for filtering a point cloud to show only points of a specific class/name.
 """
 
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 from core.class_reference import ClassReference
 import numpy as np
 

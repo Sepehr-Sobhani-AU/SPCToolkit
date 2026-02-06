@@ -5,7 +5,7 @@ Pass-through task for container nodes.
 Container nodes are organizational only and don't modify the point cloud.
 """
 
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 
 
 class ApplyContainer:

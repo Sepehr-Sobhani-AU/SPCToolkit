@@ -578,7 +578,7 @@ class PointCloud:
             labels = self._dbscan_fallback(eps, min_points)
 
         if return_clusters_object:
-            from core.clusters import Clusters
+            from core.entities.clusters import Clusters
             clusters = Clusters(labels)
             clusters.set_random_color()
             return clusters

@@ -6,8 +6,8 @@ This unified task handles both simple clusters (with per-point colors)
 and named clusters (with semantic names and class colors).
 """
 
-from core.point_cloud import PointCloud
-from core.clusters import Clusters
+from core.entities.point_cloud import PointCloud
+from core.entities.clusters import Clusters
 
 
 class ApplyClusters:

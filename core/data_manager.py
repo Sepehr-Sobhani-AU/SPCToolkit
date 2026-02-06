@@ -11,9 +11,9 @@ from PyQt5.QtCore import QObject, pyqtSignal, Qt
 
 from core.node_reconstruction_manager import NodeReconstructionManager
 from services.file_manager import FileManager
-from core.point_cloud import PointCloud
-from core.data_node import DataNode
-from core.data_nodes import DataNodes
+from core.entities.point_cloud import PointCloud
+from core.entities.data_node import DataNode
+from core.entities.data_nodes import DataNodes
 from core.anaysis_manager import AnalysisManager
 from plugins.plugin_manager import PluginManager
 

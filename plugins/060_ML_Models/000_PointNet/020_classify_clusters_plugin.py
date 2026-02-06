@@ -24,7 +24,7 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.clusters import Clusters
+from core.entities.clusters import Clusters
 from models.pointnet.inference import (
     load_model_with_metadata,
     classify_clusters_batch
@@ -354,7 +354,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
             else:
                 # Create new DataNode
-                from core.data_node import DataNode
+                from core.entities.data_node import DataNode
                 import uuid
 
                 parent_uuid = uuid.UUID(selected_uid) if isinstance(selected_uid, str) else selected_uid

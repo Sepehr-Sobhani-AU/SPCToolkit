@@ -24,9 +24,9 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.clusters import Clusters
+from core.entities.clusters import Clusters
 from core.class_reference import ClassReference
-from core.data_node import DataNode
+from core.entities.data_node import DataNode
 
 
 class ClassSelectionDialog(QDialog):

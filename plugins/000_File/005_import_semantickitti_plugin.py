@@ -20,9 +20,9 @@ import pykitti
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.point_cloud import PointCloud
-from core.data_node import DataNode
-from core.clusters import Clusters
+from core.entities.point_cloud import PointCloud
+from core.entities.data_node import DataNode
+from core.entities.clusters import Clusters
 
 # Get logger for this module
 logger = logging.getLogger(__name__)

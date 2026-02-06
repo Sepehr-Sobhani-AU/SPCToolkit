@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.clusters import Clusters
+from core.entities.clusters import Clusters
 
 
 class ClassifyClusterPlugin(ActionPlugin):
@@ -191,7 +191,7 @@ class ClassifyClusterPlugin(ActionPlugin):
             data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
         else:
             # Create new DataNode for Clusters with names
-            from core.data_node import DataNode
+            from core.entities.data_node import DataNode
             import uuid
 
             # Convert selected_uid from string to UUID

@@ -29,8 +29,8 @@ spec.loader.exec_module(classify_module)
 ClassifyClusterPlugin = classify_module.ClassifyClusterPlugin
 
 from plugins.interfaces import ActionPlugin
-from core.point_cloud import PointCloud
-from core.clusters import Clusters
+from core.entities.point_cloud import PointCloud
+from core.entities.clusters import Clusters
 
 
 def test_classify_cluster_plugin():

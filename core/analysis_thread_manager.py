@@ -192,7 +192,7 @@ class AnalysisThread(threading.Thread):
                 print(f"[THREAD] Reconstructing branch in background thread...")
                 # Use DataManager.reconstruct_branch() which has cache optimization
                 data_manager = global_variables.global_data_manager
-                from core.data_node import DataNode
+                from core.entities.data_node import DataNode
 
                 point_cloud = data_manager.reconstruct_branch(self.node_uid)
 

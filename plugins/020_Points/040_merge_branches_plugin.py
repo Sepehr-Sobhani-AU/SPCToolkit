@@ -22,8 +22,8 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.point_cloud import PointCloud
-from core.data_node import DataNode
+from core.entities.point_cloud import PointCloud
+from core.entities.data_node import DataNode
 
 logger = logging.getLogger(__name__)
 

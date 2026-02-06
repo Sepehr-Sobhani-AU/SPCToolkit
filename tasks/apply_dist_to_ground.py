@@ -7,8 +7,8 @@ to a point cloud, enabling reconstruction of point clouds with vertical
 distance information preserved.
 """
 
-from core.point_cloud import PointCloud
-from core.dist_to_ground import DistToGround
+from core.entities.point_cloud import PointCloud
+from core.entities.dist_to_ground import DistToGround
 import numpy as np
 
 

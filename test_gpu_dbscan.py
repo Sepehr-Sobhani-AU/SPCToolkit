@@ -6,7 +6,7 @@ This script can run in WSL2 with the rapids environment.
 
 import numpy as np
 import time
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 
 def generate_test_data(n_points=500000):
     """Generate a test point cloud with clusters."""

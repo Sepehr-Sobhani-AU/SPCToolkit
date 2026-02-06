@@ -3,8 +3,8 @@
 Task for applying eigenvalue-based visualization to a point cloud.
 """
 
-from core.point_cloud import PointCloud
-from core.eigenvalues import Eigenvalues
+from core.entities.point_cloud import PointCloud
+from core.entities.eigenvalues import Eigenvalues
 from services.eigenvalue_utils import EigenvalueUtils
 import numpy as np
 

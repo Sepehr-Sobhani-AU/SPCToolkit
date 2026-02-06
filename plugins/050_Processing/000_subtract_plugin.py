@@ -4,8 +4,8 @@ import numpy as np
 import uuid
 
 from plugins.interfaces import Plugin
-from core.data_node import DataNode
-from core.masks import Masks
+from core.entities.data_node import DataNode
+from core.entities.masks import Masks
 
 
 class SubtractPlugin(Plugin):

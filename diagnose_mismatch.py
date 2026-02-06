@@ -7,7 +7,7 @@ difference in how features are computed.
 
 import numpy as np
 import open3d as o3d
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 
 def load_and_process_for_training(ply_path):
     """

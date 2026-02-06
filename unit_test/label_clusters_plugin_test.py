@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 from plugins.Training.label_clusters_plugin import LabelClustersPlugin
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 
 
 def test_extract_cluster_data():

@@ -5,7 +5,7 @@ This will help identify why inference produces low confidence (unclassified) pre
 """
 
 import numpy as np
-from core.point_cloud import PointCloud
+from core.entities.point_cloud import PointCloud
 from models.pointnet.inference import _process_cluster_for_inference
 import glob
 

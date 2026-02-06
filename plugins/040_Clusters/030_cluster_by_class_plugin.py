@@ -12,9 +12,9 @@ import numpy as np
 import uuid
 
 from plugins.interfaces import ActionPlugin
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
-from core.clusters import Clusters
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
+from core.entities.clusters import Clusters
 from services.batch_processor import BatchProcessor
 from config.config import global_variables
 from PyQt5.QtWidgets import QMessageBox

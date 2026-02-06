@@ -7,8 +7,8 @@ various distance statistics from k-nearest neighbors.
 """
 
 import numpy as np
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
 from plugins.plugin_manager import PluginManager
 
 
