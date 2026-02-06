@@ -238,12 +238,15 @@ class TreeStructureWidget(QTreeWidget):
                     return
 
                 is_cached = item.checkState(1) == Qt.Checked
-                data_manager = global_variables.global_data_manager
-                if data_manager:
+                controller = global_variables.global_application_controller
+                if controller:
                     if is_cached:
-                        data_manager.cache_branch(uid)
+                        controller.cache_node(uid)
                     else:
-                        data_manager.uncache_branch(uid)
+                        controller.uncache_node(uid)
+                    # Update memory tooltip
+                    memory_usage = controller.get_cache_memory_usage(uid)
+                    self.update_cache_tooltip(uid, memory_usage)
 
     def on_selection_changed(self):
         """
