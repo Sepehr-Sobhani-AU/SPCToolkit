@@ -12,7 +12,7 @@ from OpenGL.GLU import GLU_FILL
 from OpenGL.arrays import vbo
 
 from config.config import global_variables
-from services.lod_manager import LODManager
+from application.lod_manager import LODManager
 
 # Get logger for this module
 logger = logging.getLogger(__name__)

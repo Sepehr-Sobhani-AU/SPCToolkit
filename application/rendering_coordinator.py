@@ -14,7 +14,7 @@ import numpy as np
 from core.entities.data_nodes import DataNodes
 from core.services.reconstruction_service import ReconstructionService
 from core.services.cache_service import CacheService
-from services.lod_manager import LODManager
+from application.lod_manager import LODManager
 
 logger = logging.getLogger(__name__)
 

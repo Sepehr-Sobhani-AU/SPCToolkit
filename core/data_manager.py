@@ -20,7 +20,7 @@ from plugins.plugin_manager import PluginManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from gui.widgets.tree_structure_widget import TreeStructureWidget
 from gui.widgets.pcd_viewer_widget import PCDViewerWidget
-from services.lod_manager import LODManager
+from application.lod_manager import LODManager
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
