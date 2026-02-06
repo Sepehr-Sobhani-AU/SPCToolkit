@@ -129,35 +129,35 @@
         <mxCell id="msg-5" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#333333;" value="">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="535" y="450" as="sourcePoint" />
-            <mxPoint x="785" y="450" as="targetPoint" />
+            <mxPoint x="1010" y="450" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="msg-5-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=12;fontColor=#333333;" value="5. Delegate to background executor" vertex="1">
-          <mxGeometry height="22" width="250" x="535" y="425" as="geometry" />
+        <mxCell id="msg-5-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=12;fontColor=#333333;" value="5. Fetch target data node" vertex="1">
+          <mxGeometry height="22" width="250" x="640" y="425" as="geometry" />
         </mxCell>
-        <mxCell id="bg-thread-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#cc6600;strokeWidth=2;dashed=1;verticalAlign=top;align=right;spacingLeft=12;spacingTop=8;fontSize=13;fontStyle=1;fontColor=#cc6600;" value="&lt;blockquote style=&quot;margin: 0 0 0 40px; border: none; padding: 0px;&quot;&gt;&lt;blockquote style=&quot;margin: 0 0 0 40px; border: none; padding: 0px;&quot;&gt;&lt;div style=&quot;padding-top: 0px; padding-right: 20px;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(204, 102, 0), rgb(212, 125, 37));&quot;&gt;BACKGROUND THREAD&lt;/span&gt;&lt;/div&gt;&lt;/blockquote&gt;&lt;/blockquote&gt;" vertex="1">
-          <mxGeometry height="360" width="530" x="740" y="490" as="geometry" />
+        <mxCell id="ret-5" edge="1" parent="1" style="endArrow=open;dashed=1;html=1;strokeWidth=1.5;strokeColor=#666666;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1010" y="490" as="sourcePoint" />
+            <mxPoint x="535" y="490" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
-        <mxCell id="bg-thread-note" parent="1" style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;size=15;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=5;fontColor=#555555;" value="Why background thread?&#xa;SOR can process millions of points.&#xa;Without it, the UI would freeze —&#xa;no progress updates, no camera." vertex="1">
-          <mxGeometry height="70" width="178" x="1080" y="533" as="geometry" />
+        <mxCell id="ret-5-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;fontStyle=2;" value="Target DataNode" vertex="1">
+          <mxGeometry height="20" width="200" x="660" y="468" as="geometry" />
         </mxCell>
         <mxCell id="msg-6" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#333333;" value="">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="795" y="540" as="sourcePoint" />
-            <mxPoint x="1010" y="540" as="targetPoint" />
+            <mxPoint x="535" y="540" as="sourcePoint" />
+            <mxPoint x="785" y="540" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="msg-6-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=12;fontColor=#333333;" value="6. Fetch target data node" vertex="1">
-          <mxGeometry height="20" width="120" x="840" y="517" as="geometry" />
+        <mxCell id="msg-6-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=12;fontColor=#333333;" value="6. Delegate with data node to executor" vertex="1">
+          <mxGeometry height="22" width="250" x="535" y="515" as="geometry" />
         </mxCell>
-        <mxCell id="ret-6" edge="1" parent="1" style="endArrow=open;dashed=1;html=1;strokeWidth=1.5;strokeColor=#666666;" value="">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="1010" y="580" as="sourcePoint" />
-            <mxPoint x="795" y="580" as="targetPoint" />
-          </mxGeometry>
+        <mxCell id="bg-thread-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#cc6600;strokeWidth=2;dashed=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=13;fontStyle=1;fontColor=#cc6600;" value="&lt;blockquote style=&quot;margin: 0 0 0 40px; border: none; padding: 0px;&quot;&gt;&lt;blockquote style=&quot;margin: 0 0 0 40px; border: none; padding: 0px;&quot;&gt;&lt;div style=&quot;padding-top: 0px; padding-right: 0px; margin-right: 0px; padding-bottom: 0px;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(204, 102, 0), rgb(212, 125, 37));&quot;&gt;BACKGROUND THREAD&lt;/span&gt;&lt;/div&gt;&lt;/blockquote&gt;&lt;/blockquote&gt;" vertex="1">
+          <mxGeometry height="270" width="530" x="740" y="580" as="geometry" />
         </mxCell>
-        <mxCell id="ret-6-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;fontStyle=2;" value="Target DataNode" vertex="1">
-          <mxGeometry height="20" width="110" x="850" y="558" as="geometry" />
+        <mxCell id="bg-thread-note" parent="1" style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;size=15;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=5;fontColor=#555555;" value="Why background thread?&#xa;SOR can process millions of points.&#xa;Without it, the UI would freeze —&#xa;no progress updates, no camera." vertex="1">
+          <mxGeometry height="70" width="178" x="820" y="655" as="geometry" />
         </mxCell>
         <mxCell id="msg-7" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#333333;" value="">
           <mxGeometry relative="1" as="geometry">
