@@ -10,7 +10,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
 
 
-class ApplyClusters:
+class ClustersTransformer:
     """
     Task for applying cluster labels to a point cloud.
 

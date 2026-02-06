@@ -13,13 +13,12 @@
 from core.entities.point_cloud import PointCloud
 from core.entities.data_node import DataNode
 
-from tasks.apply_values import ApplyValues
-from tasks.apply_clusters import ApplyClusters
-from tasks.apply_masks import ApplyMasks
-from tasks.apply_eigenvalues import ApplyEigenvalues
-from tasks.apply_colors import ApplyColors
-from tasks.apply_dist_to_ground import ApplyDistToGround
-from tasks.apply_class_reference import ApplyClassReference
+from core.transformers.values_transformer import ValuesTransformer
+from core.transformers.clusters_transformer import ClustersTransformer
+from core.transformers.masks_transformer import MasksTransformer
+from core.transformers.eigenvalues_transformer import EigenvaluesTransformer
+from core.transformers.colors_transformer import ColorsTransformer
+from core.transformers.dist_to_ground_transformer import DistToGroundTransformer
 
 
 
@@ -35,13 +34,12 @@ class NodeReconstructionManager:
 
         super().__init__()
         self.tasks_registry = {
-            "masks": ApplyMasks,
-            "cluster_labels": ApplyClusters,
-            "values": ApplyValues,
-            "eigenvalues": ApplyEigenvalues,
-            "colors": ApplyColors,
-            "dist_to_ground": ApplyDistToGround,
-            "class_reference": ApplyClassReference,
+            "masks": MasksTransformer,
+            "cluster_labels": ClustersTransformer,
+            "values": ValuesTransformer,
+            "eigenvalues": EigenvaluesTransformer,
+            "colors": ColorsTransformer,
+            "dist_to_ground": DistToGroundTransformer,
         }
 
     def reconstruct_node(self, point_cloud: PointCloud, data_node: DataNode) -> PointCloud:

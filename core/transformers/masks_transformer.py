@@ -4,7 +4,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.masks import Masks
 
 
-class ApplyMasks:
+class MasksTransformer:
 
     def __init__(self, point_cloud: PointCloud, masks: Masks):
         self.point_cloud = point_cloud

@@ -9,7 +9,7 @@ from services.eigenvalue_utils import EigenvalueUtils
 import numpy as np
 
 
-class ApplyEigenvalues:
+class EigenvaluesTransformer:
     """
     Task for applying eigenvalues to a point cloud for visualization.
 
@@ -19,7 +19,7 @@ class ApplyEigenvalues:
 
     def __init__(self, point_cloud: PointCloud, eigenvalues: Eigenvalues):
         """
-        Initialize the ApplyEigenvalues task.
+        Initialize the EigenvaluesTransformer task.
 
         Args:
             point_cloud (PointCloud): The point cloud to apply eigenvalues to

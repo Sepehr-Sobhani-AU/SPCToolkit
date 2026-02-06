@@ -8,7 +8,7 @@ Container nodes are organizational only and don't modify the point cloud.
 from core.entities.point_cloud import PointCloud
 
 
-class ApplyContainer:
+class ContainerTransformer:
     """
     Pass-through task for container nodes.
 

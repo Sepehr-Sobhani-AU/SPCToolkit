@@ -3,7 +3,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.colors import Colors
 
 
-class ApplyColors:
+class ColorsTransformer:
     """
     A task class for applying colors to a point cloud.
 

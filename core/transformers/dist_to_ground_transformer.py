@@ -12,7 +12,7 @@ from core.entities.dist_to_ground import DistToGround
 import numpy as np
 
 
-class ApplyDistToGround:
+class DistToGroundTransformer:
     """
     Task for applying distance-to-ground values to a point cloud.
 
@@ -25,7 +25,7 @@ class ApplyDistToGround:
 
     def __init__(self, point_cloud: PointCloud, dist_to_ground: DistToGround):
         """
-        Initialize the ApplyDistToGround task.
+        Initialize the DistToGroundTransformer task.
 
         Args:
             point_cloud (PointCloud): The point cloud to apply distance values to

@@ -8,7 +8,7 @@ from core.entities.values import Values
 import numpy as np
 
 
-class ApplyValues:
+class ValuesTransformer:
     """
     Task for applying Values data to a point cloud.
 
@@ -17,7 +17,7 @@ class ApplyValues:
 
     def __init__(self, point_cloud: PointCloud, values: Values):
         """
-        Initialize the ApplyValues task.
+        Initialize the ValuesTransformer task.
 
         Args:
             point_cloud (PointCloud): The point cloud to apply values to
