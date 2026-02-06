@@ -122,7 +122,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # LOD state (synced with rendering_coordinator)
         self._current_sample_rate = 1.0
 
-        # Create overlay widgets for blocking UI during processing
+        # Backward compat: overlay references (kept for plugins that may use them)
         self.tree_overlay = ProcessOverlayWidget(parent=self)
         self.window_overlay = ProcessOverlayWidget(parent=self)
 
@@ -154,6 +154,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # Status bar
         self.statusbar = QtWidgets.QStatusBar(self)
         self.setStatusBar(self.statusbar)
+
+        # Processing progress bar (hidden by default, shown during operations)
+        self._progress_bar = QtWidgets.QProgressBar()
+        self._progress_bar.setMaximumWidth(200)
+        self._progress_bar.setMaximumHeight(16)
+        self._progress_bar.setRange(0, 0)  # Indeterminate by default
+        self._progress_bar.hide()
+        self.statusbar.addWidget(self._progress_bar)
+
+        # Processing status label (left side, shown during operations)
+        self._progress_label = QtWidgets.QLabel()
+        self._progress_label.hide()
+        self.statusbar.addWidget(self._progress_label)
 
         # Create permanent hardware info label in status bar (right-aligned)
         self._hardware_status_label = QtWidgets.QLabel()
@@ -501,6 +514,31 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"Error executing action plugin '{plugin_name}': {str(e)}")
 
+    def show_progress(self, message: str = "Processing...", percent: int = None):
+        """
+        Show progress in status bar.
+
+        Args:
+            message: Status message to display.
+            percent: Optional progress percentage (0-100). None for indeterminate.
+        """
+        self._progress_label.setText(message)
+        self._progress_label.show()
+        if percent is not None:
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(percent)
+        else:
+            self._progress_bar.setRange(0, 0)  # Indeterminate
+        self._progress_bar.show()
+        QtWidgets.QApplication.processEvents()
+
+    def clear_progress(self):
+        """Clear progress display from status bar."""
+        self._progress_bar.hide()
+        self._progress_label.hide()
+        self._progress_label.setText("")
+        QtWidgets.QApplication.processEvents()
+
     def disable_menus(self):
         """
         Disable the entire menu bar to prevent user interaction during processing.
@@ -539,22 +577,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_branch_visibility_changed(self, visibility_status: dict):
         """Handle visibility changes from tree widget."""
-        self.tree_overlay.position_over(self.tree_widget)
-        self.tree_overlay.show_processing("Updating visibility...")
+        self.show_progress("Updating visibility...")
         self.disable_menus()
         self.disable_tree()
         try:
             self._render_visible_data(visibility_status, zoom_extent=False)
         finally:
-            self.tree_overlay.hide_processing()
+            self.clear_progress()
             self.enable_menus()
             self.enable_tree()
 
     def _on_branch_added(self, visibility_status: dict):
         """Handle new branch additions from tree widget."""
         logger.info("_on_branch_added() triggered")
-        self.tree_overlay.position_over(self.tree_widget)
-        self.tree_overlay.show_processing("Rendering new branch...")
+        self.show_progress("Rendering new branch...")
         self.disable_menus()
         self.disable_tree()
         try:
@@ -564,7 +600,7 @@ class MainWindow(QtWidgets.QMainWindow):
             logger.error(traceback.format_exc())
             raise
         finally:
-            self.tree_overlay.hide_processing()
+            self.clear_progress()
             self.enable_menus()
             self.enable_tree()
 
@@ -635,8 +671,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_analysis(self, analysis_type: str, params: dict):
         """Start analysis with UI protection."""
-        self.tree_overlay.position_over(self.tree_widget)
-        self.tree_overlay.show_processing(f"Running {analysis_type}...")
+        self.show_progress(f"Running {analysis_type}...")
         self.disable_menus()
         self.disable_tree()
 
@@ -664,7 +699,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._completion_timer.stop()
 
         # Re-enable UI
-        self.tree_overlay.hide_processing()
+        self.clear_progress()
         self.enable_menus()
         self.enable_tree()
 
@@ -733,7 +768,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_analysis_error(self, error_msg: str):
         """Handle analysis error callback."""
         logger.error(f"Analysis error: {error_msg}")
-        self.tree_overlay.hide_processing()
+        self.clear_progress()
         self.enable_menus()
         self.enable_tree()
 
