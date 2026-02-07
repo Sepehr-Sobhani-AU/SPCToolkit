@@ -17,12 +17,12 @@ class DeleteBranchPlugin(ActionPlugin):
         return {}  # Uses selected branch(es) from tree
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
         # Get selected branches
-        selected_branches = data_manager.selected_branches
+        selected_branches = controller.selected_branches
         if not selected_branches:
             QMessageBox.warning(
                 main_window,
@@ -92,13 +92,13 @@ class DeleteBranchPlugin(ActionPlugin):
                 tree_widget.remove_branch(str(uid))
 
             # Clear selection
-            data_manager.selected_branches = []
+            controller.selected_branches = []
 
         finally:
             tree_widget.blockSignals(False)
 
         # Re-render visible data
-        data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
+        main_window.render_visible_data(zoom_extent=False)
 
     def _get_all_descendants(self, uid: uuid.UUID, data_nodes) -> List[uuid.UUID]:
         """Get all descendant UIDs (children, grandchildren, etc.)"""

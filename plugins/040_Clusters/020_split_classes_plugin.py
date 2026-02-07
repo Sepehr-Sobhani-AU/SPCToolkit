@@ -177,12 +177,12 @@ class SplitClassesPlugin(ActionPlugin):
             params: Parameters (unused - custom dialog instead)
         """
         # Get global instances
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
         # Validate branch selection
-        selected_branches = data_manager.selected_branches
+        selected_branches = controller.selected_branches
 
         if not selected_branches:
             QMessageBox.warning(
@@ -204,7 +204,7 @@ class SplitClassesPlugin(ActionPlugin):
 
         # Reconstruct the branch (works for any node type: Clusters, Masks, etc.)
         try:
-            point_cloud = data_manager.reconstruct_branch(selected_uid)
+            point_cloud = controller.reconstruct(selected_uid)
         except Exception as e:
             QMessageBox.critical(
                 main_window,

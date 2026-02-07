@@ -49,8 +49,8 @@ class MergeBranchesPlugin(ActionPlugin):
             Dict[str, Any]: Parameter schema with name input
         """
         # Count currently selected branches for default name
-        data_manager = global_variables.global_data_manager
-        num_selected = len(data_manager.selected_branches) if data_manager else 0
+        controller = global_variables.global_application_controller
+        num_selected = len(controller.selected_branches) if controller else 0
 
         return {
             "merged_name": {
@@ -73,12 +73,12 @@ class MergeBranchesPlugin(ActionPlugin):
         logger.debug(f"Params: {params}")
 
         # Get global instances via singleton pattern
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
         # Get selected branches
-        selected_branches = data_manager.selected_branches
+        selected_branches = controller.selected_branches
         logger.info(f"Selected branches: {len(selected_branches)} - {selected_branches}")
 
         # Validation: minimum 2 branches
@@ -106,7 +106,7 @@ class MergeBranchesPlugin(ActionPlugin):
             for i, uid_str in enumerate(selected_branches):
                 logger.debug(f"Reconstructing branch {i+1}/{len(selected_branches)}: {uid_str}")
                 try:
-                    pc = data_manager.reconstruct_branch(uid_str)
+                    pc = controller.reconstruct(uid_str)
                     logger.debug(f"  Reconstructed: {pc.size} points")
                     point_clouds.append(pc)
                 except Exception as e:
@@ -137,7 +137,7 @@ class MergeBranchesPlugin(ActionPlugin):
 
             # Calculate memory size
             logger.debug("Calculating memory size")
-            merged_node.memory_size = data_manager._calculate_point_cloud_memory(merged_pc)
+            merged_node.memory_size = controller._calculate_point_cloud_memory(merged_pc)
             logger.debug(f"Memory size: {merged_node.memory_size}")
 
             # Add to data nodes collection

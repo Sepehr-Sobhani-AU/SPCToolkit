@@ -53,7 +53,7 @@ class LoadProjectPlugin(ActionPlugin):
         """
         # Get global instances
         file_manager = global_variables.global_file_manager
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         tree_widget = global_variables.global_tree_structure_widget
         viewer_widget = global_variables.global_pcd_viewer_widget
 
@@ -89,9 +89,8 @@ class LoadProjectPlugin(ActionPlugin):
         if hasattr(file_manager, '_last_loaded_tree_visibility'):
             tree_visibility = file_manager._last_loaded_tree_visibility
 
-        # Replace the global data_nodes
-        global_variables.global_data_nodes = loaded_data_nodes
-        data_manager.data_nodes = loaded_data_nodes
+        # Replace data_nodes across all services via ApplicationController
+        controller.load_project(loaded_data_nodes)
 
         # Clear the tree widget
         tree_widget.clear()
@@ -117,10 +116,13 @@ class LoadProjectPlugin(ActionPlugin):
         tree_widget.blockSignals(False)
 
         # Update memory labels for all loaded branches
-        data_manager.update_all_branch_memory_labels()
+        memory_labels = controller.update_all_branch_memory_labels()
+        for uid_str, memory_size in memory_labels.items():
+            if uid_str in tree_widget.branches_dict:
+                tree_widget.update_cache_tooltip(uid_str, memory_size)
 
         # Update viewer to show visible branches and zoom to extent
-        data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=True)
+        main_window.render_visible_data(zoom_extent=True)
 
     def rebuild_tree(self, tree_widget, data_nodes):
         """

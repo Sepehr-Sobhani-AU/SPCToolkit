@@ -64,11 +64,11 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
             main_window: The main application window
             params: Dictionary containing 'export_directory' and 'max_points' parameters
         """
-        # Get the data manager
-        data_manager = global_variables.global_data_manager
+        # Get the application controller
+        controller = global_variables.global_application_controller
 
         # Check if a branch is selected
-        if not data_manager.selected_branches:
+        if not controller.selected_branches:
             QMessageBox.warning(
                 main_window,
                 "No Selection",
@@ -77,7 +77,7 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
             return
 
         # Get the selected branch
-        selected_uid = data_manager.selected_branches[0]
+        selected_uid = controller.selected_branches[0]
 
         # Convert string UID to UUID if needed
         import uuid
@@ -88,7 +88,7 @@ class ExportClassifiedClustersPlugin(ActionPlugin):
 
         # Reconstruct the branch (works for any node type: Clusters, Masks, etc.)
         try:
-            point_cloud = data_manager.reconstruct_branch(str(selected_uid_uuid))
+            point_cloud = controller.reconstruct(str(selected_uid_uuid))
         except Exception as e:
             QMessageBox.critical(
                 main_window,

@@ -186,14 +186,14 @@ class ClusterByValuePlugin(ActionPlugin):
         Returns:
             Dict mapping attribute keys to display names
         """
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
 
-        if not data_manager or not data_manager.selected_branches:
+        if not controller or not controller.selected_branches:
             return {}
 
         try:
-            selected_uid = data_manager.selected_branches[0]
+            selected_uid = controller.selected_branches[0]
             if isinstance(selected_uid, str):
                 selected_uid = uuid.UUID(selected_uid)
 
@@ -203,7 +203,7 @@ class ClusterByValuePlugin(ActionPlugin):
             if selected_node.data_type == "point_cloud":
                 point_cloud = selected_node.data
             else:
-                point_cloud = data_manager.reconstruct_branch(str(selected_uid))
+                point_cloud = controller.reconstruct(str(selected_uid))
 
             # Collect available attributes
             attribute_options = {}
@@ -232,12 +232,12 @@ class ClusterByValuePlugin(ActionPlugin):
     def execute(self, main_window, params: Dict[str, Any]) -> None:
         """Execute clustering by value."""
         # Get managers
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
         # Check if a branch is selected
-        if not data_manager.selected_branches:
+        if not controller.selected_branches:
             QMessageBox.warning(
                 main_window,
                 "No Selection",
@@ -246,7 +246,7 @@ class ClusterByValuePlugin(ActionPlugin):
             return
 
         # Get the selected branch
-        selected_uid = data_manager.selected_branches[0]
+        selected_uid = controller.selected_branches[0]
         if isinstance(selected_uid, str):
             selected_uid_uuid = uuid.UUID(selected_uid)
         else:
@@ -257,7 +257,7 @@ class ClusterByValuePlugin(ActionPlugin):
 
         # Reconstruct the point cloud
         try:
-            point_cloud = data_manager.reconstruct_branch(str(selected_uid_uuid))
+            point_cloud = controller.reconstruct(str(selected_uid_uuid))
         except Exception as e:
             QMessageBox.critical(
                 main_window,

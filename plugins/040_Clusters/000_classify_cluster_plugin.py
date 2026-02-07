@@ -75,11 +75,11 @@ class ClassifyClusterPlugin(ActionPlugin):
             params: Parameters from the dialog (class_name)
         """
         # Get global instances
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         viewer_widget = global_variables.global_pcd_viewer_widget
 
         # Get selected branches
-        selected_branches = data_manager.selected_branches
+        selected_branches = controller.selected_branches
 
         # Validate branch selection
         if not selected_branches:
@@ -101,7 +101,7 @@ class ClassifyClusterPlugin(ActionPlugin):
         # Reconstruct the branch to get PointCloud
         selected_uid = selected_branches[0]
         try:
-            point_cloud = data_manager.reconstruct_branch(selected_uid)
+            point_cloud = controller.reconstruct(selected_uid)
         except Exception as e:
             QMessageBox.critical(
                 main_window,
@@ -188,7 +188,7 @@ class ClassifyClusterPlugin(ActionPlugin):
                 tree_widget.visibility_status[str(existing_clusters_node.uid)] = True
 
             # Manually trigger visibility update to refresh the visualization
-            data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
+            main_window.render_visible_data(zoom_extent=False)
         else:
             # Create new DataNode for Clusters with names
             from core.entities.data_node import DataNode
@@ -228,7 +228,7 @@ class ClassifyClusterPlugin(ActionPlugin):
                 tree_widget.blockSignals(False)
 
             # Manually trigger visibility update since signals were blocked
-            data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
+            main_window.render_visible_data(zoom_extent=False)
 
         # Clear selection after classification
         viewer_widget.picked_points_indices.clear()

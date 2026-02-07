@@ -79,10 +79,10 @@ class DBSCANBenchmarkPlugin(ActionPlugin):
             main_window: The main application window
             params: Benchmark parameters
         """
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
 
         # Check if a branch is selected
-        if not data_manager.selected_branches:
+        if not controller.selected_branches:
             QMessageBox.warning(
                 main_window,
                 "Clustering Benchmark",
@@ -91,8 +91,8 @@ class DBSCANBenchmarkPlugin(ActionPlugin):
             return
 
         # Get selected branch and reconstruct to point cloud
-        selected_uid = data_manager.selected_branches[0]
-        point_cloud = data_manager.reconstruct_branch(selected_uid)
+        selected_uid = controller.selected_branches[0]
+        point_cloud = controller.reconstruct(selected_uid)
 
         if point_cloud is None:
             QMessageBox.warning(

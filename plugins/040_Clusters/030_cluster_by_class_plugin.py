@@ -173,12 +173,12 @@ class ClusterByClassPlugin(ActionPlugin):
     def execute(self, main_window, params: Dict[str, Any]) -> None:
         """Execute clustering by class."""
         # Get managers
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
         # Check if a branch is selected
-        if not data_manager.selected_branches:
+        if not controller.selected_branches:
             QMessageBox.warning(
                 main_window,
                 "No Selection",
@@ -187,7 +187,7 @@ class ClusterByClassPlugin(ActionPlugin):
             return
 
         # Get the selected branch
-        selected_uid = data_manager.selected_branches[0]
+        selected_uid = controller.selected_branches[0]
         if isinstance(selected_uid, str):
             selected_uid_uuid = uuid.UUID(selected_uid)
         else:
@@ -195,7 +195,7 @@ class ClusterByClassPlugin(ActionPlugin):
 
         # Reconstruct the selected branch
         try:
-            point_cloud = data_manager.reconstruct_branch(str(selected_uid_uuid))
+            point_cloud = controller.reconstruct(str(selected_uid_uuid))
         except Exception as e:
             QMessageBox.critical(
                 main_window,

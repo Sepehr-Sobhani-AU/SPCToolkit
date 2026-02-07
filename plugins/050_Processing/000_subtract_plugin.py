@@ -74,7 +74,7 @@ class SubtractPlugin(Plugin):
         # Get the data nodes manager from global variables
         from config.config import global_variables
         data_nodes = global_variables.global_data_nodes
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
 
         # Get the target point cloud
         target_pc = data_node.data
@@ -88,8 +88,8 @@ class SubtractPlugin(Plugin):
             if subtract_node is None:
                 raise ValueError(f"Branch with UUID {subtract_uid} not found")
 
-            # Use the data_manager to reconstruct the point cloud
-            subtract_pc = data_manager.reconstruct_branch(subtract_uid)
+            # Use the controller to reconstruct the point cloud (thread-safe: read-only)
+            subtract_pc = controller.reconstruct(subtract_uid)
             subtract_points = subtract_pc.points
 
         except Exception as e:

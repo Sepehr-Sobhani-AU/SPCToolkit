@@ -827,7 +827,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         """
         logger.debug(f"    _add_clusters_to_data_manager() called for parent: {parent_name}")
 
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
@@ -895,13 +895,13 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         """
         logger.debug(f"    _add_to_data_manager() called for: {point_cloud.name}")
 
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
-        if data_manager is None:
-            logger.error("    global_data_manager is None!")
-            raise RuntimeError("DataManager not initialized")
+        if controller is None:
+            logger.error("    global_application_controller is None!")
+            raise RuntimeError("ApplicationController not initialized")
         if data_nodes is None:
             logger.error("    global_data_nodes is None!")
             raise RuntimeError("DataNodes not initialized")
@@ -922,7 +922,7 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
 
         # Calculate memory size
         logger.debug(f"    Calculating memory size...")
-        data_node.memory_size = data_manager._calculate_point_cloud_memory(point_cloud)
+        data_node.memory_size = controller._calculate_point_cloud_memory(point_cloud)
         logger.debug(f"    Memory size: {data_node.memory_size}")
 
         # Add to data nodes collection

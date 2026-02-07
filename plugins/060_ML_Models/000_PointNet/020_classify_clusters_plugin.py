@@ -126,7 +126,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
         ClassifyClustersMLPlugin.last_params = params.copy()
 
         # Get global instances
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         viewer_widget = global_variables.global_pcd_viewer_widget
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
@@ -139,7 +139,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
         max_points_per_cluster = int(params["max_points_per_cluster"])
 
         # Validate branch selection
-        selected_branches = data_manager.selected_branches
+        selected_branches = controller.selected_branches
 
         if not selected_branches:
             QMessageBox.warning(
@@ -207,7 +207,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             # Reconstruct branch to get PointCloud
             main_window.tree_overlay.show_processing("Reconstructing branch...")
 
-            point_cloud = data_manager.reconstruct_branch(selected_uid)
+            point_cloud = controller.reconstruct(selected_uid)
 
             # Check if point cloud has cluster labels
             cluster_labels = point_cloud.get_attribute("cluster_labels")
@@ -350,7 +350,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                     tree_widget.visibility_status[str(existing_clusters_node.uid)] = True
 
                 # Trigger visibility update
-                data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
+                main_window.render_visible_data(zoom_extent=False)
 
             else:
                 # Create new DataNode
@@ -385,7 +385,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                     tree_widget.blockSignals(False)
 
                 # Manually trigger visibility update
-                data_manager._render_visible_data(tree_widget.visibility_status, zoom_extent=False)
+                main_window.render_visible_data(zoom_extent=False)
 
             # Clear point selection
             viewer_widget.picked_points_indices.clear()
