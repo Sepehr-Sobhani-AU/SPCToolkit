@@ -4,7 +4,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from plugins.plugin_manager import PluginManager
-from core.anaysis_manager import AnalysisManager
+from core.services.analysis_service import AnalysisService
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 import numpy as np
@@ -12,9 +12,9 @@ import numpy as np
 
 def test_analysis_plugins():
     """Test that analysis plugins can be executed correctly."""
-    # Create a plugin manager and analysis manager
+    # Create a plugin manager and analysis service
     plugin_manager = PluginManager()
-    analysis_manager = AnalysisManager(plugin_manager)
+    analysis_service = AnalysisService()
 
     # Create a simple test point cloud with random points
     points = np.random.rand(100, 3).astype(np.float32)
