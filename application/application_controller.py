@@ -288,3 +288,23 @@ class ApplicationController:
                 node.memory_size = memory_size
                 result[uid_str] = memory_size
         return result
+
+    def load_project(self, loaded_data_nodes: DataNodes):
+        """
+        Replace current data_nodes with loaded ones and update all service references.
+
+        Called by load_project_plugin after deserializing a .pcdtk file.
+
+        Args:
+            loaded_data_nodes: The DataNodes instance from the loaded project.
+        """
+        from config.config import global_variables
+
+        self.data_nodes = loaded_data_nodes
+        global_variables.global_data_nodes = loaded_data_nodes
+
+        # Update service references so reconstruction/cache use the new data
+        self.reconstruction_service.data_nodes = loaded_data_nodes
+        self.cache_service.data_nodes = loaded_data_nodes
+        if self.rendering_coordinator is not None:
+            self.rendering_coordinator.data_nodes = loaded_data_nodes

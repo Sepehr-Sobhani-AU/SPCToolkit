@@ -655,6 +655,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if zoom_extent and vertices is not None:
             self.pcd_viewer_widget.zoom_to_extent(preserve_rotation=True)
 
+    def render_visible_data(self, zoom_extent: bool = False):
+        """
+        Public convenience method for rendering visible data.
+
+        Wraps _render_visible_data with the current tree visibility status.
+        Used by plugins as a replacement for data_manager._render_visible_data().
+
+        Args:
+            zoom_extent: Whether to zoom to fit all visible points.
+        """
+        self._render_visible_data(self.tree_widget.visibility_status, zoom_extent=zoom_extent)
+
     def render_visible_with_lod(self, sample_rate: float = None):
         """
         Re-render visible data with specified LOD sample rate.
