@@ -55,7 +55,7 @@ flowchart TB
             BP[BatchProcessor]
         end
         subgraph Transformers["Transformers"]
-            TF["MasksTransformer\nClustersTransformer\nEigenvaluesTransformer\nValuesTransformer\nColorsTransformer\nDistToGroundTransformer\nContainerTransformer"]
+            TF["MasksTransformer"\n"ClustersTransformer\nEigenvaluesTransformer\nValuesTransformer\nColorsTransformer\nDistToGroundTransformer\nContainerTransformer"]
         end
     end
 
