@@ -9,7 +9,7 @@ Provides visualization with automatic feature-based coloring.
 from typing import Dict, Any
 
 from plugins.interfaces import ActionPlugin
-from gui.dialogs.training_data_preview_window import DataPreviewWindow
+from plugins.dialogs.training_data_preview_window import DataPreviewWindow
 
 
 class PreviewDataPlugin(ActionPlugin):

@@ -47,7 +47,7 @@ class AnalyzeClassesPlugin(ActionPlugin):
             params: Empty dict (no parameters)
         """
         # Import here to avoid circular imports and speed up plugin loading
-        from gui.dialogs.class_analysis_window import ClassAnalysisWindow
+        from plugins.dialogs.class_analysis_window import ClassAnalysisWindow
 
         # Create and show the analysis window
         dialog = ClassAnalysisWindow(parent=main_window)

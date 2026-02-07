@@ -25,7 +25,7 @@ from torch.utils.data import Dataset, DataLoader
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.pointnet_model import PointNet
-from gui.dialogs.training_progress_window import TrainingProgressWindow
+from plugins.dialogs.training_progress_window import TrainingProgressWindow
 
 
 class PointCloudDataset(Dataset):
