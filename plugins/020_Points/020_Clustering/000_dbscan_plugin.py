@@ -115,13 +115,6 @@ class DBSCANPlugin(Plugin):
         print(f"  Batch size:       {target_batch_size:,}")
         print(f"{'='*60}\n")
 
-        # Define progress callback for reporting progress
-        def progress_callback(current, total, stage_name):
-            """Report clustering progress to the UI and console"""
-            percent = int((current / total) * 100)
-            self.report_progress(percent, stage_name)
-            print(f"DBSCAN progress: {percent}% - {stage_name}")
-
         # Define a wrapper function for DBSCAN that matches the batch processor interface
         def dbscan_func(batch_points, eps, min_points, **kwargs):
             """Wrapper for DBSCAN to use with batch processor"""
@@ -137,12 +130,11 @@ class DBSCANPlugin(Plugin):
             overlap_percent=BATCH_OVERLAP  # Fixed at 10%
         )
 
-        # Run clustering in batches
+        # Run clustering in batches (progress reported via global_variables.global_progress)
         cluster_labels = batch_processor.cluster_in_batches(
             clustering_func=dbscan_func,
             min_points=min_samples,
-            eps=eps,
-            progress_callback=progress_callback  # Pass the progress callback
+            eps=eps
         )
 
         # Create a Clusters object and set random colors

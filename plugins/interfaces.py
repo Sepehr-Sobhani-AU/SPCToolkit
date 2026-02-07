@@ -19,15 +19,6 @@ class Plugin(ABC):
     - plugins/core_plugin.py           -> Not in menu (root-level system plugin)
     """
 
-    def __init__(self):
-        self.progress_callback = None  # Set by executor: fn(percent, message)
-
-    def report_progress(self, percent: int, message: str = ""):
-        """Report progress to the UI. Percent 0-100."""
-        cb = getattr(self, 'progress_callback', None)
-        if cb:
-            cb(percent, message)
-
     @abstractmethod
     def get_name(self) -> str:
         """

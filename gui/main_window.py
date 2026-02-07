@@ -671,6 +671,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_analysis(self, analysis_type: str, params: dict):
         """Start analysis with UI protection."""
+        global_variables.global_progress = (None, f"Running {analysis_type}...")
         self.show_progress(f"Running {analysis_type}...")
         self.disable_menus()
         self.disable_tree()
@@ -693,8 +694,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _check_analysis_completion(self):
         """Check if analysis thread completed and process results."""
-        # Update progress bar from thread state
-        percent, message = self.analysis_executor.get_progress()
+        # Read progress from singleton (written by BatchProcessor or AnalysisExecutor)
+        percent, message = global_variables.global_progress
         if message:
             self.show_progress(message, percent)
 
@@ -702,6 +703,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self._completion_timer.stop()
+
+        # Clear progress state
+        global_variables.global_progress = (None, "")
 
         # Re-enable UI
         self.clear_progress()
@@ -773,6 +777,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_analysis_error(self, error_msg: str):
         """Handle analysis error callback."""
         logger.error(f"Analysis error: {error_msg}")
+        global_variables.global_progress = (None, "")
         self.clear_progress()
         self.enable_menus()
         self.enable_tree()

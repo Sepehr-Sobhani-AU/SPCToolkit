@@ -9,6 +9,8 @@ for efficient processing, using a spatial grid approach with overlapping regions
 import numpy as np
 from typing import Callable, Any, Dict, Tuple, Optional
 
+from config.config import global_variables
+
 
 class BatchProcessor:
     """
@@ -201,7 +203,9 @@ class BatchProcessor:
             if hasattr(batch_result, '__getitem__'):
                 results[primary_batch_indices] = primary_batch_results
 
-            # Report progress
+            # Report progress via singleton
+            percent = int(((i + 1) / total_cells) * 100)
+            global_variables.global_progress = (percent, f"Processing batch {i + 1}/{total_cells}")
             print(f"Processed batch {i + 1}/{total_cells}, {len(batch_points)} points")
 
         # TODO: Implement advanced result merging strategies for different analysis types
@@ -221,7 +225,7 @@ class BatchProcessor:
 
     # services/batch_processor.py
 
-    def cluster_in_batches(self, clustering_func, min_points=5, eps=0.05, progress_callback=None, **kwargs):
+    def cluster_in_batches(self, clustering_func, min_points=5, eps=0.05, **kwargs):
         """
         Process large point clouds in batches using the provided clustering function.
 
@@ -230,13 +234,13 @@ class BatchProcessor:
         consistent global cluster labeling, with special handling to avoid
         incorrectly classifying boundary points as noise.
 
+        Progress is reported via global_variables.global_progress singleton.
+
         Args:
             clustering_func (Callable): Function that performs clustering on a batch of points.
                 Should accept (points, eps, min_points, **kwargs) and return cluster labels.
             min_points (int): Minimum number of points required to form a cluster
             eps (float): Maximum distance between two points to be considered neighbors
-            progress_callback (Callable, optional): Function to report progress.
-                Should accept (current_step, total_steps, stage_name) arguments.
             **kwargs: Additional arguments to pass to the clustering function
 
         Returns:
@@ -253,8 +257,7 @@ class BatchProcessor:
         all_labels = np.full(len(self.points), -1, dtype=np.int32)  # Default to noise
 
         # Initialize progress
-        if progress_callback:
-            progress_callback(0, total_steps, "Initializing batch clustering")
+        global_variables.global_progress = (0, "Initializing batch clustering")
         print(f"Processing {total_cells} grid cells for clustering...")
 
         # PHASE 1: Perform clustering on each batch independently
@@ -293,9 +296,9 @@ class BatchProcessor:
                 # Store both cluster and noise assignments - we'll sort them out later
                 point_assignments[point_idx].append((cell_idx, label))
 
-            # Report progress
-            if progress_callback:
-                progress_callback(batch_idx + 1, total_steps, f"Processed cell {batch_idx + 1}/{total_cells}")
+            # Report progress via singleton
+            percent = int(((batch_idx + 1) / total_steps) * 100)
+            global_variables.global_progress = (percent, f"Clustering cell {batch_idx + 1}/{total_cells}")
 
             # Count non-noise clusters in this cell for logging
             num_clusters = len(np.unique(batch_labels[batch_labels >= 0]))
@@ -303,8 +306,8 @@ class BatchProcessor:
 
         # PHASE 2: Resolve noise vs. cluster conflicts
         # --------------------------------------------
-        if progress_callback:
-            progress_callback(total_cells + 1, total_steps, "Resolving noise classifications")
+        percent = int(((total_cells + 1) / total_steps) * 100)
+        global_variables.global_progress = (percent, "Resolving noise classifications")
 
         print("Resolving noise classifications...")
 
@@ -327,8 +330,8 @@ class BatchProcessor:
 
         # PHASE 3: Build cluster relationship graph
         # -----------------------------------------
-        if progress_callback:
-            progress_callback(total_cells + 2, total_steps, "Building cluster relationship graph")
+        percent = int(((total_cells + 2) / total_steps) * 100)
+        global_variables.global_progress = (percent, "Building cluster graph")
 
         print("Building cluster relationship graph...")
 
@@ -371,8 +374,8 @@ class BatchProcessor:
 
         # PHASE 4: Find connected components (to form global clusters)
         # -----------------------------------------------------------
-        if progress_callback:
-            progress_callback(total_cells + 3, total_steps, "Finding global clusters")
+        percent = int(((total_cells + 3) / total_steps) * 100)
+        global_variables.global_progress = (percent, "Finding global clusters")
 
         print("Finding global clusters...")
 
@@ -417,8 +420,8 @@ class BatchProcessor:
 
         # PHASE 5: Apply global cluster labels to all points
         # -------------------------------------------------
-        if progress_callback:
-            progress_callback(total_cells + 4, total_steps, "Applying global cluster labels")
+        percent = int(((total_cells + 4) / total_steps) * 100)
+        global_variables.global_progress = (percent, "Applying global cluster labels")
 
         print("Applying global cluster labels...")
 
@@ -436,8 +439,7 @@ class BatchProcessor:
         unique_clusters = np.unique(final_labels)
         num_clusters = len(unique_clusters) - (1 if -1 in unique_clusters else 0)
 
-        if progress_callback:
-            progress_callback(total_steps, total_steps, f"Clustering complete: {num_clusters} clusters found")
+        global_variables.global_progress = (100, f"Clustering complete: {num_clusters} clusters found")
 
         print(f"Clustering complete. Found {num_clusters} global clusters.")
 
