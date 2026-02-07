@@ -21,11 +21,15 @@ This document describes the core framework architecture of SPCToolkit. It covers
 
 ## 1. High-Level Overview
 
-The system is organized into layers: UI, Core Framework, Services, Data, and Plugins.
+The system is organized into layers: GUI, Application, Core, Infrastructure, and Plugins.
 
 ```mermaid
-flowchart TB
-    subgraph UI["User Interface Layer (GUI)"]
+flowchart TD
+    subgraph GV_box [" "]
+        GV[global_variables — Singleton Access]
+    end
+
+    subgraph UI["GUI Layer"]
         MW[MainWindow]
         TW[TreeStructureWidget]
         PV[PCDViewerWidget]
@@ -40,32 +44,46 @@ flowchart TB
     end
 
     subgraph Core["Core Layer"]
+        subgraph CoreServices["Core Services"]
+            RS[ReconstructionService]
+            CS[CacheService]
+            AS[AnalysisService]
+            BP[BatchProcessor]
+        end
+        subgraph Transformers["Transformers"]
+            TF1[MasksTransformer]
+            TF2[ClustersTransformer]
+            TF3[EigenvaluesTransformer]
+            TF4[ValuesTransformer]
+            TF5[ColorsTransformer]
+            TF6[DistToGroundTransformer]
+            TF7[ContainerTransformer]
+        end
         subgraph Entities
             DN[DataNodes]
             Node[DataNode]
             PC[PointCloud]
-            Clusters
-            Masks
-            Values
-        end
-        subgraph CoreServices["Services"]
-            RS[ReconstructionService]
-            CS[CacheService]
-            AS[AnalysisService]
+            CL[Clusters]
+            MA[Masks]
+            VA[Values]
         end
     end
 
     subgraph Infra["Infrastructure"]
-        FM[FileManager]
-        PM[PluginManager]
+        HD[HardwareDetector]
+        MM[MemoryManager]
     end
 
     subgraph Plugins["Plugin Layer"]
+        PM[PluginManager]
         AP[AnalysisPlugins]
         ActP[ActionPlugins]
+        BR[BackendRegistry]
     end
 
-    GV[global_variables\nSingleton Access]
+    subgraph Services["Services"]
+        FM[FileManager]
+    end
 
     MW --> AC
     MW --> TW
@@ -78,9 +96,9 @@ flowchart TB
     AC --> RS
     AC --> CS
 
+    AE --> AS
     AE --> RS
     AE --> CS
-    AE --> AS
 
     RC --> DN
     RC --> RS
@@ -88,22 +106,24 @@ flowchart TB
     RC --> LM
 
     RS --> DN
+    RS --> Transformers
+
     CS --> DN
 
     DN --> Node
     Node --> PC
-    Node --> Clusters
-    Node --> Masks
-    Node --> Values
+    Node --> CL
+    Node --> MA
+    Node --> VA
 
     PM --> AP
     PM --> ActP
 
-    GV -.->|provides access to| AC
-    GV -.->|provides access to| TW
-    GV -.->|provides access to| PV
-    GV -.->|provides access to| FM
-    GV -.->|provides access to| MW
+    GV -.-> AC
+    GV -.-> MW
+    GV -.-> TW
+    GV -.-> PV
+    GV -.-> FM
 ```
 
 ### Layer Responsibilities
@@ -114,8 +134,9 @@ flowchart TB
 | **Application** | Orchestration, coordination | `application/application_controller.py`, `application/analysis_executor.py`, `application/rendering_coordinator.py` |
 | **Core Entities** | Data structures | `core/entities/point_cloud.py`, `core/entities/clusters.py`, `core/entities/masks.py`, `core/entities/data_node.py` |
 | **Core Services** | Reconstruction, caching, analysis | `core/services/reconstruction_service.py`, `core/services/cache_service.py`, `core/services/analysis_service.py` |
-| **Infrastructure** | File I/O, plugin discovery | `services/file_manager.py`, `plugins/plugin_manager.py` |
-| **Plugins** | Extensible functionality | `plugins/*/` |
+| **Infrastructure** | Hardware detection, memory management | `infrastructure/hardware_detector.py`, `infrastructure/memory_manager.py` |
+| **Services** | File I/O | `services/file_manager.py` |
+| **Plugins** | Extensible functionality, backends | `plugins/*/`, `plugins/backends/`, `plugins/plugin_manager.py` |
 
 ### Layer Dependencies (Clean Architecture)
 
@@ -180,7 +201,7 @@ sequenceDiagram
 
 ## 3. Data Flow: Loading a Point Cloud
 
-When a user opens a file, the data flows through FileManager to DataManager to the UI.
+When a user opens a file, the data flows through FileManager to MainWindow, which delegates to ApplicationController.
 
 ```mermaid
 sequenceDiagram
@@ -201,11 +222,11 @@ sequenceDiagram
     FM-->>MW: SIGNAL: point_cloud_loaded(path, pc)
 
     activate MW
-    MW->>MW: Create DataNode(data=pc)
-    MW->>DN: add_node(data_node)
-    DN-->>MW: return uid
+    MW->>AC: add_point_cloud(pc, name)
+    AC->>AC: Create DataNode, add to DataNodes
+    AC-->>MW: return uid
     MW->>TW: add_branch(uid, name, is_root=True)
-    MW->>AC: _calculate_point_cloud_memory(pc)
+    MW->>AC: get_cache_memory_usage(uid)
     MW->>TW: update_cache_tooltip(uid, size)
     deactivate MW
 ```
@@ -213,7 +234,7 @@ sequenceDiagram
 ### Key Points
 
 - **FileManager** handles file dialogs and Open3D I/O
-- **DataNode** wraps the PointCloud with metadata (uid, parent, dependencies)
+- **ApplicationController** creates DataNodes and manages the data collection
 - **DataNodes** is the collection manager (UUID -> DataNode mapping)
 - **TreeWidget** displays the hierarchical structure
 
@@ -238,12 +259,13 @@ sequenceDiagram
     DB->>DB: Create DynamicDialog
     User->>DB: Enter params, click OK
 
-    DB-->>MW: SIGNAL: analysis_params(name, params)
+    DB-->>MW: return params (direct call)
 
     activate MW
     MW->>MW: disable_menus(), disable_tree()
     MW->>MW: show_processing_overlay()
-    MW->>AE: start_analysis(plugin, node, params)
+    MW->>AC: run_analysis(plugin_name, params)
+    AC->>AE: execute(plugin, node, params, ...)
     MW->>MW: Start QTimer polling (100ms)
     deactivate MW
 
@@ -261,8 +283,9 @@ sequenceDiagram
     AE-->>MW: Completed! Call handle_result()
 
     activate MW
-    MW->>MW: Create result DataNode
-    MW->>DN: add_node(result_node)
+    MW->>AC: add_analysis_result(result, type, deps, parent, ...)
+    AC->>AC: Create DataNode, add to DataNodes
+    AC-->>MW: return uid
     MW->>TW: add_branch(uid, parent, name)
     MW->>TW: Update visibility
     MW->>MW: enable_menus(), enable_tree()
@@ -308,7 +331,7 @@ sequenceDiagram
         else Need reconstruction
             RC->>RS: reconstruct(uid)
             RS->>RS: Find root or cached ancestor
-            RS->>RS: Apply task chain
+            RS->>RS: Apply transformer chain
             RS-->>RC: return PointCloud
             RC->>RC: Cache result on node
         end
@@ -326,20 +349,21 @@ sequenceDiagram
 
 1. **Check Cache:** If node has `cached_point_cloud`, use it immediately
 2. **Find Ancestor:** Walk up tree looking for cached ancestor or root PointCloud
-3. **Apply Tasks:** Use `ReconstructionService.tasks_registry` to apply transformations
+3. **Apply Transformers:** Use `ReconstructionService.transformer_registry` to apply transformations
 4. **Cache Result:** Store reconstructed PointCloud on node for future use
 
-### Task Registry
+### Transformer Registry
 
-| Data Type | Task Class | Transformation |
-|-----------|------------|----------------|
-| `masks` | ApplyMasks | Filter points (subset) |
-| `cluster_labels` | ApplyClusters | Apply cluster/semantic colors |
-| `eigenvalues` | ApplyEigenvalues | Color by eigenvalues |
-| `values` | ApplyValues | Color by scalar values |
-| `colors` | ApplyColors | Apply RGB colors |
-| `dist_to_ground` | ApplyDistToGround | Color by height |
-| `class_reference` | ApplyClassReference | Filter by semantic class |
+| Data Type | Transformer Class | Transformation |
+|-----------|-------------------|----------------|
+| `masks` | MasksTransformer | Filter points by boolean mask |
+| `cluster_labels` | ClustersTransformer | Apply cluster/semantic colors |
+| `eigenvalues` | EigenvaluesTransformer | Color by eigenvalue features |
+| `values` | ValuesTransformer | Color by scalar values |
+| `colors` | ColorsTransformer | Apply RGB colors |
+| `dist_to_ground` | DistToGroundTransformer | Color by height above ground |
+
+> **Note:** `ContainerTransformer` also exists in `core/transformers/` as a pass-through for organizational nodes but is not registered in the default `transformer_registry`.
 
 ---
 
@@ -377,9 +401,17 @@ classDiagram
         +analysis_executor
         +rendering_coordinator
         +selected_branches: List
-        +reconstruct(uid)
-        +load_project(data_nodes)
         +create(plugin_manager, file_manager)$
+        +add_point_cloud(pc, name)
+        +add_analysis_result(result, type, deps, ...)
+        +remove_node(uid)
+        +get_node(uid)
+        +run_analysis(plugin_name, params, ...)
+        +reconstruct(uid)
+        +cache_node(uid)
+        +uncache_node(uid)
+        +is_cached(uid)
+        +load_project(data_nodes)
     }
 
     class DataNodes {
@@ -466,8 +498,9 @@ flowchart LR
 
     subgraph Execution
         open_dialog_box --> DialogBoxesManager
-        DialogBoxesManager -->|SIGNAL| MainWindow
-        MainWindow --> AnalysisExecutor
+        DialogBoxesManager -->|returns params| MainWindow
+        MainWindow --> ApplicationController
+        ApplicationController --> AnalysisExecutor
         AnalysisExecutor -->|background| Plugin.execute
     end
 ```
@@ -520,7 +553,7 @@ class ActionPlugin(ABC):
 | Task | Location |
 |------|----------|
 | Load a point cloud | `FileManager.open_point_cloud_file()` |
-| Run an analysis plugin | `MainWindow` via `AnalysisExecutor.start_analysis()` |
+| Run an analysis plugin | `ApplicationController.run_analysis()` → `AnalysisExecutor.execute()` |
 | Add a node to the tree | `MainWindow._on_point_cloud_loaded()` or `_handle_analysis_result()` |
 | Render points in viewer | `PCDViewerWidget.set_point_vertices()` |
 | Create a new analysis plugin | `plugins/YourCategory/your_plugin.py` (inherit `AnalysisPlugin`) |
@@ -536,10 +569,11 @@ class ActionPlugin(ABC):
 | Signal | Source | Handler | Purpose |
 |--------|--------|---------|---------|
 | `point_cloud_loaded` | FileManager | MainWindow._on_point_cloud_loaded | File loaded |
-| `analysis_params` | DialogBoxesManager | MainWindow._on_analysis_params | Dialog OK clicked |
 | `branch_visibility_changed` | TreeStructureWidget | MainWindow._on_branch_visibility_changed | Checkbox toggled |
 | `branch_selection_changed` | TreeStructureWidget | MainWindow._on_branch_selection_changed | Tree selection |
 | `branch_added` | TreeStructureWidget | MainWindow._on_branch_added | New branch added |
+
+> **Note:** Analysis parameters are passed via direct method call (`DialogBoxesManager.get_analysis_params()`), not via signal/slot.
 
 ### Key Files
 
@@ -556,8 +590,13 @@ class ActionPlugin(ABC):
 | `core/services/reconstruction_service.py` | Rebuilds PointCloud from derived data |
 | `core/services/cache_service.py` | Cache management for reconstructed data |
 | `core/services/analysis_service.py` | Plugin execution service |
+| `core/transformers/*.py` | Data type transformers for reconstruction |
+| `core/services/batch_processor.py` | Spatial batch processing for large point clouds |
 | `services/file_manager.py` | File I/O operations |
+| `infrastructure/hardware_detector.py` | Hardware detection (GPU, memory) |
+| `infrastructure/memory_manager.py` | Memory management |
 | `plugins/plugin_manager.py` | Plugin discovery and registration |
+| `plugins/backends/backend_registry.py` | Backend selection (GPU/CPU) |
 | `plugins/interfaces.py` | Plugin base classes |
 | `config/config.py` | GlobalVariables singleton |
 
