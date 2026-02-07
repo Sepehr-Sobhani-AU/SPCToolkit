@@ -43,6 +43,41 @@ class ApplicationController:
         # Selection state
         self.selected_branches = []
 
+    @classmethod
+    def create(cls, plugin_manager: PluginManager, file_manager=None):
+        """
+        Factory method that creates ApplicationController with all services.
+
+        Creates DataNodes, ReconstructionService, CacheService, AnalysisService,
+        AnalysisExecutor, and RenderingCoordinator.
+
+        Args:
+            plugin_manager: The PluginManager instance.
+            file_manager: The FileManager instance (unused, reserved for future).
+
+        Returns:
+            Fully wired ApplicationController instance.
+        """
+        from core.services.analysis_service import AnalysisService
+        from application.analysis_executor import AnalysisExecutor
+        from application.rendering_coordinator import RenderingCoordinator
+
+        data_nodes = DataNodes()
+        reconstruction_service = ReconstructionService(data_nodes)
+        cache_service = CacheService(data_nodes)
+        analysis_service = AnalysisService()
+
+        controller = cls(data_nodes, reconstruction_service, cache_service, plugin_manager)
+
+        controller.analysis_executor = AnalysisExecutor(
+            reconstruction_service, cache_service, analysis_service
+        )
+        controller.rendering_coordinator = RenderingCoordinator(
+            data_nodes, reconstruction_service, cache_service
+        )
+
+        return controller
+
     # === Data Operations ===
 
     def add_point_cloud(self, point_cloud: PointCloud, name: str) -> str:

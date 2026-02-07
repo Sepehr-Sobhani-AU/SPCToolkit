@@ -10,19 +10,13 @@ from config.config import global_variables
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtCore import Qt
 from gui.widgets import PCDViewerWidget, TreeStructureWidget, ProcessOverlayWidget
-from core.data_manager import DataManager
 from services.file_manager import FileManager
 from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
 from plugins.plugin_manager import PluginManager
 from infrastructure.hardware_detector import HardwareDetector
 
 # Application layer
-from core.services.reconstruction_service import ReconstructionService
-from core.services.cache_service import CacheService
-from core.services.analysis_service import AnalysisService
 from application.application_controller import ApplicationController
-from application.analysis_executor import AnalysisExecutor
-from application.rendering_coordinator import RenderingCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -59,59 +53,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.dialog_boxes_manager = DialogBoxesManager(plugin_manager)
 
-        # Create DataManager (backward compat — plugins still use global_data_manager)
-        self.data_manager = DataManager(
-            self.file_manager,
-            self.tree_widget,
-            self.pcd_viewer_widget,
-            self.dialog_boxes_manager,
-            self.plugin_manager
-        )
-        global_variables.global_data_manager = self.data_manager
-
         # Store reference to main window in global variables
         global_variables.global_main_window = self
 
         # === Application Layer Setup ===
-        # Share the same DataNodes created by DataManager
-        data_nodes = global_variables.global_data_nodes
-
-        reconstruction_service = ReconstructionService(data_nodes)
-        cache_service = CacheService(data_nodes)
-        analysis_service = AnalysisService()
-
-        self.controller = ApplicationController(
-            data_nodes=data_nodes,
-            reconstruction_service=reconstruction_service,
-            cache_service=cache_service,
-            plugin_manager=plugin_manager
-        )
+        self.controller = ApplicationController.create(plugin_manager, self.file_manager)
         global_variables.global_application_controller = self.controller
-
-        self.analysis_executor = AnalysisExecutor(
-            reconstruction_service=reconstruction_service,
-            cache_service=cache_service,
-            analysis_service=analysis_service
-        )
-        self.controller.analysis_executor = self.analysis_executor
-
-        self.rendering_coordinator = RenderingCoordinator(
-            data_nodes=data_nodes,
-            reconstruction_service=reconstruction_service,
-            cache_service=cache_service
-        )
-        self.controller.rendering_coordinator = self.rendering_coordinator
-
-        # Disconnect DataManager signal connections (MainWindow handles these now)
-        self.file_manager.point_cloud_loaded.disconnect(self.data_manager._on_point_cloud_loaded)
-        self.data_manager.analysis_manager.analysis_completed.disconnect(
-            self.data_manager._on_analysis_completed)
-        self.tree_widget.branch_visibility_changed.disconnect(
-            self.data_manager._on_branch_visibility_changed)
-        self.tree_widget.branch_added.disconnect(self.data_manager._on_branch_added)
-        self.tree_widget.branch_selection_changed.disconnect(
-            self.data_manager._on_branch_selection_changed)
-        self.dialog_boxes_manager.analysis_params.disconnect(self.data_manager.apply_analysis)
+        global_variables.global_data_nodes = self.controller.data_nodes
 
         # Connect signals to MainWindow handlers (which use ApplicationController)
         self.file_manager.point_cloud_loaded.connect(self._on_point_cloud_loaded)
@@ -607,14 +555,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_branch_selection_changed(self, uids: list):
         """Handle branch selection changes from tree widget."""
         self.controller.set_selected_branches(uids)
-        # Backward compat: sync DataManager.selected_branches for plugins
-        self.data_manager.selected_branches = uids
 
     # === Rendering ===
 
     def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False):
         """Prepare and display vertex data for all visible nodes."""
-        vertices = self.rendering_coordinator.prepare_vertices(
+        vertices = self.controller.rendering_coordinator.prepare_vertices(
             visibility_status=visibility_status,
             sample_rate=self._current_sample_rate,
             camera_distance=self.pcd_viewer_widget.camera_distance,
@@ -623,13 +569,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         # Sync LOD state
-        self._current_sample_rate = self.rendering_coordinator.current_sample_rate
+        self._current_sample_rate = self.controller.rendering_coordinator.current_sample_rate
         self.pcd_viewer_widget._current_sample_rate = self._current_sample_rate
-
-        # Sync to DataManager for backward compat (viewer widget reads LOD state)
-        self.data_manager._total_visible_points = self.rendering_coordinator.total_visible_points
-        self.data_manager._point_budget = self.rendering_coordinator._point_budget
-        self.data_manager._current_sample_rate = self._current_sample_rate
 
         # Update tree cache UI for auto-cached nodes
         for uid, vis in visibility_status.items():
@@ -711,7 +652,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if message:
             self.show_progress(message, percent)
 
-        if not self.analysis_executor.check_and_process_completion():
+        if not self.controller.analysis_executor.check_and_process_completion():
             return
 
         self._completion_timer.stop()
@@ -725,17 +666,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.enable_tree()
 
         # Check for error
-        error = self.analysis_executor.get_error()
+        error = self.controller.analysis_executor.get_error()
         if error:
             logger.error(f"Analysis failed: {error}")
-            self.analysis_executor.cleanup()
+            self.controller.analysis_executor.cleanup()
             return
 
         # Process result
-        result_data = self.analysis_executor.get_result()
+        result_data = self.controller.analysis_executor.get_result()
         if result_data:
             self._handle_analysis_result(result_data)
-        self.analysis_executor.cleanup()
+        self.controller.analysis_executor.cleanup()
 
     def _handle_analysis_result(self, result_data: dict):
         """Handle completed analysis result."""
@@ -809,7 +750,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Clear global references to allow garbage collection
         from config.config import global_variables
         global_variables.global_application_controller = None
-        global_variables.global_data_manager = None
         global_variables.global_data_nodes = None
         global_variables.global_file_manager = None
         global_variables.global_pcd_viewer_widget = None
