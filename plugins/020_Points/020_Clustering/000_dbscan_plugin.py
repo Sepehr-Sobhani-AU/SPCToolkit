@@ -117,8 +117,9 @@ class DBSCANPlugin(Plugin):
 
         # Define progress callback for reporting progress
         def progress_callback(current, total, stage_name):
-            """Report clustering progress to the console"""
+            """Report clustering progress to the UI and console"""
             percent = int((current / total) * 100)
+            self.report_progress(percent, stage_name)
             print(f"DBSCAN progress: {percent}% - {stage_name}")
 
         # Define a wrapper function for DBSCAN that matches the batch processor interface

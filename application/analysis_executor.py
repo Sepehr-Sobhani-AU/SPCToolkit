@@ -187,8 +187,16 @@ class AnalysisExecutor:
             self._progress_percent = 20
             self._progress_message = f"Running {analysis_type}..."
             logger.info(f"Executing plugin '{analysis_type}' in background thread...")
+
+            def _on_plugin_progress(percent, message):
+                # Map plugin's 0-100 to executor's 20-95 range
+                self._progress_percent = 20 + int(percent * 0.75)
+                if message:
+                    self._progress_message = message
+
             result, result_type, dependencies = self._analysis_service.execute(
-                plugin_class, data_node_to_process, params
+                plugin_class, data_node_to_process, params,
+                progress_callback=_on_plugin_progress
             )
 
             self._progress_percent = 100
