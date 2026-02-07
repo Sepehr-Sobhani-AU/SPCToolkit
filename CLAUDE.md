@@ -47,7 +47,7 @@ class MyManager:
         # Do work
         # Directly call method on global instance
         global_variables.global_main_window.update_display()
-        global_variables.global_data_manager.refresh_data()
+        global_variables.global_application_controller.reconstruct(uid)
 ```
 
 **Example - ACCEPTABLE (Callbacks):**
@@ -103,7 +103,7 @@ The `PluginManager` (plugins/plugin_manager.py) scans plugin directories on star
 
 The core data architecture revolves around a tree-based hierarchical system:
 
-**DataNode** (core/data_node.py): Represents a single unit of data with:
+**DataNode** (core/entities/data_node.py): Represents a single unit of data with:
 - `uid`: Unique identifier (UUID)
 - `data`: The actual data object (PointCloud, Masks, Clusters, etc.)
 - `data_type`: Type identifier for reconstruction
@@ -111,37 +111,38 @@ The core data architecture revolves around a tree-based hierarchical system:
 - `depends_on`: List of dependency UIDs
 - `tags`: Classification tags
 
-**DataNodes** (core/data_nodes.py): Manages the collection of all DataNode instances.
+**DataNodes** (core/entities/data_nodes.py): Manages the collection of all DataNode instances.
 
-**DataManager** (core/data_manager.py): Central coordinator that:
-- Manages interactions between UI widgets (tree view, 3D viewer) and data
-- Handles point cloud loading via FileManager
-- Applies analyses through AnalysisManager
+**ApplicationController** (application/application_controller.py): Central coordinator that:
+- Orchestrates interactions between UI widgets (tree view, 3D viewer) and data
+- Manages branch selection and reconstruction via ReconstructionService
+- Applies analyses through AnalysisExecutor
 - Reconstructs derived data nodes back into PointCloud instances for visualization
+- Created via `ApplicationController.create(plugin_manager, file_manager)` factory method
 
 ### Branch Reconstruction
 
 The reconstruction system allows viewing derived data (masks, clusters, etc.) as point clouds:
 
-1. When a non-PointCloud node needs visualization, `DataManager.reconstruct_branch()` traverses up to the root PointCloud
-2. It builds a list of DataNode UIDs from root to target
-3. `NodeReconstructionManager` applies each node's transformation sequentially using task classes from `tasks/` directory
+1. When a non-PointCloud node needs visualization, `ApplicationController.reconstruct(uid)` delegates to `ReconstructionService`
+2. ReconstructionService traverses up to the root PointCloud and builds a list of DataNode UIDs from root to target
+3. Task classes from `tasks/` directory apply each node's transformation sequentially
 4. Tasks (ApplyMasks, ApplyClusters, ApplyValues, etc.) convert derived data types back into filtered/modified PointCloud instances
 
 ### Key Data Types
 
-**PointCloud** (core/point_cloud.py): Primary data structure containing:
+**PointCloud** (core/entities/point_cloud.py): Primary data structure containing:
 - `points`: (n, 3) numpy array of XYZ coordinates
 - `colors`, `normals`: Optional (n, 3) arrays
 - `attributes`: Dictionary for arbitrary per-point data
 - Methods for DBSCAN, subsampling, eigenvalue calculation, SOR filtering, etc.
 - GPU acceleration support via CuPy when available
 
-**Clusters** (core/clusters.py): Stores clustering results as:
+**Clusters** (core/entities/clusters.py): Stores clustering results as:
 - `labels`: Integer array assigning points to clusters (-1 for noise)
 - `colors`: Optional color array for visualization
 
-**Masks** (core/masks.py): Boolean array for point selection/filtering.
+**Masks** (core/entities/masks.py): Boolean array for point selection/filtering.
 
 ## Creating New Plugins
 
@@ -152,8 +153,8 @@ Place in `plugins/YourCategory/your_analysis_plugin.py`:
 ```python
 from typing import Dict, Any, List, Tuple
 from plugins.interfaces import AnalysisPlugin
-from core.data_node import DataNode
-from core.point_cloud import PointCloud
+from core.entities.data_node import DataNode
+from core.entities.point_cloud import PointCloud
 
 class YourAnalysisPlugin(AnalysisPlugin):
     def get_name(self) -> str:
@@ -215,11 +216,15 @@ class YourActionPlugin(ActionPlugin):
             params: Parameters from the dialog (or empty dict)
         """
         # Access global instances via singleton pattern
+        controller = global_variables.global_application_controller
         viewer_widget = global_variables.global_pcd_viewer_widget
-        data_manager = global_variables.global_data_manager
+        data_nodes = global_variables.global_data_nodes
+        tree_widget = global_variables.global_tree_structure_widget
 
-        # Perform action
-        # No return value needed
+        # Common operations:
+        # controller.selected_branches  - get selected branch UIDs
+        # controller.reconstruct(uid)   - reconstruct a branch to PointCloud
+        # main_window.render_visible_data(zoom_extent=False)  - re-render visible data
 ```
 
 ## Global Variables (Singleton Pattern)
@@ -234,7 +239,7 @@ class GlobalVariables:
         self.global_pcd_viewer_widget = None
         self.global_tree_structure_widget = None
         self.global_data_nodes = None
-        self.global_data_manager = None
+        self.global_application_controller = None
         self.global_main_window = None
 
 # Singleton instance
@@ -243,7 +248,7 @@ global_variables = GlobalVariables()
 
 ### Important Implementation Rules:
 1. **Store only manager/widget class instances** - NOT individual variables or primitive values
-2. **Pattern**: Each attribute should reference a class instance (FileManager, TreeStructureWidget, DataManager, etc.)
+2. **Pattern**: Each attribute should reference a class instance (FileManager, TreeStructureWidget, ApplicationController, etc.)
 3. **Avoid**: Storing individual variables like `is_processing`, `current_operation`, etc.
 4. **Access**: Any module can access via `from config.config import global_variables`
 5. **Assignment**: Instances are assigned when created (usually in MainWindow.__init__)
@@ -253,21 +258,21 @@ global_variables = GlobalVariables()
 - `global_variables.global_pcd_viewer_widget` - PCDViewerWidget instance
 - `global_variables.global_tree_structure_widget` - TreeStructureWidget instance
 - `global_variables.global_data_nodes` - DataNodes collection manager
-- `global_variables.global_data_manager` - DataManager instance
+- `global_variables.global_application_controller` - ApplicationController instance
 - `global_variables.global_main_window` - MainWindow instance
-- `global_variables.global_analysis_thread_manager` - AnalysisThreadManager instance
 
 ### Usage Example:
 ```python
 from config.config import global_variables
 
 # Access any global manager
-data_manager = global_variables.global_data_manager
+controller = global_variables.global_application_controller
 main_window = global_variables.global_main_window
 
-# Call methods on global instances
-main_window.disable_menus()
-global_variables.global_tree_structure_widget.add_branch(...)
+# Common plugin operations
+selected_uid = controller.selected_branches[0]
+point_cloud = controller.reconstruct(selected_uid)
+main_window.render_visible_data(zoom_extent=False)
 ```
 
 ## GUI Architecture
@@ -275,10 +280,12 @@ global_variables.global_tree_structure_widget.add_branch(...)
 **MainWindow** (gui/main_window.py):
 - Dynamically builds menus from folder-based plugin structure
 - Contains QSplitter with TreeStructureWidget (left) and PCDViewerWidget (right)
-- Coordinates FileManager, DataManager, and DialogBoxesManager
+- Creates ApplicationController via `ApplicationController.create()` factory
+- Coordinates ApplicationController and DialogBoxesManager
 - Provides methods to disable/enable menus and tree during processing:
   - `disable_menus()` / `enable_menus()` - Controls menu bar availability
   - `disable_tree()` / `enable_tree()` - Controls tree widget availability
+  - `render_visible_data(zoom_extent=False)` - Re-render visible branches
 - Contains ProcessOverlayWidget instances for visual feedback during operations
 
 **TreeStructureWidget** (gui/widgets/tree_structure_widget.py):
@@ -318,7 +325,7 @@ global_variables.global_tree_structure_widget.add_branch(...)
 
 **DialogBoxesManager** (gui/dialog_boxes/dialog_boxes_manager.py):
 - Creates dynamic parameter input dialogs based on plugin `get_parameters()` schema
-- Emits parameters back to DataManager for analysis execution
+- Passes parameters to MainWindow for analysis execution via ApplicationController
 
 ## Important Implementation Details
 
@@ -326,7 +333,7 @@ global_variables.global_tree_structure_widget.add_branch(...)
 
 The application uses background threading to keep the UI responsive during long-running operations:
 
-**AnalysisThreadManager** (core/analysis_thread_manager.py):
+**AnalysisExecutor** (application/analysis_executor.py):
 - Manages background thread execution using Python's `threading.Thread` (NOT QThread)
 - Uses singleton pattern for communication - NO callbacks or custom signals
 - QTimer polling checks for completion every 100ms
@@ -373,9 +380,9 @@ When points are coplanar (e.g., after draping operations), the PointCloud class 
 ### Adding New Data Types
 
 To support a new derived data type:
-1. Create the data class in `core/`
+1. Create the data class in `core/entities/`
 2. Create a reconstruction task class in `tasks/` inheriting from a base task pattern
-3. Register the data type in `NodeReconstructionManager.tasks_registry`
+3. Register the data type in `ReconstructionService.tasks_registry`
 4. Create an analysis plugin that returns the new data type
 
 ## Common Plugin Examples
@@ -450,12 +457,12 @@ class LabelClustersPlugin(ActionPlugin):
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
-        data_manager = global_variables.global_data_manager
+        controller = global_variables.global_application_controller
         viewer_widget = global_variables.global_pcd_viewer_widget
 
         # Get selected branch and reconstruct
-        selected_uid = data_manager.selected_branches[0]
-        point_cloud = data_manager.reconstruct_branch(selected_uid)
+        selected_uid = controller.selected_branches[0]
+        point_cloud = controller.reconstruct(selected_uid)
 
         # Get selected clusters from picked points
         selected_indices = viewer_widget.picked_points_indices

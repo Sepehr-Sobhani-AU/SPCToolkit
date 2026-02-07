@@ -25,32 +25,39 @@ The system is organized into layers: UI, Core Framework, Services, Data, and Plu
 
 ```mermaid
 flowchart TB
-    subgraph UI["User Interface Layer"]
+    subgraph UI["User Interface Layer (GUI)"]
         MW[MainWindow]
         TW[TreeStructureWidget]
         PV[PCDViewerWidget]
         DB[DialogBoxesManager]
     end
 
-    subgraph Core["Core Framework Layer"]
-        DM[DataManager]
-        DN[DataNodes]
-        NRM[NodeReconstructionManager]
-        ATM[AnalysisThreadManager]
+    subgraph App["Application Layer"]
+        AC[ApplicationController]
+        AE[AnalysisExecutor]
+        RC[RenderingCoordinator]
+        LM[LODManager]
     end
 
-    subgraph Services["Services Layer"]
+    subgraph Core["Core Layer"]
+        subgraph Entities
+            DN[DataNodes]
+            Node[DataNode]
+            PC[PointCloud]
+            Clusters
+            Masks
+            Values
+        end
+        subgraph CoreServices["Services"]
+            RS[ReconstructionService]
+            CS[CacheService]
+            AS[AnalysisService]
+        end
+    end
+
+    subgraph Infra["Infrastructure"]
         FM[FileManager]
         PM[PluginManager]
-        AM[AnalysisManager]
-    end
-
-    subgraph Data["Data Layer"]
-        PC[PointCloud]
-        Node[DataNode]
-        Clusters
-        Masks
-        Values
     end
 
     subgraph Plugins["Plugin Layer"]
@@ -60,16 +67,28 @@ flowchart TB
 
     GV[global_variables\nSingleton Access]
 
+    MW --> AC
     MW --> TW
     MW --> PV
     MW --> DB
-    MW --> DM
 
-    DM --> DN
-    DM --> NRM
-    DM --> ATM
-    DM --> FM
-    DM --> PM
+    AC --> AE
+    AC --> RC
+    AC --> DN
+    AC --> RS
+    AC --> CS
+
+    AE --> RS
+    AE --> CS
+    AE --> AS
+
+    RC --> DN
+    RC --> RS
+    RC --> CS
+    RC --> LM
+
+    RS --> DN
+    CS --> DN
 
     DN --> Node
     Node --> PC
@@ -80,7 +99,7 @@ flowchart TB
     PM --> AP
     PM --> ActP
 
-    GV -.->|provides access to| DM
+    GV -.->|provides access to| AC
     GV -.->|provides access to| TW
     GV -.->|provides access to| PV
     GV -.->|provides access to| FM
@@ -91,11 +110,19 @@ flowchart TB
 
 | Layer | Purpose | Key Files |
 |-------|---------|-----------|
-| **UI** | User interaction, visualization | `gui/main_window.py`, `gui/widgets/*` |
-| **Core** | Data coordination, threading | `core/data_manager.py`, `core/data_node.py` |
-| **Services** | File I/O, plugin discovery | `services/file_manager.py`, `plugins/plugin_manager.py` |
-| **Data** | Data structures | `core/point_cloud.py`, `core/clusters.py`, `core/masks.py` |
+| **GUI** | User interaction, visualization | `gui/main_window.py`, `gui/widgets/*` |
+| **Application** | Orchestration, coordination | `application/application_controller.py`, `application/analysis_executor.py`, `application/rendering_coordinator.py` |
+| **Core Entities** | Data structures | `core/entities/point_cloud.py`, `core/entities/clusters.py`, `core/entities/masks.py`, `core/entities/data_node.py` |
+| **Core Services** | Reconstruction, caching, analysis | `core/services/reconstruction_service.py`, `core/services/cache_service.py`, `core/services/analysis_service.py` |
+| **Infrastructure** | File I/O, plugin discovery | `services/file_manager.py`, `plugins/plugin_manager.py` |
 | **Plugins** | Extensible functionality | `plugins/*/` |
+
+### Layer Dependencies (Clean Architecture)
+
+- **GUI** → Application → Core (inward only)
+- **Infrastructure** → Core
+- **Plugins** → Application + Core (via `global_variables`)
+- **Core** → NOTHING (no outward dependencies)
 
 ---
 
@@ -107,6 +134,7 @@ The application initializes components in a specific order to ensure dependencie
 sequenceDiagram
     participant M as main.py
     participant MW as MainWindow
+    participant AC as ApplicationController
     participant GV as global_variables
 
     M->>M: Configure logging
@@ -121,9 +149,12 @@ sequenceDiagram
     MW->>GV: global_tree_structure_widget = TreeStructureWidget()
     MW->>GV: global_pcd_viewer_widget = PCDViewerWidget()
     MW->>MW: Create DialogBoxesManager
-    MW->>GV: global_data_manager = DataManager(...)
+    MW->>AC: ApplicationController.create(plugin_manager, file_manager)
+    AC->>AC: Create DataNodes, services, executor, coordinator
+    MW->>GV: global_application_controller = controller
+    MW->>GV: global_data_nodes = controller.data_nodes
     MW->>GV: global_main_window = self
-    MW->>GV: global_analysis_thread_manager = AnalysisThreadManager()
+    MW->>MW: Connect signals to MainWindow handlers
     MW->>MW: setup_ui()
     MW->>MW: populate_menus_from_plugins()
     deactivate MW
@@ -134,17 +165,16 @@ sequenceDiagram
 
 ### Global Variables Assignment Locations
 
-| Variable | Assigned In | Line |
-|----------|-------------|------|
-| `global_file_manager` | `gui/main_window.py` | ~39 |
-| `global_tree_structure_widget` | `gui/main_window.py` | ~43 |
-| `global_pcd_viewer_widget` | `gui/main_window.py` | ~46 |
-| `global_data_manager` | `gui/main_window.py` | ~56 |
-| `global_main_window` | `gui/main_window.py` | ~59 |
-| `global_analysis_thread_manager` | `gui/main_window.py` | ~63 |
-| `global_data_nodes` | `core/data_manager.py` | ~56 |
-| `global_hardware_info` | `main.py` | ~69 |
-| `global_backend_registry` | `main.py` | ~77 |
+| Variable | Assigned In |
+|----------|-------------|
+| `global_file_manager` | `gui/main_window.py` |
+| `global_tree_structure_widget` | `gui/main_window.py` |
+| `global_pcd_viewer_widget` | `gui/main_window.py` |
+| `global_application_controller` | `gui/main_window.py` |
+| `global_data_nodes` | `gui/main_window.py` (from controller) |
+| `global_main_window` | `gui/main_window.py` |
+| `global_hardware_info` | `main.py` |
+| `global_backend_registry` | `main.py` |
 
 ---
 
@@ -157,7 +187,7 @@ sequenceDiagram
     participant User
     participant MW as MainWindow
     participant FM as FileManager
-    participant DM as DataManager
+    participant AC as ApplicationController
     participant DN as DataNodes
     participant TW as TreeWidget
     participant PV as Viewer
@@ -168,16 +198,16 @@ sequenceDiagram
     FM->>FM: o3d.io.read_point_cloud()
     FM->>FM: Create PointCloud object
 
-    FM-->>DM: SIGNAL: point_cloud_loaded(path, pc)
+    FM-->>MW: SIGNAL: point_cloud_loaded(path, pc)
 
-    activate DM
-    DM->>DM: Create DataNode(data=pc)
-    DM->>DN: add_node(data_node)
-    DN-->>DM: return uid
-    DM->>TW: add_branch(uid, name, is_root=True)
-    DM->>DM: Calculate memory size
-    DM->>TW: update_cache_tooltip(uid, size)
-    deactivate DM
+    activate MW
+    MW->>MW: Create DataNode(data=pc)
+    MW->>DN: add_node(data_node)
+    DN-->>MW: return uid
+    MW->>TW: add_branch(uid, name, is_root=True)
+    MW->>AC: _calculate_point_cloud_memory(pc)
+    MW->>TW: update_cache_tooltip(uid, size)
+    deactivate MW
 ```
 
 ### Key Points
@@ -198,8 +228,8 @@ sequenceDiagram
     participant User
     participant MW as MainWindow
     participant DB as DialogBoxesManager
-    participant DM as DataManager
-    participant ATM as AnalysisThreadManager
+    participant AC as ApplicationController
+    participant AE as AnalysisExecutor
     participant Thread as BackgroundThread
     participant Plugin
 
@@ -208,36 +238,36 @@ sequenceDiagram
     DB->>DB: Create DynamicDialog
     User->>DB: Enter params, click OK
 
-    DB-->>DM: SIGNAL: analysis_params(name, params)
+    DB-->>MW: SIGNAL: analysis_params(name, params)
 
-    activate DM
-    DM->>MW: disable_menus(), disable_tree()
-    DM->>MW: show_processing_overlay()
-    DM->>ATM: start_analysis(plugin, node, params)
-    DM->>DM: Start QTimer polling (100ms)
-    deactivate DM
+    activate MW
+    MW->>MW: disable_menus(), disable_tree()
+    MW->>MW: show_processing_overlay()
+    MW->>AE: start_analysis(plugin, node, params)
+    MW->>MW: Start QTimer polling (100ms)
+    deactivate MW
 
     activate Thread
-    ATM->>Thread: Start background thread
+    AE->>Thread: Start background thread
     Thread->>Thread: Reconstruct if needed
     Thread->>Plugin: execute(data_node, params)
     Plugin-->>Thread: return (result, type, deps)
-    Thread->>ATM: Mark completed (set flag)
+    Thread->>AE: Mark completed (set flag)
     deactivate Thread
 
-    Note over DM: QTimer polls every 100ms
+    Note over MW: QTimer polls every 100ms
 
-    DM->>ATM: check_completion()
-    ATM-->>DM: Completed! Call handle_result()
+    MW->>AE: check_completion()
+    AE-->>MW: Completed! Call handle_result()
 
-    activate DM
-    DM->>DM: Create result DataNode
-    DM->>DN: add_node(result_node)
-    DM->>TW: add_branch(uid, parent, name)
-    DM->>TW: Update visibility
-    DM->>MW: enable_menus(), enable_tree()
-    DM->>MW: hide_processing_overlay()
-    deactivate DM
+    activate MW
+    MW->>MW: Create result DataNode
+    MW->>DN: add_node(result_node)
+    MW->>TW: add_branch(uid, parent, name)
+    MW->>TW: Update visibility
+    MW->>MW: enable_menus(), enable_tree()
+    MW->>MW: hide_processing_overlay()
+    deactivate MW
 ```
 
 ### Threading Model
@@ -257,43 +287,46 @@ When a user toggles visibility, derived data (masks, clusters) must be reconstru
 sequenceDiagram
     participant User
     participant TW as TreeWidget
-    participant DM as DataManager
-    participant NRM as NodeReconstructionManager
+    participant MW as MainWindow
+    participant RC as RenderingCoordinator
+    participant RS as ReconstructionService
     participant PV as Viewer
 
     User->>TW: Toggle checkbox
     TW->>TW: Update visibility_status dict
 
-    TW-->>DM: SIGNAL: branch_visibility_changed(status)
+    TW-->>MW: SIGNAL: branch_visibility_changed(status)
 
-    activate DM
-    DM->>DM: disable UI, show overlay
+    activate MW
+    MW->>RC: render_visible(visibility_status)
 
+    activate RC
     loop For each visible UID
-        DM->>DM: Get DataNode
+        RC->>RC: Get DataNode
         alt Node has cached PointCloud
-            DM->>DM: Use cached (fast path)
+            RC->>RC: Use cached (fast path)
         else Need reconstruction
-            DM->>NRM: reconstruct_branch(uid)
-            NRM->>NRM: Find root or cached ancestor
-            NRM->>NRM: Apply task chain
-            NRM-->>DM: return PointCloud
-            DM->>DM: Cache result on node
+            RC->>RS: reconstruct(uid)
+            RS->>RS: Find root or cached ancestor
+            RS->>RS: Apply task chain
+            RS-->>RC: return PointCloud
+            RC->>RC: Cache result on node
         end
-        DM->>DM: Apply LOD if needed
+        RC->>RC: Apply LOD if needed
     end
 
-    DM->>PV: set_point_vertices(combined)
-    DM->>PV: update()
-    DM->>DM: enable UI, hide overlay
-    deactivate DM
+    RC->>PV: set_point_vertices(combined)
+    RC->>PV: update()
+    deactivate RC
+    MW->>MW: enable UI, hide overlay
+    deactivate MW
 ```
 
 ### Reconstruction Process
 
 1. **Check Cache:** If node has `cached_point_cloud`, use it immediately
 2. **Find Ancestor:** Walk up tree looking for cached ancestor or root PointCloud
-3. **Apply Tasks:** Use `NodeReconstructionManager.tasks_registry` to apply transformations
+3. **Apply Tasks:** Use `ReconstructionService.tasks_registry` to apply transformations
 4. **Cache Result:** Store reconstructed PointCloud on node for future use
 
 ### Task Registry
@@ -318,35 +351,35 @@ Static class diagram showing the main components and their relationships.
 classDiagram
     class GlobalVariables {
         +global_main_window
-        +global_data_manager
+        +global_application_controller
         +global_file_manager
         +global_tree_structure_widget
         +global_pcd_viewer_widget
         +global_data_nodes
-        +global_analysis_thread_manager
     }
 
     class MainWindow {
-        +plugin_manager
+        +controller: ApplicationController
         +file_manager
         +tree_widget
         +pcd_viewer_widget
         +dialog_boxes_manager
-        +data_manager
         +setup_ui()
-        +open_dialog_box()
+        +render_visible_data()
         +disable_menus()
         +enable_menus()
     }
 
-    class DataManager {
+    class ApplicationController {
         +data_nodes: DataNodes
-        +analysis_manager
-        +node_reconstruction_manager
+        +reconstruction_service
+        +cache_service
+        +analysis_executor
+        +rendering_coordinator
         +selected_branches: List
-        +apply_analysis()
-        +reconstruct_branch()
-        +handle_analysis_result()
+        +reconstruct(uid)
+        +load_project(data_nodes)
+        +create(plugin_manager, file_manager)$
     }
 
     class DataNodes {
@@ -378,9 +411,9 @@ classDiagram
     }
 
     GlobalVariables --> MainWindow
-    GlobalVariables --> DataManager
-    MainWindow --> DataManager
-    DataManager --> DataNodes
+    GlobalVariables --> ApplicationController
+    MainWindow --> ApplicationController
+    ApplicationController --> DataNodes
     DataNodes --> DataNode
     DataNode --> PointCloud
 ```
@@ -433,9 +466,9 @@ flowchart LR
 
     subgraph Execution
         open_dialog_box --> DialogBoxesManager
-        DialogBoxesManager -->|SIGNAL| DataManager
-        DataManager --> AnalysisThreadManager
-        AnalysisThreadManager -->|background| Plugin.execute
+        DialogBoxesManager -->|SIGNAL| MainWindow
+        MainWindow --> AnalysisExecutor
+        AnalysisExecutor -->|background| Plugin.execute
     end
 ```
 
@@ -487,38 +520,42 @@ class ActionPlugin(ABC):
 | Task | Location |
 |------|----------|
 | Load a point cloud | `FileManager.open_point_cloud_file()` |
-| Run an analysis plugin | `DataManager.apply_analysis()` |
-| Add a node to the tree | `DataManager._on_point_cloud_loaded()` or `handle_analysis_result()` |
+| Run an analysis plugin | `MainWindow` via `AnalysisExecutor.start_analysis()` |
+| Add a node to the tree | `MainWindow._on_point_cloud_loaded()` or `_handle_analysis_result()` |
 | Render points in viewer | `PCDViewerWidget.set_point_vertices()` |
 | Create a new analysis plugin | `plugins/YourCategory/your_plugin.py` (inherit `AnalysisPlugin`) |
 | Create a new action plugin | `plugins/YourCategory/your_plugin.py` (inherit `ActionPlugin`) |
 | Access any global manager | `from config.config import global_variables` |
-| Reconstruct a branch | `DataManager.reconstruct_branch(uid)` |
-| Get selected tree items | `DataManager.selected_branches` |
+| Reconstruct a branch | `ApplicationController.reconstruct(uid)` |
+| Get selected tree items | `ApplicationController.selected_branches` |
+| Re-render visible data | `MainWindow.render_visible_data(zoom_extent=False)` |
 | Disable UI during processing | `MainWindow.disable_menus()`, `disable_tree()` |
 
 ### Signal Connections
 
 | Signal | Source | Handler | Purpose |
 |--------|--------|---------|---------|
-| `point_cloud_loaded` | FileManager | DataManager._on_point_cloud_loaded | File loaded |
-| `analysis_params` | DialogBoxesManager | DataManager.apply_analysis | Dialog OK clicked |
-| `branch_visibility_changed` | TreeStructureWidget | DataManager._on_branch_visibility_changed | Checkbox toggled |
-| `branch_selection_changed` | TreeStructureWidget | DataManager._on_branch_selection_changed | Tree selection |
-| `branch_added` | TreeStructureWidget | DataManager._on_branch_added | New branch added |
+| `point_cloud_loaded` | FileManager | MainWindow._on_point_cloud_loaded | File loaded |
+| `analysis_params` | DialogBoxesManager | MainWindow._on_analysis_params | Dialog OK clicked |
+| `branch_visibility_changed` | TreeStructureWidget | MainWindow._on_branch_visibility_changed | Checkbox toggled |
+| `branch_selection_changed` | TreeStructureWidget | MainWindow._on_branch_selection_changed | Tree selection |
+| `branch_added` | TreeStructureWidget | MainWindow._on_branch_added | New branch added |
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
 | `main.py` | Application entry point |
-| `gui/main_window.py` | Main window, menu building |
-| `core/data_manager.py` | Central data coordinator |
-| `core/data_node.py` | Single data unit wrapper |
-| `core/data_nodes.py` | Collection manager |
-| `core/point_cloud.py` | Primary data structure |
-| `core/node_reconstruction_manager.py` | Rebuilds PointCloud from derived data |
-| `core/analysis_thread_manager.py` | Background thread management |
+| `gui/main_window.py` | Main window, menu building, signal handling |
+| `application/application_controller.py` | Central orchestrator (factory, reconstruct, selection) |
+| `application/analysis_executor.py` | Background thread analysis execution |
+| `application/rendering_coordinator.py` | Visibility rendering, LOD management |
+| `core/entities/data_node.py` | Single data unit wrapper |
+| `core/entities/data_nodes.py` | Collection manager |
+| `core/entities/point_cloud.py` | Primary data structure |
+| `core/services/reconstruction_service.py` | Rebuilds PointCloud from derived data |
+| `core/services/cache_service.py` | Cache management for reconstructed data |
+| `core/services/analysis_service.py` | Plugin execution service |
 | `services/file_manager.py` | File I/O operations |
 | `plugins/plugin_manager.py` | Plugin discovery and registration |
 | `plugins/interfaces.py` | Plugin base classes |
@@ -541,8 +578,9 @@ class ActionPlugin(ABC):
 ```
 PREFERRED: Singleton Pattern
 ─────────────────────────────
-global_variables.global_data_manager.method()
+global_variables.global_application_controller.reconstruct(uid)
 global_variables.global_pcd_viewer_widget.update()
+global_variables.global_main_window.render_visible_data()
 
 ACCEPTABLE: Callbacks (when singleton doesn't fit)
 ──────────────────────────────────────────────────
@@ -556,4 +594,4 @@ class MyClass(QObject):
 
 ---
 
-*Last updated: January 2026*
+*Last updated: February 2026*
