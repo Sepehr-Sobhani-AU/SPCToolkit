@@ -1,4 +1,8 @@
 # test_analysis_plugins.py
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from plugins.plugin_manager import PluginManager
 from core.anaysis_manager import AnalysisManager
 from core.entities.data_node import DataNode

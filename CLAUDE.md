@@ -76,7 +76,7 @@ python main.py
 # Run unit tests
 python unit_test/plugins_discovery_and_loading_test.py
 python unit_test/analysis_plugins_execution_test.py
-python unit_test/menu_plugin_test.py
+python unit_test/action_plugin_test.py
 ```
 
 ## Core Architecture
