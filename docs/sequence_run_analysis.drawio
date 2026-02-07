@@ -186,11 +186,11 @@
         </mxCell>
         <mxCell id="msg-9" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#cc6600;dashed=1;dashPattern=8 4;" value="">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="785" y="750" as="sourcePoint" />
-            <mxPoint x="285" y="750" as="targetPoint" />
+            <mxPoint x="285" y="750" as="sourcePoint" />
+            <mxPoint x="785" y="750" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="msg-9-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=12;fontColor=#cc6600;fontStyle=1;" value="9. Report progress ← callback [repeats]" vertex="1">
+        <mxCell id="msg-9-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=bottom;whiteSpace=wrap;rounded=0;fontSize=12;fontColor=#cc6600;fontStyle=1;" value="9. Poll global_progress singleton [repeats]" vertex="1">
           <mxGeometry height="22" width="340" x="300" y="725" as="geometry" />
         </mxCell>
         <mxCell id="msg-10" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#cc6600;" value="">

@@ -67,7 +67,7 @@
         <mxCell id="analysis-executor" parent="DKNL86ZRpR8sS9cm1DVU-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;strokeWidth=2;fontStyle=1;fontSize=13;" value="AnalysisExecutor" vertex="1">
           <mxGeometry height="55" width="180" x="680" y="400" as="geometry" />
         </mxCell>
-        <mxCell id="analysis-executor-detail" parent="DKNL86ZRpR8sS9cm1DVU-1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#555555;" value="• Background thread&#xa;• Progress callbacks&#xa;• Single process" vertex="1">
+        <mxCell id="analysis-executor-detail" parent="DKNL86ZRpR8sS9cm1DVU-1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#555555;" value="• Background thread&#xa;• Singleton progress&#xa;• Single process" vertex="1">
           <mxGeometry height="50" width="180" x="680" y="460" as="geometry" />
         </mxCell>
         <mxCell id="render-coord" parent="DKNL86ZRpR8sS9cm1DVU-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;strokeWidth=2;fontStyle=1;fontSize=13;" value="RenderingCoordinator" vertex="1">
