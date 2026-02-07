@@ -24,7 +24,11 @@ This document describes the core framework architecture of SPCToolkit. It covers
 The system is organized into layers: GUI, Application, Core, Infrastructure, and Plugins.
 
 ```mermaid
-flowchart TB
+flowchart TD
+    subgraph GV_box [" "]
+        GV[global_variables — Singleton Access]
+    end
+
     subgraph UI["GUI Layer"]
         MW[MainWindow]
         TW[TreeStructureWidget]
@@ -40,14 +44,6 @@ flowchart TB
     end
 
     subgraph Core["Core Layer"]
-        subgraph Entities
-            DN[DataNodes]
-            Node[DataNode]
-            PC[PointCloud]
-            Clusters
-            Masks
-            Values
-        end
         subgraph CoreServices["Core Services"]
             RS[ReconstructionService]
             CS[CacheService]
@@ -55,7 +51,21 @@ flowchart TB
             BP[BatchProcessor]
         end
         subgraph Transformers["Transformers"]
-            TF["MasksTransformer"\n"ClustersTransformer\nEigenvaluesTransformer\nValuesTransformer\nColorsTransformer\nDistToGroundTransformer\nContainerTransformer"]
+            TF1[MasksTransformer]
+            TF2[ClustersTransformer]
+            TF3[EigenvaluesTransformer]
+            TF4[ValuesTransformer]
+            TF5[ColorsTransformer]
+            TF6[DistToGroundTransformer]
+            TF7[ContainerTransformer]
+        end
+        subgraph Entities
+            DN[DataNodes]
+            Node[DataNode]
+            PC[PointCloud]
+            CL[Clusters]
+            MA[Masks]
+            VA[Values]
         end
     end
 
@@ -65,6 +75,7 @@ flowchart TB
     end
 
     subgraph Plugins["Plugin Layer"]
+        PM[PluginManager]
         AP[AnalysisPlugins]
         ActP[ActionPlugins]
         BR[BackendRegistry]
@@ -73,10 +84,6 @@ flowchart TB
     subgraph Services["Services"]
         FM[FileManager]
     end
-
-    PM[PluginManager]
-
-    GV[global_variables\nSingleton Access]
 
     MW --> AC
     MW --> TW
@@ -89,9 +96,9 @@ flowchart TB
     AC --> RS
     AC --> CS
 
+    AE --> AS
     AE --> RS
     AE --> CS
-    AE --> AS
 
     RC --> DN
     RC --> RS
@@ -99,24 +106,24 @@ flowchart TB
     RC --> LM
 
     RS --> DN
-    RS --> TF
+    RS --> Transformers
 
     CS --> DN
 
     DN --> Node
     Node --> PC
-    Node --> Clusters
-    Node --> Masks
-    Node --> Values
+    Node --> CL
+    Node --> MA
+    Node --> VA
 
     PM --> AP
     PM --> ActP
 
-    GV -.->|provides access to| AC
-    GV -.->|provides access to| TW
-    GV -.->|provides access to| PV
-    GV -.->|provides access to| FM
-    GV -.->|provides access to| MW
+    GV -.-> AC
+    GV -.-> MW
+    GV -.-> TW
+    GV -.-> PV
+    GV -.-> FM
 ```
 
 ### Layer Responsibilities
