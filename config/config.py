@@ -15,8 +15,6 @@ class GlobalVariables:
         # Core managers
         self.global_file_manager = None
         self.global_data_nodes = None  # DataNodes collection
-        self.global_data_manager = None  # DataManager instance (backward compat)
-        self.global_analysis_thread_manager = None
 
         # Application layer
         self.global_application_controller = None
