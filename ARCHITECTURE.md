@@ -25,11 +25,8 @@ The system is organized into layers: GUI, Application, Core, Infrastructure, and
 
 ```mermaid
 flowchart TD
-    subgraph GV_box [" "]
-        GV[global_variables — Singleton Access]
-    end
-
-    subgraph UI["GUI Layer"]
+    subgraph GUI["GUI Layer"]
+        direction LR
         MW[MainWindow]
         TW[TreeStructureWidget]
         PV[PCDViewerWidget]
@@ -37,6 +34,7 @@ flowchart TD
     end
 
     subgraph App["Application Layer"]
+        direction LR
         AC[ApplicationController]
         AE[AnalysisExecutor]
         RC[RenderingCoordinator]
@@ -44,87 +42,44 @@ flowchart TD
     end
 
     subgraph Core["Core Layer"]
-        subgraph CoreServices["Core Services"]
+        direction LR
+        subgraph CoreServices["Services"]
             RS[ReconstructionService]
             CS[CacheService]
             AS[AnalysisService]
             BP[BatchProcessor]
         end
-        subgraph Transformers["Transformers"]
-            TF1[MasksTransformer]
-            TF2[ClustersTransformer]
-            TF3[EigenvaluesTransformer]
-            TF4[ValuesTransformer]
-            TF5[ColorsTransformer]
-            TF6[DistToGroundTransformer]
-            TF7[ContainerTransformer]
+        subgraph Transformers["Transformers x7"]
+            TF["Masks, Clusters, Eigenvalues,\nValues, Colors, DistToGround,\nContainer"]
         end
         subgraph Entities
-            DN[DataNodes]
-            Node[DataNode]
-            PC[PointCloud]
-            CL[Clusters]
-            MA[Masks]
-            VA[Values]
+            DN["DataNodes / DataNode"]
+            PC["PointCloud, Clusters,\nMasks, Values"]
         end
     end
 
-    subgraph Infra["Infrastructure"]
+    subgraph Infra["Infrastructure & Services"]
+        direction LR
+        FM[FileManager]
         HD[HardwareDetector]
         MM[MemoryManager]
     end
 
     subgraph Plugins["Plugin Layer"]
+        direction LR
         PM[PluginManager]
         AP[AnalysisPlugins]
         ActP[ActionPlugins]
         BR[BackendRegistry]
     end
 
-    subgraph Services["Services"]
-        FM[FileManager]
-    end
-
-    MW --> AC
-    MW --> TW
-    MW --> PV
-    MW --> DB
-
-    AC --> AE
-    AC --> RC
-    AC --> DN
-    AC --> RS
-    AC --> CS
-
-    AE --> AS
-    AE --> RS
-    AE --> CS
-
-    RC --> DN
-    RC --> RS
-    RC --> CS
-    RC --> LM
-
-    RS --> DN
-    RS --> Transformers
-
-    CS --> DN
-
-    DN --> Node
-    Node --> PC
-    Node --> CL
-    Node --> MA
-    Node --> VA
-
-    PM --> AP
-    PM --> ActP
-
-    GV -.-> AC
-    GV -.-> MW
-    GV -.-> TW
-    GV -.-> PV
-    GV -.-> FM
+    GUI --> App --> Core
+    Plugins -.-> App
+    Plugins -.-> Core
+    Infra -.-> Core
 ```
+
+> **Singleton access:** `global_variables` (config/config.py) provides global access to MainWindow, ApplicationController, TreeStructureWidget, PCDViewerWidget, FileManager, and DataNodes. Detailed component interactions are shown in the sequence diagrams below.
 
 ### Layer Responsibilities
 
