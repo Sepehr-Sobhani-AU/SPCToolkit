@@ -312,12 +312,13 @@ class PCDViewerWidget(QOpenGLWidget):
     @property
     def lod_info(self) -> dict:
         """Current LOD state for debugging."""
-        data_manager = global_variables.global_data_manager
-        full = data_manager._total_visible_points if data_manager else 0
+        controller = global_variables.global_application_controller
+        rc = controller.rendering_coordinator if controller else None
+        full = rc.total_visible_points if rc else 0
         rendered = len(self.points) if self.points is not None else 0
         return {
             "sample_rate": f"{self._current_sample_rate:.1%}",
-            "point_budget": data_manager._point_budget if data_manager else 0,
+            "point_budget": rc._point_budget if rc else 0,
             "full_points": full,
             "rendered_points": rendered,
             "reduction": f"{(1 - rendered/full)*100:.1f}%" if full > 0 else "0%"
@@ -959,12 +960,16 @@ class PCDViewerWidget(QOpenGLWidget):
         if not self._lod_enabled:
             return
 
-        data_manager = global_variables.global_data_manager
-        if data_manager is None or data_manager._total_visible_points <= 0:
+        controller = global_variables.global_application_controller
+        if controller is None or controller.rendering_coordinator is None:
             return
 
-        total_points = data_manager._total_visible_points
-        point_budget = data_manager._point_budget
+        rc = controller.rendering_coordinator
+        if rc.total_visible_points <= 0:
+            return
+
+        total_points = rc.total_visible_points
+        point_budget = rc._point_budget
 
         # Calculate max safe rate (never exceed budget)
         max_safe_rate = min(1.0, point_budget / total_points) if total_points > 0 else 1.0
@@ -989,8 +994,6 @@ class PCDViewerWidget(QOpenGLWidget):
             main_window = global_variables.global_main_window
             if main_window and hasattr(main_window, 'render_visible_with_lod'):
                 main_window.render_visible_with_lod(new_rate)
-            else:
-                data_manager.render_visible_with_lod(new_rate)
 
     def closeEvent(self, event):
         """
