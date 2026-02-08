@@ -70,22 +70,33 @@ class BatchProcessor:
         # Calculate bounding box
         min_bounds = np.min(self.points, axis=0)
         max_bounds = np.max(self.points, axis=0)
-
-        # Calculate overall volume and estimate grid dimensions
-        total_volume = np.prod(max_bounds - min_bounds)
-        point_density = len(self.points) / total_volume
-
-        # Estimate cell size to achieve target batch size
-        cell_volume = self.batch_size / point_density
-        cell_length = np.cbrt(cell_volume)
-
-        # Calculate grid dimensions
         extents = max_bounds - min_bounds
-        grid_dims = np.ceil(extents / cell_length).astype(int)
+
+        # Calculate desired number of cells directly from batch_size
+        n_desired_cells = max(1, round(len(self.points) / self.batch_size))
+
+        # Handle zero-extent dimensions (coplanar or collinear points)
+        non_zero = extents > 1e-10
+        n_active_dims = int(non_zero.sum())
+
+        if n_active_dims == 0:
+            # All points at same location
+            grid_dims = np.array([1, 1, 1])
+        else:
+            # Distribute cells proportionally to extents in active dimensions
+            active_extents = extents[non_zero]
+            active_volume = np.prod(active_extents)
+            k = (n_desired_cells / active_volume) ** (1.0 / n_active_dims)
+
+            grid_dims = np.ones(3, dtype=int)
+            for i in range(3):
+                if non_zero[i]:
+                    grid_dims[i] = max(1, round(k * extents[i]))
+
         self.grid_dimensions = tuple(grid_dims)
 
-        # Calculate actual cell size
-        self.cell_size = extents / grid_dims
+        # Calculate actual cell size (use 1.0 for zero-extent dimensions to avoid division by zero)
+        self.cell_size = np.where(extents > 1e-10, extents / grid_dims, 1.0)
 
         # Store grid bounds
         self.grid_bounds = {
