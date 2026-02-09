@@ -421,37 +421,52 @@ class EigenvalueUtils:
         else:
             tree = KDTree(point_cloud)
             distances, indices = tree.query(point_cloud, k=k)
+        del distances  # Not needed after KNN
 
-        # Move points and indices to GPU via PyTorch
-        points_torch = torch.from_numpy(point_cloud).to(self.device)
-        indices_torch = torch.from_numpy(indices.astype(np.int64)).to(self.device)
+        # All tensor ops without gradient tracking to save memory
+        with torch.no_grad():
+            # Move points and indices to GPU via PyTorch
+            points_torch = torch.from_numpy(point_cloud).to(self.device)
+            indices_torch = torch.from_numpy(indices.astype(np.int64)).to(self.device)
 
-        # Gather KNN points on GPU: (num_points, k, 3)
-        neighbors = points_torch[indices_torch]
+            # Gather KNN points on GPU: (num_points, k, 3)
+            neighbors = points_torch[indices_torch]
+            del points_torch
 
-        # Compute centroids on GPU: (num_points, 1, 3)
-        centroids = neighbors.mean(dim=1, keepdim=True)
+            # Compute centroids on GPU: (num_points, 1, 3)
+            centroids = neighbors.mean(dim=1, keepdim=True)
 
-        # Center neighborhoods on GPU
-        centered = neighbors - centroids
+            # Center neighborhoods on GPU
+            centered = neighbors - centroids
+            del neighbors, centroids
 
-        # Transpose for batch matmul: (num_points, 3, k)
-        centered_t = centered.transpose(1, 2)
+            # Transpose for batch matmul: (num_points, 3, k)
+            centered_t = centered.transpose(1, 2)
 
-        # Batch covariance matrices on GPU: (num_points, 3, 3)
-        k_float = float(k - 1) if k > 1 else 1.0
-        cov_matrices = torch.matmul(centered_t, centered) / k_float
+            # Batch covariance matrices on GPU: (num_points, 3, 3)
+            k_float = float(k - 1) if k > 1 else 1.0
+            cov_matrices = torch.matmul(centered_t, centered) / k_float
+            del centered, centered_t
 
-        # Batch eigenvalue decomposition on GPU
-        eigenvalues_torch, _ = torch.linalg.eigh(cov_matrices)
+            # Batch eigenvalue decomposition on GPU
+            eigenvalues_torch, _ = torch.linalg.eigh(cov_matrices)
+            del cov_matrices
 
-        if smooth:
-            # Smooth eigenvalues on GPU using neighbor averaging
-            neighbor_eigenvalues = eigenvalues_torch[indices_torch]  # (num_points, k, 3)
-            avg_eigenvalues = neighbor_eigenvalues.mean(dim=1)  # (num_points, 3)
-            return avg_eigenvalues.cpu().numpy()
-        else:
-            return eigenvalues_torch.cpu().numpy()
+            if smooth:
+                # Smooth eigenvalues on GPU using neighbor averaging
+                neighbor_eigenvalues = eigenvalues_torch[indices_torch]  # (num_points, k, 3)
+                del eigenvalues_torch, indices_torch
+                result = neighbor_eigenvalues.mean(dim=1).cpu().numpy()  # (num_points, 3)
+                del neighbor_eigenvalues
+            else:
+                result = eigenvalues_torch.cpu().numpy()
+                del eigenvalues_torch, indices_torch
+
+        # Release cached GPU memory so the next batch starts clean
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+        return result
 
     def _compute_eigenvalues_numpy(
             self,
