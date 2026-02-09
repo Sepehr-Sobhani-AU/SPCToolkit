@@ -313,7 +313,8 @@ main_window.render_visible_data(zoom_extent=False)
   - Double Left Click: Update center of rotation to clicked point
   - Shift + Left Click: Select a point
   - Shift + Right Click: Deselect a point
-  - ESC: Deselect all selected points (with confirmation)
+  - P: Enter polygon selection mode (click vertices, right-click/double-click to close and select)
+  - ESC: Cancel polygon mode (if active), or deselect all selected points (with confirmation)
   - Ctrl + R: Reset camera view to default state
   - F: Zoom to extent (fit all visible points in viewport)
 

@@ -37,7 +37,8 @@ class PCDViewerWidget(QOpenGLWidget):
         - F: Zoom to extent (fit all visible points in viewport).
         - SHIFT + Left Click: Select a point in the point cloud.
         - SHIFT + Right Click: Deselect a point in the point cloud.
-        - ESC: Deselect all selected points after confirmation.
+        - P: Enter polygon selection mode (click vertices, right-click/double-click to close and select).
+        - ESC: Cancel polygon mode (if active), or deselect all selected points after confirmation.
 
     Attributes:
     -----------
@@ -404,6 +405,10 @@ class PCDViewerWidget(QOpenGLWidget):
         # Timer for hiding the axis symbol after panning
         self.axis_timer = None
 
+        # Polygon selection mode state
+        self._polygon_mode = False        # Whether polygon selection mode is active
+        self._polygon_vertices = []       # List of (x, y) tuples in Qt widget coordinates
+
         # LOD state (for triggering DataManager re-render)
         self._current_sample_rate: float = 1.0
         self._lod_enabled: bool = True  # Dynamic LOD for large point clouds
@@ -684,6 +689,9 @@ class PCDViewerWidget(QOpenGLWidget):
             # Draw axis symbol at the center of rotation
             self.draw_axis_symbol(self.center)
 
+        # Draw polygon selection overlay (2D on top of scene)
+        self.render_polygon_overlay()
+
     def render_point_cloud(self):
         """
         Render the point cloud data using OpenGL VBO.
@@ -741,25 +749,23 @@ class PCDViewerWidget(QOpenGLWidget):
         If no points have been picked, the method returns without rendering anything.
         """
 
-        # Highlight picked points by drawing spheres
+        # Highlight picked points by drawing larger points
         if self.picked_points_indices:
-            glColor3f(*self.picked_point_highlight_color)
+            # Filter out invalid indices
+            max_idx = len(self.points) - 1
+            valid = [i for i in self.picked_points_indices if i <= max_idx]
+            if len(valid) != len(self.picked_points_indices):
+                self.picked_points_indices[:] = valid
 
-            invalid_indices = []
-            for index in self.picked_points_indices:
-                try:
-                    position = self.points[index, :3]
-
-                    # Calculate the radius of the sphere based on the max extent of the point cloud
-                    # / 1000 is a scaling factor to adjust a reasonable value size of the sphere
-                    radius = self.max_extent * self.picked_point_highlight_size / 1000
-                    self.draw_sphere(position, radius)
-                except IndexError:
-                    invalid_indices.append(index)
-
-            # Remove invalid indices that no longer exist in the point cloud
-            for invalid_index in invalid_indices:
-                self.picked_points_indices.remove(invalid_index)
+            if valid:
+                positions = self.points[valid, :3]
+                highlight_size = self.point_size * self.picked_point_highlight_size * 5
+                glPointSize(highlight_size)
+                glColor3f(*self.picked_point_highlight_color)
+                glBegin(GL_POINTS)
+                for pos in positions:
+                    glVertex3f(pos[0], pos[1], pos[2])
+                glEnd()
 
     def resizeGL(self, w, h):
         """
@@ -798,6 +804,16 @@ class PCDViewerWidget(QOpenGLWidget):
         Args:
             event (QMouseEvent): The mouse event containing details such as the button pressed and the mouse position.
         """
+
+        # Polygon mode: left-click adds vertex, right-click closes polygon
+        if self._polygon_mode:
+            if event.button() == Qt.LeftButton:
+                self._polygon_vertices.append((event.x(), event.y()))
+                self.update()
+                return
+            elif event.button() == Qt.RightButton:
+                self._close_polygon_and_select()
+                return
 
         self.last_mouse_pos = event.pos()
         modifiers = event.modifiers()
@@ -844,6 +860,12 @@ class PCDViewerWidget(QOpenGLWidget):
             event (QMouseEvent): The mouse event containing details such as the button pressed and the mouse position.
         """
 
+        # Polygon mode: double-click closes polygon
+        if self._polygon_mode:
+            if event.button() == Qt.LeftButton:
+                self._close_polygon_and_select()
+            return
+
         if event.button() == Qt.LeftButton:
             # Update the rotation center on double left-click
             self.update_rotation_center(event.pos())
@@ -859,6 +881,10 @@ class PCDViewerWidget(QOpenGLWidget):
         Args:
             event (QMouseEvent): The mouse event containing details such as the button released and the mouse position.
         """
+        # Suppress release events in polygon mode
+        if self._polygon_mode:
+            return
+
         if event.button() == Qt.LeftButton:
             self.is_rotating = False
             self.is_rotating_z = False
@@ -882,6 +908,10 @@ class PCDViewerWidget(QOpenGLWidget):
         Args:
             event (QMouseEvent): The mouse event containing details such as the current mouse position.
         """
+
+        # Suppress drag in polygon mode
+        if self._polygon_mode:
+            return
 
         if self.last_mouse_pos is None:
             return
@@ -1043,14 +1073,24 @@ class PCDViewerWidget(QOpenGLWidget):
             event (QKeyEvent): The key event containing details such as the key pressed.
         """
 
-        if event.key() == Qt.Key_Escape:
-            # Create a confirmation dialog box
-            reply = QMessageBox.question(self, 'Confirmation', 'Deselect all selected points?',
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                # Clear all selected points if confirmed
-                self.picked_points_indices.clear()
-                self.update()
+        if event.key() == Qt.Key_P:
+            # Toggle polygon selection mode
+            if self._polygon_mode:
+                self.exit_polygon_mode()
+            else:
+                self.enter_polygon_mode()
+        elif event.key() == Qt.Key_Escape:
+            if self._polygon_mode:
+                # Cancel polygon mode without selecting
+                self.exit_polygon_mode()
+            else:
+                # Create a confirmation dialog box
+                reply = QMessageBox.question(self, 'Confirmation', 'Deselect all selected points?',
+                                             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    # Clear all selected points if confirmed
+                    self.picked_points_indices.clear()
+                    self.update()
         elif event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_R:
             self.reset_view()
         elif event.key() == Qt.Key_F:
@@ -1457,3 +1497,198 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.visible != visible:
             self.visible = visible
             self.update()
+
+    # ── Polygon Selection Mode ──────────────────────────────────────────
+
+    def enter_polygon_mode(self):
+        """Activate polygon selection mode. User clicks to add vertices."""
+        if self.points is None:
+            return
+        self._polygon_mode = True
+        self._polygon_vertices = []
+        self.setCursor(Qt.CrossCursor)
+        self.update()
+
+    def exit_polygon_mode(self):
+        """Deactivate polygon selection mode and restore normal cursor."""
+        self._polygon_mode = False
+        self._polygon_vertices = []
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def _close_polygon_and_select(self):
+        """Close the polygon and select all 3D points whose screen projections fall inside it."""
+        if len(self._polygon_vertices) < 3:
+            self.exit_polygon_mode()
+            return
+
+        polygon = np.array(self._polygon_vertices, dtype=np.float64)  # (M, 2)
+
+        # OpenGL's glGetDoublev returns column-major matrices. In numpy (row-major)
+        # these appear transposed: mv_np = ModelView^T, proj_np = Projection^T.
+        # Use row-vector multiplication: clip_row = point_row @ MV^T @ P^T
+        mv = np.array(self.model_view_matrix, dtype=np.float64)   # 4x4 (M^T)
+        proj = np.array(self.projection_matrix, dtype=np.float64)  # 4x4 (P^T)
+
+        # Get all 3D points as homogeneous coordinates (row vectors)
+        pts_3d = self.points[:, :3].astype(np.float64)  # (N, 3)
+        n = pts_3d.shape[0]
+        ones = np.ones((n, 1), dtype=np.float64)
+        pts_homo = np.hstack([pts_3d, ones])  # (N, 4)
+
+        # Row-vector projection: clip = pts @ MV^T @ P^T  -> (N, 4)
+        clip = pts_homo @ mv @ proj  # (N, 4)
+
+        w = clip[:, 3]
+        # Filter points behind camera (w <= 0)
+        valid_mask = w > 0
+
+        # NDC coordinates
+        ndc_x = np.zeros(n, dtype=np.float64)
+        ndc_y = np.zeros(n, dtype=np.float64)
+        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
+        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
+
+        # Viewport transform: NDC -> Qt widget coordinates (top-left origin, Y down)
+        vp = self.viewport
+        vp_x, vp_y, vp_w, vp_h = vp[0], vp[1], vp[2], vp[3]
+        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
+        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y  # Flip Y for Qt coords
+
+        # Point-in-polygon test (ray casting)
+        inside = self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
+
+        # Get indices of selected points
+        new_indices = np.where(inside)[0]
+
+        # Avoid duplicates
+        if new_indices.size > 0:
+            existing = set(self.picked_points_indices)
+            for idx in new_indices:
+                idx_int = int(idx)
+                if idx_int not in existing:
+                    self.picked_points_indices.append(idx_int)
+                    existing.add(idx_int)
+
+        self.exit_polygon_mode()
+
+    @staticmethod
+    def _points_in_polygon(screen_x, screen_y, polygon, valid_mask):
+        """
+        Vectorized ray-casting point-in-polygon test.
+
+        Args:
+            screen_x: (N,) array of screen X coordinates
+            screen_y: (N,) array of screen Y coordinates
+            polygon: (M, 2) array of polygon vertices in screen coords
+            valid_mask: (N,) boolean mask for points in front of camera
+
+        Returns:
+            (N,) boolean array — True for points inside the polygon
+        """
+        n = len(screen_x)
+        m = len(polygon)
+        inside = np.zeros(n, dtype=bool)
+
+        # Ray casting: count crossings for each point
+        crossings = np.zeros(n, dtype=np.int32)
+        for i in range(m):
+            x1, y1 = polygon[i]
+            x2, y2 = polygon[(i + 1) % m]
+
+            # For each edge, test all valid points simultaneously
+            # A ray from (px, py) going right crosses edge if:
+            #   1. The edge straddles the ray's y-level
+            #   2. The intersection x is to the right of px
+            cond1 = (y1 <= screen_y) & (y2 > screen_y)
+            cond2 = (y2 <= screen_y) & (y1 > screen_y)
+            straddle = cond1 | cond2
+
+            # Compute x-intersection of the edge with the horizontal ray
+            # x_intersect = x1 + (screen_y - y1) / (y2 - y1) * (x2 - x1)
+            test = straddle & valid_mask
+            if not np.any(test):
+                continue
+
+            dy = y2 - y1
+            if dy == 0:
+                continue
+
+            t = (screen_y[test] - y1) / dy
+            x_intersect = x1 + t * (x2 - x1)
+
+            crosses = x_intersect > screen_x[test]
+            crossings[test] += crosses.astype(np.int32)
+
+        # Odd number of crossings = inside
+        inside = (crossings % 2 == 1) & valid_mask
+        return inside
+
+    def render_polygon_overlay(self):
+        """Draw the polygon as a 2D overlay on top of the 3D scene."""
+        if not self._polygon_mode or len(self._polygon_vertices) == 0:
+            return
+
+        w = self.width()
+        h = self.height()
+
+        # Save all GL state
+        glPushAttrib(GL_ALL_ATTRIB_BITS)
+
+        # Switch to 2D orthographic projection matching Qt widget coords
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(0, w, h, 0, -1, 1)  # Top-left origin, Y-down (Qt convention)
+
+        glMatrixMode(GL_MODELVIEW)
+        glPushMatrix()
+        glLoadIdentity()
+
+        glDisable(GL_DEPTH_TEST)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        verts = self._polygon_vertices
+
+        # Draw semi-transparent filled polygon (if >= 3 vertices)
+        if len(verts) >= 3:
+            glColor4f(0.2, 0.4, 1.0, 0.15)
+            glBegin(GL_POLYGON)
+            for x, y in verts:
+                glVertex2f(x, y)
+            glEnd()
+
+        # Draw polygon edge lines
+        glColor4f(0.2, 0.4, 1.0, 0.8)
+        glLineWidth(2.0)
+        glBegin(GL_LINE_STRIP)
+        for x, y in verts:
+            glVertex2f(x, y)
+        glEnd()
+
+        # Draw closing edge (dotted visual hint) if >= 3 vertices
+        if len(verts) >= 3:
+            glEnable(GL_LINE_STIPPLE)
+            glLineStipple(1, 0x00FF)
+            glBegin(GL_LINES)
+            glVertex2f(verts[-1][0], verts[-1][1])
+            glVertex2f(verts[0][0], verts[0][1])
+            glEnd()
+            glDisable(GL_LINE_STIPPLE)
+
+        # Draw vertex dots
+        glColor4f(1.0, 1.0, 0.0, 1.0)
+        glPointSize(8.0)
+        glBegin(GL_POINTS)
+        for x, y in verts:
+            glVertex2f(x, y)
+        glEnd()
+
+        # Restore GL state
+        glMatrixMode(GL_MODELVIEW)
+        glPopMatrix()
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+
+        glPopAttrib()
