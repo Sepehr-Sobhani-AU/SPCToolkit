@@ -2,7 +2,7 @@
 Plugin for classifying points into geometric shape classes based on eigenvalue features.
 
 Requires eigenvalues to be already computed on the selected node (run Compute Eigenvalues first).
-Reads eigenvalues directly from data_node.data.eigenvalues — no recomputation.
+After reconstruction by AnalysisExecutor, eigenvalues are in point_cloud.attributes['eigenvalues'].
 
 Classifies each point into one of 5 classes:
 - Planar: High planarity, low change-of-curvature (walls, ground, roofs)
@@ -18,7 +18,7 @@ import numpy as np
 
 from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
-from core.entities.eigenvalues import Eigenvalues
+from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
 from core.services.eigenvalue_utils import EigenvalueUtils
 
@@ -92,14 +92,23 @@ class GeometricClassificationPlugin(Plugin):
         }
 
     def execute(self, data_node: DataNode, params: Dict[str, Any]) -> Tuple[Any, str, List]:
-        # --- Validate input ---
-        if not isinstance(data_node.data, Eigenvalues):
+        # --- Extract eigenvalues ---
+        # AnalysisExecutor reconstructs non-PointCloud nodes before calling execute(),
+        # so eigenvalues arrive in point_cloud.attributes['eigenvalues'] (Nx3 array).
+        point_cloud = data_node.data
+        if not isinstance(point_cloud, PointCloud):
             raise ValueError(
-                "Geometric Classification requires an Eigenvalues node. "
+                "Geometric Classification requires a PointCloud with eigenvalues. "
                 "Run Compute Eigenvalues first, then select the eigenvalues node."
             )
 
-        eigenvalues = data_node.data.eigenvalues  # (N, 3)
+        eigenvalues = point_cloud.attributes.get('eigenvalues')
+        if eigenvalues is None:
+            raise ValueError(
+                "No eigenvalues found in point cloud attributes. "
+                "Run Compute Eigenvalues first, then select the eigenvalues node."
+            )
+
         n_points = len(eigenvalues)
 
         # --- Compute geometric features ---
