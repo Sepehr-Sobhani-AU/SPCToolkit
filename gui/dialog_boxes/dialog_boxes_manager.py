@@ -1,4 +1,6 @@
 # gui/dialog_boxes/dialog_boxes_manager.py
+import copy
+
 from PyQt5.QtCore import QObject, pyqtSignal
 from typing import Dict, Any
 
@@ -11,7 +13,8 @@ class DialogBoxesManager(QObject):
     Manages dialog boxes for parameter input.
 
     This manager creates dynamic dialog boxes based on the parameter
-    definitions provided by plugins.
+    definitions provided by plugins. Remembers last-used parameter values
+    per plugin so subsequent runs start from the previous settings.
     """
 
     analysis_params = pyqtSignal(str, dict)
@@ -26,6 +29,29 @@ class DialogBoxesManager(QObject):
         """
         super().__init__(parent)
         self.plugin_manager = plugin_manager
+        self._last_params = {}  # {plugin_name: {param_name: value}}
+
+    def _apply_last_params(self, plugin_name: str, schema: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Override schema defaults with last-used values for this plugin.
+
+        Returns a shallow copy of the schema with updated defaults.
+        """
+        if plugin_name not in self._last_params:
+            return schema
+
+        last = self._last_params[plugin_name]
+        patched = {}
+        for param_name, param_info in schema.items():
+            if param_name in last:
+                patched[param_name] = {**param_info, "default": last[param_name]}
+            else:
+                patched[param_name] = param_info
+        return patched
+
+    def store_params(self, plugin_name: str, params: Dict[str, Any]) -> None:
+        """Store last-used parameter values for a plugin."""
+        self._last_params[plugin_name] = dict(params)
 
     def get_analysis_params(self, analysis_type: str):
         """
@@ -53,10 +79,15 @@ class DialogBoxesManager(QObject):
         if not parameter_schema or len(parameter_schema) == 0:
             return {}
 
+        # Apply last-used values as defaults
+        parameter_schema = self._apply_last_params(analysis_type, parameter_schema)
+
         # Open dialog for parameter input
         dialog = DynamicDialog(f"{analysis_type.title()} Parameters", parameter_schema)
         if dialog.exec_():
-            return dialog.get_parameters()
+            params = dialog.get_parameters()
+            self.store_params(analysis_type, params)
+            return params
 
         return None  # User cancelled
 

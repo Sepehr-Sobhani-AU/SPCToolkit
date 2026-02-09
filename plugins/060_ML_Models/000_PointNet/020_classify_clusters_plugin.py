@@ -29,7 +29,7 @@ from models.pointnet.inference import (
     load_model_with_metadata,
     classify_clusters_batch
 )
-from gui.dialogs.classification_progress_dialog import ClassificationProgressDialog
+from plugins.dialogs.classification_progress_dialog import ClassificationProgressDialog
 
 
 class ClassifyClustersMLPlugin(ActionPlugin):

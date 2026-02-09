@@ -452,11 +452,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 # Import DynamicDialog here to avoid circular imports
                 from gui.dialog_boxes.dynamic_dialog import DynamicDialog
 
+                # Apply last-used values as defaults
+                parameter_schema = self.dialog_boxes_manager._apply_last_params(
+                    plugin_name, parameter_schema
+                )
+
                 # Create and open a dynamic dialog for parameter input
                 dialog = DynamicDialog(f"{plugin_name.title()} Parameters", parameter_schema)
                 if dialog.exec_():
                     # If the user clicked OK, get the parameters and execute
                     params = dialog.get_parameters()
+                    self.dialog_boxes_manager.store_params(plugin_name, params)
                     plugin_instance.execute(self, params)
 
         except Exception as e:
