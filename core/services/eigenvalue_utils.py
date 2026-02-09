@@ -13,6 +13,7 @@ import torch
 from scipy.spatial import KDTree
 from typing import Dict, Tuple, Optional, Union, List, Callable
 
+from config.config import global_variables
 from core.services.batch_processor import BatchProcessor
 
 
@@ -133,9 +134,9 @@ class EigenvalueUtils:
         # Create batch processor with appropriate batch size
         point_count = len(points)
 
-        # If batch_size is None, use the entire point cloud as one batch
+        # If batch_size is None, default to 250K for real spatial batching
         if batch_size is None:
-            actual_batch_size = point_count
+            actual_batch_size = min(250000, point_count)
         else:
             actual_batch_size = min(batch_size, point_count)
 
@@ -385,7 +386,9 @@ class EigenvalueUtils:
         """
         Compute the eigenvalues of the covariance matrix of k-nearest neighbor points for each point.
 
-        This is the internal method used by the BatchProcessor.
+        This is the internal method used by the BatchProcessor. Uses GPU acceleration via PyTorch
+        for neighbor gathering, covariance computation, eigenvalue decomposition, and smoothing.
+        Uses the backend registry for KNN queries (cuML on GPU when available).
 
         Parameters:
         - data (Clusters or np.ndarray): A Clusters object or a numpy array representing points.
@@ -403,46 +406,52 @@ class EigenvalueUtils:
         else:
             raise ValueError("The first parameter must be a Clusters object or a numpy array.")
 
-        # Create a k-d tree
-        tree = KDTree(point_cloud)
+        point_cloud = point_cloud.astype(np.float32)
 
         # Ensure k is smaller than the number of points
         if k > len(point_cloud):
             eigenvalues = np.ones((len(point_cloud), 3))
             return eigenvalues
 
-        # Query the k-d tree for KNN
-        distances, indices = tree.query(point_cloud, k=k)
+        # KNN query — use backend registry (cuML GPU when available, scipy CPU fallback)
+        registry = global_variables.global_backend_registry
+        if registry is not None:
+            knn_backend = registry.get_knn()
+            distances, indices = knn_backend.query(point_cloud, k=k)
+        else:
+            tree = KDTree(point_cloud)
+            distances, indices = tree.query(point_cloud, k=k)
 
-        # Gather KNN points
-        knn_points = point_cloud[indices]  # Shape: [num_points, k, 3]
+        # Move points and indices to GPU via PyTorch
+        points_torch = torch.from_numpy(point_cloud).to(self.device)
+        indices_torch = torch.from_numpy(indices.astype(np.int64)).to(self.device)
 
-        # Compute means and center the points
-        mean_knn_points = np.mean(knn_points, axis=1, keepdims=True)
-        centered_knn_points = knn_points - mean_knn_points
+        # Gather KNN points on GPU: (num_points, k, 3)
+        neighbors = points_torch[indices_torch]
 
-        # Reshape for batch matrix multiplication
-        centered_knn_points_reshaped = centered_knn_points.transpose(0, 2, 1)
+        # Compute centroids on GPU: (num_points, 1, 3)
+        centroids = neighbors.mean(dim=1, keepdim=True)
 
-        # Batch covariance matrix computation
-        cov_matrices = np.matmul(centered_knn_points_reshaped, centered_knn_points) / (k - 1)
+        # Center neighborhoods on GPU
+        centered = neighbors - centroids
 
-        # Use PyTorch for batch eigenvalue computation
-        cov_matrices_torch = torch.from_numpy(cov_matrices.astype(np.float32)).to(self.device)
+        # Transpose for batch matmul: (num_points, 3, k)
+        centered_t = centered.transpose(1, 2)
 
-        # Compute the eigenvalues in batch
-        eigenvalues_torch, _ = torch.linalg.eigh(cov_matrices_torch)
+        # Batch covariance matrices on GPU: (num_points, 3, 3)
+        k_float = float(k - 1) if k > 1 else 1.0
+        cov_matrices = torch.matmul(centered_t, centered) / k_float
 
-        # Convert the eigenvalues back to a NumPy array
-        eigenvalues = eigenvalues_torch.cpu().numpy()
+        # Batch eigenvalue decomposition on GPU
+        eigenvalues_torch, _ = torch.linalg.eigh(cov_matrices)
 
         if smooth:
-            # Use advanced indexing to compute the mean eigenvalues across neighbors
-            neighbor_eigenvalues = eigenvalues[indices]
-            avg_eigenvalues = np.mean(neighbor_eigenvalues, axis=1)
-            return avg_eigenvalues
+            # Smooth eigenvalues on GPU using neighbor averaging
+            neighbor_eigenvalues = eigenvalues_torch[indices_torch]  # (num_points, k, 3)
+            avg_eigenvalues = neighbor_eigenvalues.mean(dim=1)  # (num_points, 3)
+            return avg_eigenvalues.cpu().numpy()
         else:
-            return eigenvalues
+            return eigenvalues_torch.cpu().numpy()
 
     def _compute_eigenvalues_numpy(
             self,
