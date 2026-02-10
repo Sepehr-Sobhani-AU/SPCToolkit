@@ -10,6 +10,7 @@ Workflow:
 """
 
 import numpy as np
+from scipy.spatial import cKDTree
 from typing import Dict, Any
 from PyQt5.QtWidgets import QMessageBox
 
@@ -57,6 +58,19 @@ class CutClusterPlugin(ActionPlugin):
                                 "Please select points to cut using Shift+Click or Polygon selection.")
             return
 
+        # Get 3D coordinates of picked points from the viewer's combined vertex buffer.
+        # picked_points_indices are indices into the viewer's combined buffer (all visible
+        # branches), so we must match by coordinates rather than using indices directly.
+        picked_coords = []
+        for idx in selected_indices:
+            if idx < len(viewer_widget.points):
+                picked_coords.append(viewer_widget.points[idx, :3])
+        if not picked_coords:
+            QMessageBox.warning(main_window, "No Points Selected",
+                                "Could not retrieve coordinates for selected points.")
+            return
+        picked_coords = np.array(picked_coords, dtype=np.float32)
+
         # Reconstruct to get cluster_labels attribute
         try:
             point_cloud = controller.reconstruct(selected_uid)
@@ -72,13 +86,17 @@ class CutClusterPlugin(ActionPlugin):
             return
 
         labels = cluster_labels.copy()
-        selected_set = set(selected_indices)
+
+        # Match picked coordinates to the reconstructed point cloud via KDTree
+        tree = cKDTree(point_cloud.points)
+        distances, local_indices = tree.query(picked_coords)
+        selected_set = set(int(i) for i in local_indices)
 
         # Find affected cluster IDs (excluding noise -1)
         affected_cluster_ids = set()
-        for idx in selected_indices:
-            if idx < len(labels):
-                cid = labels[idx]
+        for local_idx in local_indices:
+            if local_idx < len(labels):
+                cid = labels[local_idx]
                 if cid != -1:
                     affected_cluster_ids.add(cid)
 
@@ -95,7 +113,7 @@ class CutClusterPlugin(ActionPlugin):
             # Mask: points in this cluster AND in the selection
             mask = np.zeros(len(labels), dtype=bool)
             cluster_mask = (labels == cluster_id)
-            for idx in selected_indices:
+            for idx in selected_set:
                 if idx < len(labels):
                     mask[idx] = True
             mask = mask & cluster_mask

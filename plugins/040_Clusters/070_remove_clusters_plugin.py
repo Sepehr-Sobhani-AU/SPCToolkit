@@ -1,11 +1,12 @@
 """
-Plugin for merging multiple clusters into one.
+Plugin for removing (deleting) selected clusters by setting them to noise (-1).
 
 Workflow:
-1. User selects a cluster_labels branch, picks one point from each cluster to merge
-2. Runs Clusters > Merge Clusters
-3. All points in the affected clusters get the lowest cluster ID from the set
-4. Colors regenerated, view refreshed, picked points cleared
+1. User selects a cluster_labels branch, picks one point from each cluster to remove
+2. Runs Clusters > Remove Clusters
+3. Plugin finds all cluster IDs containing selected points (excluding -1)
+4. All points in those clusters are set to -1 (noise)
+5. Colors regenerated, view refreshed, picked points cleared
 """
 
 import numpy as np
@@ -18,10 +19,10 @@ from config.config import global_variables
 from core.entities.clusters import Clusters
 
 
-class MergeClustersPlugin(ActionPlugin):
+class RemoveClustersPlugin(ActionPlugin):
 
     def get_name(self) -> str:
-        return "merge_clusters"
+        return "remove_clusters"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {}
@@ -54,7 +55,8 @@ class MergeClustersPlugin(ActionPlugin):
         selected_indices = viewer_widget.picked_points_indices
         if not selected_indices:
             QMessageBox.warning(main_window, "No Points Selected",
-                                "Please select one point from each cluster to merge.")
+                                "Please select points in clusters to remove "
+                                "using Shift+Click or Polygon selection.")
             return
 
         # Get 3D coordinates of picked points from the viewer's combined vertex buffer.
@@ -103,20 +105,12 @@ class MergeClustersPlugin(ActionPlugin):
                                 "Selected points do not belong to any valid clusters (all noise).")
             return
 
-        if len(affected_cluster_ids) < 2:
-            QMessageBox.warning(main_window, "Not Enough Clusters",
-                                "Need at least 2 different clusters to merge.\n"
-                                "Select points from different clusters.")
-            return
-
-        # Merge: all affected clusters get the lowest cluster ID
-        target_id = min(affected_cluster_ids)
+        # Remove: set all points in affected clusters to noise (-1)
         new_labels = labels.copy()
         for cluster_id in affected_cluster_ids:
-            if cluster_id != target_id:
-                new_labels[labels == cluster_id] = target_id
+            new_labels[labels == cluster_id] = -1
 
-        # Build new Clusters, preserving cluster_names for unaffected clusters
+        # Build new Clusters, dropping cluster_names for removed clusters
         old_clusters = node.data
         new_cluster_names = {}
         new_cluster_colors = {}
@@ -124,12 +118,7 @@ class MergeClustersPlugin(ActionPlugin):
         if old_clusters.cluster_names:
             for cid, name in old_clusters.cluster_names.items():
                 if cid not in affected_cluster_ids:
-                    # Unaffected cluster — keep as-is
                     new_cluster_names[cid] = name
-                elif cid == target_id:
-                    # Keep the target cluster's name for the merged result
-                    new_cluster_names[cid] = name
-                # Other affected cluster names are dropped (merged away)
             new_cluster_colors = old_clusters.cluster_colors.copy()
 
         new_clusters = Clusters(
