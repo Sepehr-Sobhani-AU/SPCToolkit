@@ -88,17 +88,30 @@ class CutClusterPlugin(ActionPlugin):
         labels = cluster_labels.copy()
 
         # Match picked coordinates to the reconstructed point cloud via KDTree
+        # (always needed to identify which cluster IDs are targeted)
         tree = cKDTree(point_cloud.points)
         distances, local_indices = tree.query(picked_coords)
-        selected_set = set(int(i) for i in local_indices)
 
-        # Find affected cluster IDs (excluding noise -1)
+        # Determine targeted cluster IDs from KDTree matches (excluding noise -1)
         affected_cluster_ids = set()
         for local_idx in local_indices:
             if local_idx < len(labels):
                 cid = labels[local_idx]
                 if cid != -1:
                     affected_cluster_ids.add(cid)
+
+        # Try polygon re-test for full-resolution selection
+        polygon_mask = viewer_widget.retest_polygon_selection(point_cloud.points)
+        if polygon_mask is not None:
+            # Full-resolution: all points inside polygon AND in targeted clusters
+            polygon_indices = np.where(polygon_mask)[0]
+            selected_set = set()
+            for idx in polygon_indices:
+                if labels[idx] in affected_cluster_ids:
+                    selected_set.add(int(idx))
+        else:
+            # Fallback: shift+click selection, use KDTree matches directly
+            selected_set = set(int(i) for i in local_indices)
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",

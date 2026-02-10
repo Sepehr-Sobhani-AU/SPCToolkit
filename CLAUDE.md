@@ -317,6 +317,8 @@ main_window.render_visible_data(zoom_extent=False)
   - ESC: Cancel polygon mode (if active), or deselect all selected points (with confirmation)
   - Ctrl + R: Reset camera view to default state
   - F: Zoom to extent (fit all visible points in viewport)
+  - + / =: Increase point size (geometric scaling x1.2)
+  - -: Decrease point size (geometric scaling /1.2, min 0.5)
 
 **ProcessOverlayWidget** (gui/widgets/process_overlay_widget.py):
 - Semi-transparent overlay that displays processing status messages

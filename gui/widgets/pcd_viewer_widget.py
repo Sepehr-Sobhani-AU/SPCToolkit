@@ -41,6 +41,8 @@ class PCDViewerWidget(QOpenGLWidget):
         - Shift + P: Enter polygon deselect mode (draw polygon to remove points from selection).
         - CTRL + SHIFT + Right Click: Deselect all selected points from the clicked cluster (by color).
         - ESC: Cancel polygon mode (if active), or deselect all selected points after confirmation.
+        - + / =: Increase point size (geometric scaling x1.2).
+        - -: Decrease point size (geometric scaling /1.2, min 0.5).
 
     Attributes:
     -----------
@@ -378,6 +380,9 @@ class PCDViewerWidget(QOpenGLWidget):
 
         # Setting properties as attributes that can be adjusted
         self._point_size = 0.5
+        self._POINT_SIZE_MIN = 0.5
+        self._POINT_SIZE_MAX = 20.0
+        self._POINT_SIZE_FACTOR = 1.2  # geometric scaling per keystroke
         self._axis_line_length = 5
         self._axis_line_width = 5
         self._picking_point_threshold_factor = 1.0
@@ -411,6 +416,12 @@ class PCDViewerWidget(QOpenGLWidget):
         self._polygon_mode = False        # Whether polygon selection mode is active
         self._polygon_deselect_mode = False  # Whether polygon is for deselection (vs selection)
         self._polygon_vertices = []       # List of (x, y) tuples in Qt widget coordinates
+
+        # Stored polygon + matrices for full-resolution re-testing by plugins
+        self._last_selection_polygon = None    # (M, 2) polygon vertices or None
+        self._last_selection_mv = None         # 4x4 model-view matrix at selection time
+        self._last_selection_proj = None       # 4x4 projection matrix at selection time
+        self._last_selection_viewport = None   # (vp_x, vp_y, vp_w, vp_h) tuple
 
         # LOD state (for triggering DataManager re-render)
         self._current_sample_rate: float = 1.0
@@ -1110,11 +1121,18 @@ class PCDViewerWidget(QOpenGLWidget):
                 if reply == QMessageBox.Yes:
                     # Clear all selected points if confirmed
                     self.picked_points_indices.clear()
+                    self._last_selection_polygon = None
                     self.update()
         elif event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_R:
             self.reset_view()
         elif event.key() == Qt.Key_F:
             self.zoom_to_extent()
+        elif event.key() in (Qt.Key_Plus, Qt.Key_Equal):
+            new_size = min(self._point_size * self._POINT_SIZE_FACTOR, self._POINT_SIZE_MAX)
+            self.point_size = new_size
+        elif event.key() == Qt.Key_Minus:
+            new_size = max(self._point_size / self._POINT_SIZE_FACTOR, self._POINT_SIZE_MIN)
+            self.point_size = new_size
 
         # Ensure the parent class handles other key events
         super(PCDViewerWidget, self).keyPressEvent(event)
@@ -1621,6 +1639,12 @@ class PCDViewerWidget(QOpenGLWidget):
         mv = np.array(self.model_view_matrix, dtype=np.float64)   # 4x4 (M^T)
         proj = np.array(self.projection_matrix, dtype=np.float64)  # 4x4 (P^T)
 
+        # Store polygon + matrices for full-resolution re-testing by plugins
+        self._last_selection_polygon = polygon.copy()
+        self._last_selection_mv = mv.copy()
+        self._last_selection_proj = proj.copy()
+        self._last_selection_viewport = tuple(self.viewport)
+
         # Get all 3D points as homogeneous coordinates (row vectors)
         pts_3d = self.points[:, :3].astype(np.float64)  # (N, 3)
         n = pts_3d.shape[0]
@@ -1662,6 +1686,49 @@ class PCDViewerWidget(QOpenGLWidget):
                     existing.add(idx_int)
 
         self.exit_polygon_mode()
+
+    def retest_polygon_selection(self, points_3d):
+        """
+        Re-test arbitrary 3D points against the last polygon selection.
+
+        Uses the stored polygon and camera matrices from the most recent
+        polygon selection, so it works correctly even if the camera has moved.
+
+        Args:
+            points_3d: (N, 3) float array of 3D world coordinates.
+
+        Returns:
+            (N,) boolean mask (True = inside polygon), or None if no polygon stored.
+        """
+        if self._last_selection_polygon is None:
+            return None
+
+        polygon = self._last_selection_polygon
+        mv = self._last_selection_mv
+        proj = self._last_selection_proj
+        vp_x, vp_y, vp_w, vp_h = self._last_selection_viewport
+
+        pts = np.asarray(points_3d, dtype=np.float64)
+        n = pts.shape[0]
+        ones = np.ones((n, 1), dtype=np.float64)
+        pts_homo = np.hstack([pts, ones])  # (N, 4)
+
+        # Row-vector projection using stored matrices
+        clip = pts_homo @ mv @ proj  # (N, 4)
+
+        w = clip[:, 3]
+        valid_mask = w > 0
+
+        ndc_x = np.zeros(n, dtype=np.float64)
+        ndc_y = np.zeros(n, dtype=np.float64)
+        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
+        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
+
+        # Viewport transform: NDC -> Qt widget coordinates (top-left origin, Y down)
+        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
+        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+
+        return self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
 
     def _close_polygon_and_deselect(self):
         """Close the polygon and remove all points inside it from the current selection."""
