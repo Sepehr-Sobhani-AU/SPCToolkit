@@ -38,6 +38,8 @@ class PCDViewerWidget(QOpenGLWidget):
         - SHIFT + Left Click: Select a point in the point cloud.
         - SHIFT + Right Click: Deselect a point in the point cloud.
         - P: Enter polygon selection mode (click vertices, right-click/double-click to close and select).
+        - Shift + P: Enter polygon deselect mode (draw polygon to remove points from selection).
+        - CTRL + SHIFT + Right Click: Deselect all selected points from the clicked cluster (by color).
         - ESC: Cancel polygon mode (if active), or deselect all selected points after confirmation.
 
     Attributes:
@@ -407,6 +409,7 @@ class PCDViewerWidget(QOpenGLWidget):
 
         # Polygon selection mode state
         self._polygon_mode = False        # Whether polygon selection mode is active
+        self._polygon_deselect_mode = False  # Whether polygon is for deselection (vs selection)
         self._polygon_vertices = []       # List of (x, y) tuples in Qt widget coordinates
 
         # LOD state (for triggering DataManager re-render)
@@ -812,13 +815,20 @@ class PCDViewerWidget(QOpenGLWidget):
                 self.update()
                 return
             elif event.button() == Qt.RightButton:
-                self._close_polygon_and_select()
+                if self._polygon_deselect_mode:
+                    self._close_polygon_and_deselect()
+                else:
+                    self._close_polygon_and_select()
                 return
 
         self.last_mouse_pos = event.pos()
         modifiers = event.modifiers()
 
-        if modifiers & Qt.ShiftModifier:
+        if (modifiers & Qt.ShiftModifier) and (modifiers & Qt.ControlModifier):
+            if event.button() == Qt.RightButton:
+                # Ctrl + Shift + Right Click: Deselect cluster by color
+                self.deselect_cluster_at(event.pos())
+        elif modifiers & Qt.ShiftModifier:
             if event.button() == Qt.LeftButton:
                 # Shift + Left Click: Select a point
                 self.pick_point(event.pos(), select=True)
@@ -863,7 +873,10 @@ class PCDViewerWidget(QOpenGLWidget):
         # Polygon mode: double-click closes polygon
         if self._polygon_mode:
             if event.button() == Qt.LeftButton:
-                self._close_polygon_and_select()
+                if self._polygon_deselect_mode:
+                    self._close_polygon_and_deselect()
+                else:
+                    self._close_polygon_and_select()
             return
 
         if event.button() == Qt.LeftButton:
@@ -1074,11 +1087,18 @@ class PCDViewerWidget(QOpenGLWidget):
         """
 
         if event.key() == Qt.Key_P:
-            # Toggle polygon selection mode
-            if self._polygon_mode:
-                self.exit_polygon_mode()
+            if event.modifiers() & Qt.ShiftModifier:
+                # Shift+P: Enter polygon deselect mode
+                if self._polygon_mode:
+                    self.exit_polygon_mode()
+                else:
+                    self.enter_polygon_deselect_mode()
             else:
-                self.enter_polygon_mode()
+                # P: Toggle polygon selection mode
+                if self._polygon_mode:
+                    self.exit_polygon_mode()
+                else:
+                    self.enter_polygon_mode()
         elif event.key() == Qt.Key_Escape:
             if self._polygon_mode:
                 # Cancel polygon mode without selecting
@@ -1290,6 +1310,66 @@ class PCDViewerWidget(QOpenGLWidget):
         if min_distance <= pixel_threshold:
             # Remove the point from picked points
             self.picked_points_indices.remove(closest_index)
+
+    def deselect_cluster_at(self, mouse_pos):
+        """
+        Deselect all selected points that share the same color as the clicked point.
+
+        This removes an entire cluster from the selection by matching the clicked point's
+        RGB color against the colors of all currently selected points. Points with matching
+        colors are removed from picked_points_indices.
+
+        Args:
+            mouse_pos (QPoint): The position of the mouse click in widget coordinates.
+        """
+        if not self.picked_points_indices:
+            return
+
+        # Ensure OpenGL context is current
+        self.makeCurrent()
+
+        # Use stored matrices
+        modelview = self.model_view_matrix
+        projection = self.projection_matrix
+        viewport = self.viewport
+
+        # Get the window coordinates
+        win_x = mouse_pos.x()
+        win_y = viewport[3] - mouse_pos.y()
+
+        # Read the depth value at the mouse position
+        z_buffer = glReadPixels(int(win_x), int(win_y), 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT)
+        win_z = z_buffer[0][0]
+
+        if win_z == 1.0:
+            return
+
+        # Unproject to world coordinates
+        world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
+        pick_point = np.array(world_coords[:3])
+
+        # Find the closest point using KDTree
+        threshold = self.max_extent * self.picking_point_threshold_factor
+        if self._kdtree is not None:
+            min_distance, clicked_index = self._kdtree.query(pick_point, k=1)
+        else:
+            distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
+            clicked_index = np.argmin(distances)
+            min_distance = distances[clicked_index]
+
+        if min_distance >= threshold:
+            return
+
+        # Get the color of the clicked point
+        target_color = self.points[clicked_index, 3:6]
+
+        # Vectorized removal of all selected points matching this color
+        selected = np.array(self.picked_points_indices, dtype=np.int64)
+        colors = self.points[selected, 3:6]
+        matches = np.all(colors == target_color, axis=1)
+        self.picked_points_indices[:] = selected[~matches].tolist()
+
+        self.update()
 
     def update_rotation_center(self, mouse_pos):
         """
@@ -1509,9 +1589,20 @@ class PCDViewerWidget(QOpenGLWidget):
         self.setCursor(Qt.CrossCursor)
         self.update()
 
+    def enter_polygon_deselect_mode(self):
+        """Activate polygon deselect mode. User draws a polygon to remove points from selection."""
+        if self.points is None:
+            return
+        self._polygon_mode = True
+        self._polygon_deselect_mode = True
+        self._polygon_vertices = []
+        self.setCursor(Qt.CrossCursor)
+        self.update()
+
     def exit_polygon_mode(self):
         """Deactivate polygon selection mode and restore normal cursor."""
         self._polygon_mode = False
+        self._polygon_deselect_mode = False
         self._polygon_vertices = []
         self.setCursor(Qt.ArrowCursor)
         self.update()
@@ -1569,6 +1660,51 @@ class PCDViewerWidget(QOpenGLWidget):
                 if idx_int not in existing:
                     self.picked_points_indices.append(idx_int)
                     existing.add(idx_int)
+
+        self.exit_polygon_mode()
+
+    def _close_polygon_and_deselect(self):
+        """Close the polygon and remove all points inside it from the current selection."""
+        if len(self._polygon_vertices) < 3:
+            self.exit_polygon_mode()
+            return
+
+        if not self.picked_points_indices:
+            self.exit_polygon_mode()
+            return
+
+        polygon = np.array(self._polygon_vertices, dtype=np.float64)  # (M, 2)
+
+        mv = np.array(self.model_view_matrix, dtype=np.float64)
+        proj = np.array(self.projection_matrix, dtype=np.float64)
+
+        # Only project the currently selected points (not all points)
+        selected_indices = np.array(self.picked_points_indices, dtype=np.int64)
+        pts_3d = self.points[selected_indices, :3].astype(np.float64)
+        n = pts_3d.shape[0]
+        ones = np.ones((n, 1), dtype=np.float64)
+        pts_homo = np.hstack([pts_3d, ones])
+
+        clip = pts_homo @ mv @ proj
+
+        w = clip[:, 3]
+        valid_mask = w > 0
+
+        ndc_x = np.zeros(n, dtype=np.float64)
+        ndc_y = np.zeros(n, dtype=np.float64)
+        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
+        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
+
+        vp = self.viewport
+        vp_x, vp_y, vp_w, vp_h = vp[0], vp[1], vp[2], vp[3]
+        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
+        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+
+        inside = self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
+
+        # Remove points that fall inside the polygon from the selection
+        indices_to_remove = set(int(selected_indices[i]) for i in np.where(inside)[0])
+        self.picked_points_indices[:] = [i for i in self.picked_points_indices if i not in indices_to_remove]
 
         self.exit_polygon_mode()
 
@@ -1651,16 +1787,24 @@ class PCDViewerWidget(QOpenGLWidget):
 
         verts = self._polygon_vertices
 
+        # Choose color based on mode: red for deselect, blue for select
+        if self._polygon_deselect_mode:
+            fill_color = (1.0, 0.2, 0.2, 0.15)
+            edge_color = (1.0, 0.2, 0.2, 0.8)
+        else:
+            fill_color = (0.2, 0.4, 1.0, 0.15)
+            edge_color = (0.2, 0.4, 1.0, 0.8)
+
         # Draw semi-transparent filled polygon (if >= 3 vertices)
         if len(verts) >= 3:
-            glColor4f(0.2, 0.4, 1.0, 0.15)
+            glColor4f(*fill_color)
             glBegin(GL_POLYGON)
             for x, y in verts:
                 glVertex2f(x, y)
             glEnd()
 
         # Draw polygon edge lines
-        glColor4f(0.2, 0.4, 1.0, 0.8)
+        glColor4f(*edge_color)
         glLineWidth(2.0)
         glBegin(GL_LINE_STRIP)
         for x, y in verts:
