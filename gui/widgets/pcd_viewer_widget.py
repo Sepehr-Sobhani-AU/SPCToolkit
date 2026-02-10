@@ -423,6 +423,9 @@ class PCDViewerWidget(QOpenGLWidget):
         self._last_selection_proj = None       # 4x4 projection matrix at selection time
         self._last_selection_viewport = None   # (vp_x, vp_y, vp_w, vp_h) tuple
 
+        # Per-branch index ranges in combined vertex array: uid -> (start, end)
+        self._branch_offsets = {}
+
         # LOD state (for triggering DataManager re-render)
         self._current_sample_rate: float = 1.0
         self._lod_enabled: bool = True  # Dynamic LOD for large point clouds
@@ -1271,6 +1274,9 @@ class PCDViewerWidget(QOpenGLWidget):
             min_distance = distances[min_distance_index]
 
         if min_distance < threshold:
+            # Filter: only allow selection within the selected branch
+            if not self._is_index_in_selected_branch(min_distance_index):
+                return
             # Add the index to the list of picked points
             if min_distance_index not in self.picked_points_indices:
                 self.picked_points_indices.append(min_distance_index)
@@ -1596,6 +1602,45 @@ class PCDViewerWidget(QOpenGLWidget):
             self.visible = visible
             self.update()
 
+    # ── Branch-scoped selection helpers ─────────────────────────────────
+
+    def set_branch_offsets(self, offsets: dict):
+        """Store per-branch index ranges for selection filtering."""
+        self._branch_offsets = offsets
+
+    def _is_index_in_selected_branch(self, index: int) -> bool:
+        """Check if a point index belongs to one of the selected branches."""
+        if not self._branch_offsets:
+            return True
+        controller = global_variables.global_application_controller
+        if controller is None:
+            return True
+        selected = controller.selected_branches
+        if not selected:
+            return True
+        for uid in selected:
+            rng = self._branch_offsets.get(uid)
+            if rng and rng[0] <= index < rng[1]:
+                return True
+        return False
+
+    def _get_selected_branch_index_range(self):
+        """Return (start, end) tuples for all selected branches, or None if no filtering."""
+        if not self._branch_offsets:
+            return None
+        controller = global_variables.global_application_controller
+        if controller is None:
+            return None
+        selected = controller.selected_branches
+        if not selected:
+            return None
+        ranges = []
+        for uid in selected:
+            rng = self._branch_offsets.get(uid)
+            if rng:
+                ranges.append(rng)
+        return ranges if ranges else None
+
     # ── Polygon Selection Mode ──────────────────────────────────────────
 
     def enter_polygon_mode(self):
@@ -1675,6 +1720,14 @@ class PCDViewerWidget(QOpenGLWidget):
 
         # Get indices of selected points
         new_indices = np.where(inside)[0]
+
+        # Filter to selected branch range(s)
+        branch_ranges = self._get_selected_branch_index_range()
+        if branch_ranges is not None and new_indices.size > 0:
+            mask = np.zeros(new_indices.size, dtype=bool)
+            for start, end in branch_ranges:
+                mask |= (new_indices >= start) & (new_indices < end)
+            new_indices = new_indices[mask]
 
         # Avoid duplicates
         if new_indices.size > 0:

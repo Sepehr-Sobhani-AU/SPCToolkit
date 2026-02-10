@@ -40,6 +40,9 @@ class RenderingCoordinator:
         self._point_budget: int = 50_000_000
         self._total_visible_points: int = 0
 
+        # Per-branch index ranges in the combined vertex array: uid -> (start, end)
+        self.branch_offsets: Dict[str, tuple] = {}
+
     @property
     def current_sample_rate(self) -> float:
         return self._current_sample_rate
@@ -72,6 +75,7 @@ class RenderingCoordinator:
         """
         from infrastructure.memory_manager import MemoryManager
 
+        self.branch_offsets = {}
         uids_to_show = [uid for uid, vis in visibility_status.items() if vis]
         logger.debug(f"Visible branches: {len(uids_to_show)}")
 
@@ -203,6 +207,7 @@ class RenderingCoordinator:
                 else:
                     vertices[offset:offset + n_to_add, 3:] = 1.0  # White
                 offset += n_to_add
+                self.branch_offsets[uid] = (offset - n_to_add, offset)
 
             except Exception as e:
                 logger.error(f"Error processing branch {uid}: {e}")

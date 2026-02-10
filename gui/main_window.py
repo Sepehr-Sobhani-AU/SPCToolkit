@@ -593,9 +593,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Send to viewer
         if vertices is not None:
+            self.pcd_viewer_widget.set_branch_offsets(
+                self.controller.rendering_coordinator.branch_offsets
+            )
             self.pcd_viewer_widget.set_point_vertices(vertices)
             self.pcd_viewer_widget.update()
         else:
+            self.pcd_viewer_widget.set_branch_offsets({})
             self.pcd_viewer_widget.set_points(None)
             self.pcd_viewer_widget.update()
 
