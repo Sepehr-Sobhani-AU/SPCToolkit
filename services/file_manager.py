@@ -4,6 +4,8 @@ import numpy as np
 import open3d as o3d
 import pickle
 import os
+import shutil
+import glob
 
 from core.entities.point_cloud import PointCloud
 
@@ -24,6 +26,34 @@ class FileManager(QObject):
         super().__init__()  # Call the parent class constructor
         self.min_bound = None
         self.current_project_path = None
+
+    def _save_version_copy(self, filepath):
+        """Create an auto-versioned copy of the saved project file.
+
+        For a file saved as 'myproject.pcdtk', creates copies named
+        'myproject_001.pcdtk', 'myproject_002.pcdtk', etc.
+        """
+        directory = os.path.dirname(filepath)
+        basename = os.path.basename(filepath)
+        stem, ext = os.path.splitext(basename)
+
+        # Find existing versioned files: stem_NNN.pcdtk
+        pattern = os.path.join(directory, f"{stem}_[0-9][0-9][0-9]{ext}")
+        existing = glob.glob(pattern)
+
+        # Determine next version number
+        max_version = 0
+        for path in existing:
+            name = os.path.splitext(os.path.basename(path))[0]
+            suffix = name[len(stem) + 1:]  # skip "stem_"
+            if suffix.isdigit():
+                max_version = max(max_version, int(suffix))
+
+        next_version = max_version + 1
+        version_name = f"{stem}_{next_version:03d}{ext}"
+        version_path = os.path.join(directory, version_name)
+
+        shutil.copy2(filepath, version_path)
 
     def open_point_cloud_file(self, parent=None):
         """Opens a file dialog, loads a point cloud file, and returns the data."""
@@ -113,6 +143,9 @@ class FileManager(QObject):
             # Save the data_nodes instance using pickle
             with open(filename, 'wb') as file:
                 pickle.dump(project_data, file)
+
+            # Create an auto-versioned backup copy
+            self._save_version_copy(filename)
 
             # Store the path for future saves
             self.current_project_path = filename
