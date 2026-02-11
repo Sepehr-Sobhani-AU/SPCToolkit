@@ -153,11 +153,18 @@ class MergeClustersPlugin(ActionPlugin):
             if cid not in affected_cluster_ids or cid == target_id:
                 new_locked[cid] = locks
 
+        # Carry over custom colors, keeping target's color for the merged result
+        new_custom = {}
+        for cid, c in old_clusters.custom_colors.items():
+            if cid not in affected_cluster_ids or cid == target_id:
+                new_custom[cid] = c
+
         new_clusters = Clusters(
             labels=new_labels,
             cluster_names=new_cluster_names if new_cluster_names else None,
             cluster_colors=new_cluster_colors if new_cluster_colors else None,
             locked_clusters=new_locked if new_locked else None,
+            custom_colors=new_custom if new_custom else None,
         )
         new_clusters.set_random_color()
 

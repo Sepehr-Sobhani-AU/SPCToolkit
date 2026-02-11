@@ -37,7 +37,8 @@ class Clusters:
         colors: np.ndarray = None,
         cluster_names: Optional[Dict[int, str]] = None,
         cluster_colors: Optional[Dict[str, np.ndarray]] = None,
-        locked_clusters: Optional[Dict[int, set]] = None
+        locked_clusters: Optional[Dict[int, set]] = None,
+        custom_colors: Optional[Dict[int, np.ndarray]] = None
     ):
         # Type conversion
         self.labels = labels.astype(np.int32)
@@ -45,6 +46,7 @@ class Clusters:
         self.cluster_names = cluster_names if cluster_names is not None else {}
         self.cluster_colors = cluster_colors if cluster_colors is not None else {}
         self.locked_clusters = locked_clusters if locked_clusters is not None else {}
+        self.custom_colors = custom_colors if custom_colors is not None else {}
 
         # Validate labels
         if not isinstance(self.labels, np.ndarray):
@@ -80,6 +82,9 @@ class Clusters:
         if name == "locked_clusters":
             self.locked_clusters = {}
             return self.locked_clusters
+        if name == "custom_colors":
+            self.custom_colors = {}
+            return self.custom_colors
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def has_names(self) -> bool:
@@ -181,6 +186,14 @@ class Clusters:
 
         # Assign colors to each point based on their label_indexes
         point_colors = cluster_colors[label_indexes]
+
+        # Apply user-defined custom colors per cluster
+        if self.custom_colors:
+            for label_val, idx_in_unique in zip(unique_labels, range(len(unique_labels))):
+                cid = int(label_val)
+                if cid in self.custom_colors:
+                    mask = label_indexes == idx_in_unique
+                    point_colors[mask] = self.custom_colors[cid]
 
         # Tint locked clusters to provide visual feedback
         if self.locked_clusters:

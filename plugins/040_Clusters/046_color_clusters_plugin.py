@@ -1,28 +1,29 @@
 """
-Plugin for removing (deleting) selected clusters by setting them to noise (-1).
+Plugin for assigning a custom color to selected clusters.
 
 Workflow:
-1. User selects a cluster_labels branch, picks one point from each cluster to remove
-2. Runs Clusters > Remove Clusters
-3. Plugin finds all cluster IDs containing selected points (excluding -1)
-4. All points in those clusters are set to -1 (noise)
-5. Colors regenerated, view refreshed, picked points cleared
+1. User selects a cluster_labels branch, picks one point from each cluster to color
+2. Runs Clusters > Color Clusters
+3. Plugin finds affected cluster IDs from picked points
+4. Shows a QColorDialog to pick a color
+5. Stores the color in the Clusters custom_colors dict (persists through other operations)
+6. Regenerates colors, refreshes view, clears picked points
 """
 
 import numpy as np
 from scipy.spatial import cKDTree
 from typing import Dict, Any
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QMessageBox, QColorDialog
+from PyQt5.QtGui import QColor
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.entities.clusters import Clusters
 
 
-class RemoveClustersPlugin(ActionPlugin):
+class ColorClustersPlugin(ActionPlugin):
 
     def get_name(self) -> str:
-        return "remove_clusters"
+        return "color_clusters"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {}
@@ -55,13 +56,11 @@ class RemoveClustersPlugin(ActionPlugin):
         selected_indices = viewer_widget.picked_points_indices
         if not selected_indices:
             QMessageBox.warning(main_window, "No Points Selected",
-                                "Please select points in clusters to remove "
+                                "Please select points in clusters to color "
                                 "using Shift+Click or Polygon selection.")
             return
 
-        # Get 3D coordinates of picked points from the viewer's combined vertex buffer.
-        # picked_points_indices are indices into the viewer's combined buffer (all visible
-        # branches), so we must match by coordinates rather than using indices directly.
+        # Get 3D coordinates of picked points from the viewer's combined vertex buffer
         picked_coords = []
         for idx in selected_indices:
             if idx < len(viewer_widget.points):
@@ -86,7 +85,7 @@ class RemoveClustersPlugin(ActionPlugin):
                                 "The reconstructed point cloud has no cluster labels.")
             return
 
-        labels = cluster_labels.copy()
+        labels = cluster_labels
 
         # Match picked coordinates to the reconstructed point cloud via KDTree
         tree = cKDTree(point_cloud.points)
@@ -98,62 +97,38 @@ class RemoveClustersPlugin(ActionPlugin):
             if local_idx < len(labels):
                 cid = labels[local_idx]
                 if cid != -1:
-                    affected_cluster_ids.add(cid)
+                    affected_cluster_ids.add(int(cid))
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",
                                 "Selected points do not belong to any valid clusters (all noise).")
             return
 
-        # Filter out clusters locked against delete
-        locked = {cid for cid in affected_cluster_ids
-                  if "delete" in node.data.locked_clusters.get(cid, set())}
-        if locked:
-            locked_str = ", ".join(str(c) for c in sorted(locked))
-            if locked == affected_cluster_ids:
-                QMessageBox.warning(main_window, "All Clusters Locked",
-                                    f"All selected clusters are locked against delete: {locked_str}")
-                return
-            QMessageBox.information(main_window, "Skipping Locked Clusters",
-                                    f"Clusters locked against delete will be skipped: {locked_str}")
-            affected_cluster_ids -= locked
+        # Pre-select current custom color if all affected clusters share one
+        clusters_data = node.data
+        initial_color = QColor(255, 255, 255)
+        existing_colors = [clusters_data.custom_colors.get(cid) for cid in affected_cluster_ids]
+        if all(c is not None for c in existing_colors):
+            first = existing_colors[0]
+            if all(np.array_equal(c, first) for c in existing_colors):
+                initial_color = QColor(int(first[0] * 255), int(first[1] * 255), int(first[2] * 255))
 
-        # Remove: set all points in affected clusters to noise (-1)
-        new_labels = labels.copy()
-        for cluster_id in affected_cluster_ids:
-            new_labels[labels == cluster_id] = -1
+        # Show color picker
+        color = QColorDialog.getColor(initial_color, main_window, "Select Cluster Color")
+        if not color.isValid():
+            return
 
-        # Build new Clusters, dropping cluster_names for removed clusters
-        old_clusters = node.data
-        new_cluster_names = {}
-        new_cluster_colors = {}
+        # Convert QColor to normalized RGB array
+        rgb = np.array([color.redF(), color.greenF(), color.blueF()], dtype=np.float32)
 
-        if old_clusters.cluster_names:
-            for cid, name in old_clusters.cluster_names.items():
-                if cid not in affected_cluster_ids:
-                    new_cluster_names[cid] = name
-            new_cluster_colors = old_clusters.cluster_colors.copy()
+        # Store custom color for each affected cluster
+        for cid in affected_cluster_ids:
+            clusters_data.custom_colors[cid] = rgb.copy()
 
-        # Carry over locks, dropping removed clusters
-        new_locked = {cid: locks for cid, locks in old_clusters.locked_clusters.items()
-                      if cid not in affected_cluster_ids}
+        # Regenerate colors (custom colors are applied automatically in set_random_color)
+        clusters_data.set_random_color()
 
-        # Carry over custom colors, dropping removed clusters
-        new_custom = {cid: c for cid, c in old_clusters.custom_colors.items()
-                      if cid not in affected_cluster_ids}
-
-        new_clusters = Clusters(
-            labels=new_labels,
-            cluster_names=new_cluster_names if new_cluster_names else None,
-            cluster_colors=new_cluster_colors if new_cluster_colors else None,
-            locked_clusters=new_locked if new_locked else None,
-            custom_colors=new_custom if new_custom else None,
-        )
-        new_clusters.set_random_color()
-
-        # Save for undo, then update
-        controller._cluster_undo[str(node.uid)] = old_clusters
-        node.data = new_clusters
+        # Invalidate cache and re-render
         controller.cache_service.invalidate(str(node.uid))
         controller.cache_service.invalidate_descendants(str(node.uid))
         main_window.render_visible_data(zoom_extent=False)

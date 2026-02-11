@@ -166,11 +166,15 @@ class CutClusterPlugin(ActionPlugin):
         # Carry over locks for original cluster IDs (new cut-off clusters are unlocked)
         new_locked = {cid: locks for cid, locks in old_clusters.locked_clusters.items()}
 
+        # Carry over custom colors for original cluster IDs
+        new_custom = {cid: c for cid, c in old_clusters.custom_colors.items()}
+
         new_clusters = Clusters(
             labels=new_labels,
             cluster_names=new_cluster_names if new_cluster_names else None,
             cluster_colors=new_cluster_colors if new_cluster_colors else None,
             locked_clusters=new_locked if new_locked else None,
+            custom_colors=new_custom if new_custom else None,
         )
         new_clusters.set_random_color()
 
