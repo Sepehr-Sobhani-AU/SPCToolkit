@@ -118,6 +118,19 @@ class CutClusterPlugin(ActionPlugin):
                                 "Selected points do not belong to any valid clusters (all noise).")
             return
 
+        # Filter out clusters locked against cut
+        locked = {cid for cid in affected_cluster_ids
+                  if "cut" in node.data.locked_clusters.get(cid, set())}
+        if locked:
+            locked_str = ", ".join(str(c) for c in sorted(locked))
+            if locked == affected_cluster_ids:
+                QMessageBox.warning(main_window, "All Clusters Locked",
+                                    f"All selected clusters are locked against cut: {locked_str}")
+                return
+            QMessageBox.information(main_window, "Skipping Locked Clusters",
+                                    f"Clusters locked against cut will be skipped: {locked_str}")
+            affected_cluster_ids -= locked
+
         # Cut: for each affected cluster, move selected points to a new cluster ID
         new_labels = labels.copy()
         new_label_id = int(labels.max()) + 1
@@ -150,14 +163,19 @@ class CutClusterPlugin(ActionPlugin):
                         new_cluster_names[cid] = name
             new_cluster_colors = old_clusters.cluster_colors.copy()
 
+        # Carry over locks for original cluster IDs (new cut-off clusters are unlocked)
+        new_locked = {cid: locks for cid, locks in old_clusters.locked_clusters.items()}
+
         new_clusters = Clusters(
             labels=new_labels,
             cluster_names=new_cluster_names if new_cluster_names else None,
             cluster_colors=new_cluster_colors if new_cluster_colors else None,
+            locked_clusters=new_locked if new_locked else None,
         )
         new_clusters.set_random_color()
 
-        # In-place update + cache invalidation
+        # Save for undo, then update
+        controller._cluster_undo[str(node.uid)] = old_clusters
         node.data = new_clusters
         controller.cache_service.invalidate(str(node.uid))
         controller.cache_service.invalidate_descendants(str(node.uid))

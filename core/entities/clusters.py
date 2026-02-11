@@ -36,13 +36,15 @@ class Clusters:
         labels: np.ndarray,
         colors: np.ndarray = None,
         cluster_names: Optional[Dict[int, str]] = None,
-        cluster_colors: Optional[Dict[str, np.ndarray]] = None
+        cluster_colors: Optional[Dict[str, np.ndarray]] = None,
+        locked_clusters: Optional[Dict[int, set]] = None
     ):
         # Type conversion
         self.labels = labels.astype(np.int32)
         self.colors = colors.astype(np.float32) if colors is not None else None
         self.cluster_names = cluster_names if cluster_names is not None else {}
         self.cluster_colors = cluster_colors if cluster_colors is not None else {}
+        self.locked_clusters = locked_clusters if locked_clusters is not None else {}
 
         # Validate labels
         if not isinstance(self.labels, np.ndarray):
@@ -72,6 +74,13 @@ class Clusters:
             if np.min(self.colors) < 0 or np.max(self.colors) > 1:
                 print("Warning: Some color values are outside the range [0, 1]. Clipping values.")
                 self.colors = np.clip(self.colors, 0, 1)
+
+    def __getattr__(self, name):
+        """Provide defaults for attributes added after pickle-serialized objects were saved."""
+        if name == "locked_clusters":
+            self.locked_clusters = {}
+            return self.locked_clusters
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def has_names(self) -> bool:
         """Check if this Clusters object has semantic names assigned."""
@@ -172,6 +181,14 @@ class Clusters:
 
         # Assign colors to each point based on their label_indexes
         point_colors = cluster_colors[label_indexes]
+
+        # Tint locked clusters to provide visual feedback
+        if self.locked_clusters:
+            lock_tint = np.array([0.4, 0.5, 0.6], dtype=np.float32)
+            for label_val, idx_in_unique in zip(unique_labels, range(len(unique_labels))):
+                if int(label_val) in self.locked_clusters:
+                    mask = label_indexes == idx_in_unique
+                    point_colors[mask] = point_colors[mask] * 0.5 + lock_tint * 0.5
 
         self.colors = np.float32(point_colors)
 

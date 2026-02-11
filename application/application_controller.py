@@ -43,6 +43,9 @@ class ApplicationController:
         # Selection state
         self.selected_branches = []
 
+        # Single-level undo for cluster operations: {str(node_uid): previous Clusters}
+        self._cluster_undo = {}
+
     @classmethod
     def create(cls, plugin_manager: PluginManager, file_manager=None):
         """

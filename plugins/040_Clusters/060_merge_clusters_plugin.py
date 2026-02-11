@@ -109,6 +109,21 @@ class MergeClustersPlugin(ActionPlugin):
                                 "Select points from different clusters.")
             return
 
+        # Filter out clusters locked against merge
+        locked = {cid for cid in affected_cluster_ids
+                  if "merge" in node.data.locked_clusters.get(cid, set())}
+        if locked:
+            locked_str = ", ".join(str(c) for c in sorted(locked))
+            unlocked = affected_cluster_ids - locked
+            if len(unlocked) < 2:
+                QMessageBox.warning(main_window, "Not Enough Unlocked Clusters",
+                                    f"Clusters locked against merge: {locked_str}\n"
+                                    f"Need at least 2 unlocked clusters to merge.")
+                return
+            QMessageBox.information(main_window, "Skipping Locked Clusters",
+                                    f"Clusters locked against merge will be skipped: {locked_str}")
+            affected_cluster_ids = unlocked
+
         # Merge: all affected clusters get the lowest cluster ID
         target_id = min(affected_cluster_ids)
         new_labels = labels.copy()
@@ -132,14 +147,22 @@ class MergeClustersPlugin(ActionPlugin):
                 # Other affected cluster names are dropped (merged away)
             new_cluster_colors = old_clusters.cluster_colors.copy()
 
+        # Carry over locks, dropping merged-away cluster IDs and keeping target
+        new_locked = {}
+        for cid, locks in old_clusters.locked_clusters.items():
+            if cid not in affected_cluster_ids or cid == target_id:
+                new_locked[cid] = locks
+
         new_clusters = Clusters(
             labels=new_labels,
             cluster_names=new_cluster_names if new_cluster_names else None,
             cluster_colors=new_cluster_colors if new_cluster_colors else None,
+            locked_clusters=new_locked if new_locked else None,
         )
         new_clusters.set_random_color()
 
-        # In-place update + cache invalidation
+        # Save for undo, then update
+        controller._cluster_undo[str(node.uid)] = old_clusters
         node.data = new_clusters
         controller.cache_service.invalidate(str(node.uid))
         controller.cache_service.invalidate_descendants(str(node.uid))

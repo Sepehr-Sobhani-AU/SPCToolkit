@@ -1277,6 +1277,9 @@ class PCDViewerWidget(QOpenGLWidget):
             # Filter: only allow selection within the selected branch
             if not self._is_index_in_selected_branch(min_distance_index):
                 return
+            # Filter: skip points in clusters locked against selection
+            if self._is_point_selection_locked(min_distance_index):
+                return
             # Add the index to the list of picked points
             if min_distance_index not in self.picked_points_indices:
                 self.picked_points_indices.append(min_distance_index)
@@ -1641,6 +1644,59 @@ class PCDViewerWidget(QOpenGLWidget):
                 ranges.append(rng)
         return ranges if ranges else None
 
+    def _get_cluster_lock_info(self, uid):
+        """Get (labels, locked_clusters) for a cluster_labels branch, or None."""
+        controller = global_variables.global_application_controller
+        if controller is None:
+            return None
+        node = controller.get_node(uid)
+        if node is None or node.data_type != "cluster_labels":
+            return None
+        clusters = node.data
+        if not getattr(clusters, 'locked_clusters', None):
+            return None
+        # Check if any cluster is locked against selection
+        has_select_lock = any("select" in locks for locks in clusters.locked_clusters.values())
+        if not has_select_lock:
+            return None
+        return clusters.labels, clusters.locked_clusters
+
+    def _is_point_selection_locked(self, index: int) -> bool:
+        """Check if a single point index belongs to a cluster locked against selection."""
+        if not self._branch_offsets:
+            return False
+        for uid, (start, end) in self._branch_offsets.items():
+            if start <= index < end:
+                info = self._get_cluster_lock_info(uid)
+                if info is None:
+                    return False
+                labels, locked = info
+                local_idx = index - start
+                if local_idx < len(labels):
+                    cid = int(labels[local_idx])
+                    return "select" in locked.get(cid, set())
+                return False
+        return False
+
+    def _filter_selection_locked(self, indices):
+        """Filter out indices belonging to clusters locked against selection."""
+        import numpy as np
+        if not self._branch_offsets:
+            return indices
+        keep_mask = np.ones(len(indices), dtype=bool)
+        for uid, (start, end) in self._branch_offsets.items():
+            info = self._get_cluster_lock_info(uid)
+            if info is None:
+                continue
+            labels, locked = info
+            locked_ids = {cid for cid, locks in locked.items() if "select" in locks}
+            for i, idx in enumerate(indices):
+                if start <= idx < end:
+                    local_idx = idx - start
+                    if local_idx < len(labels) and int(labels[local_idx]) in locked_ids:
+                        keep_mask[i] = False
+        return indices[keep_mask]
+
     # ── Polygon Selection Mode ──────────────────────────────────────────
 
     def enter_polygon_mode(self):
@@ -1728,6 +1784,10 @@ class PCDViewerWidget(QOpenGLWidget):
             for start, end in branch_ranges:
                 mask |= (new_indices >= start) & (new_indices < end)
             new_indices = new_indices[mask]
+
+        # Filter out points in clusters locked against selection
+        if new_indices.size > 0:
+            new_indices = self._filter_selection_locked(new_indices)
 
         # Avoid duplicates
         if new_indices.size > 0:
