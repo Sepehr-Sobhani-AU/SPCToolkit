@@ -417,11 +417,9 @@ class PCDViewerWidget(QOpenGLWidget):
         self._polygon_deselect_mode = False  # Whether polygon is for deselection (vs selection)
         self._polygon_vertices = []       # List of (x, y) tuples in Qt widget coordinates
 
-        # Stored polygon + matrices for full-resolution re-testing by plugins
-        self._last_selection_polygon = None    # (M, 2) polygon vertices or None
-        self._last_selection_mv = None         # 4x4 model-view matrix at selection time
-        self._last_selection_proj = None       # 4x4 projection matrix at selection time
-        self._last_selection_viewport = None   # (vp_x, vp_y, vp_w, vp_h) tuple
+        # Stored polygons + matrices for full-resolution re-testing by plugins.
+        # Each entry is a (polygon, mv, proj, viewport) tuple.
+        self._selection_polygons = []
 
         # Per-branch index ranges in combined vertex array: uid -> (start, end)
         self._branch_offsets = {}
@@ -1124,7 +1122,7 @@ class PCDViewerWidget(QOpenGLWidget):
                 if reply == QMessageBox.Yes:
                     # Clear all selected points if confirmed
                     self.picked_points_indices.clear()
-                    self._last_selection_polygon = None
+                    self._selection_polygons.clear()
                     self.update()
         elif event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_R:
             self.reset_view()
@@ -1136,6 +1134,14 @@ class PCDViewerWidget(QOpenGLWidget):
         elif event.key() == Qt.Key_Minus:
             new_size = max(self._point_size / self._POINT_SIZE_FACTOR, self._POINT_SIZE_MIN)
             self.point_size = new_size
+        elif event.key() == Qt.Key_C:
+            main_window = global_variables.global_main_window
+            if main_window:
+                main_window.execute_action_plugin("cut_cluster")
+        elif event.key() == Qt.Key_M:
+            main_window = global_variables.global_main_window
+            if main_window:
+                main_window.execute_action_plugin("merge_clusters")
 
         # Ensure the parent class handles other key events
         super(PCDViewerWidget, self).keyPressEvent(event)
@@ -1280,6 +1286,9 @@ class PCDViewerWidget(QOpenGLWidget):
             # Filter: skip points in clusters locked against selection
             if self._is_point_selection_locked(min_distance_index):
                 return
+            # Filter: skip noise points (cluster label == -1)
+            if self._is_noise_point(min_distance_index):
+                return
             # Add the index to the list of picked points
             if min_distance_index not in self.picked_points_indices:
                 self.picked_points_indices.append(min_distance_index)
@@ -1337,6 +1346,8 @@ class PCDViewerWidget(QOpenGLWidget):
         if min_distance <= pixel_threshold:
             # Remove the point from picked points
             self.picked_points_indices.remove(closest_index)
+            # Invalidate stored polygons so plugins fall back to coordinate matching
+            self._selection_polygons.clear()
 
     def deselect_cluster_at(self, mouse_pos):
         """
@@ -1395,6 +1406,8 @@ class PCDViewerWidget(QOpenGLWidget):
         colors = self.points[selected, 3:6]
         matches = np.all(colors == target_color, axis=1)
         self.picked_points_indices[:] = selected[~matches].tolist()
+        # Invalidate stored polygons so plugins fall back to coordinate matching
+        self._selection_polygons.clear()
 
         self.update()
 
@@ -1697,6 +1710,47 @@ class PCDViewerWidget(QOpenGLWidget):
                         keep_mask[i] = False
         return indices[keep_mask]
 
+    def _get_cluster_labels(self, uid):
+        """Get cluster labels array for a cluster_labels branch, or None."""
+        controller = global_variables.global_application_controller
+        if controller is None:
+            return None
+        node = controller.get_node(uid)
+        if node is None or node.data_type != "cluster_labels":
+            return None
+        return getattr(node.data, 'labels', None)
+
+    def _is_noise_point(self, index: int) -> bool:
+        """Check if a point index is a noise point (cluster label == -1)."""
+        if not self._branch_offsets:
+            return False
+        for uid, (start, end) in self._branch_offsets.items():
+            if start <= index < end:
+                labels = self._get_cluster_labels(uid)
+                if labels is None:
+                    return False
+                local_idx = index - start
+                if local_idx < len(labels):
+                    return int(labels[local_idx]) == -1
+                return False
+        return False
+
+    def _filter_noise_points(self, indices):
+        """Filter out indices that are noise points (cluster label == -1)."""
+        if not self._branch_offsets:
+            return indices
+        keep_mask = np.ones(len(indices), dtype=bool)
+        for uid, (start, end) in self._branch_offsets.items():
+            labels = self._get_cluster_labels(uid)
+            if labels is None:
+                continue
+            for i, idx in enumerate(indices):
+                if start <= idx < end:
+                    local_idx = idx - start
+                    if local_idx < len(labels) and int(labels[local_idx]) == -1:
+                        keep_mask[i] = False
+        return indices[keep_mask]
+
     # ── Polygon Selection Mode ──────────────────────────────────────────
 
     def enter_polygon_mode(self):
@@ -1740,11 +1794,10 @@ class PCDViewerWidget(QOpenGLWidget):
         mv = np.array(self.model_view_matrix, dtype=np.float64)   # 4x4 (M^T)
         proj = np.array(self.projection_matrix, dtype=np.float64)  # 4x4 (P^T)
 
-        # Store polygon + matrices for full-resolution re-testing by plugins
-        self._last_selection_polygon = polygon.copy()
-        self._last_selection_mv = mv.copy()
-        self._last_selection_proj = proj.copy()
-        self._last_selection_viewport = tuple(self.viewport)
+        # Append polygon + matrices for full-resolution re-testing by plugins
+        self._selection_polygons.append((
+            polygon.copy(), mv.copy(), proj.copy(), tuple(self.viewport)
+        ))
 
         # Get all 3D points as homogeneous coordinates (row vectors)
         pts_3d = self.points[:, :3].astype(np.float64)  # (N, 3)
@@ -1789,6 +1842,10 @@ class PCDViewerWidget(QOpenGLWidget):
         if new_indices.size > 0:
             new_indices = self._filter_selection_locked(new_indices)
 
+        # Filter out noise points (cluster label == -1)
+        if new_indices.size > 0:
+            new_indices = self._filter_noise_points(new_indices)
+
         # Avoid duplicates
         if new_indices.size > 0:
             existing = set(self.picked_points_indices)
@@ -1802,46 +1859,46 @@ class PCDViewerWidget(QOpenGLWidget):
 
     def retest_polygon_selection(self, points_3d):
         """
-        Re-test arbitrary 3D points against the last polygon selection.
+        Re-test arbitrary 3D points against all stored polygon selections.
 
-        Uses the stored polygon and camera matrices from the most recent
-        polygon selection, so it works correctly even if the camera has moved.
+        Uses the stored polygons and camera matrices from polygon selections,
+        so it works correctly even if the camera has moved.  Returns the union
+        of all polygon tests (a point inside ANY stored polygon is True).
 
         Args:
             points_3d: (N, 3) float array of 3D world coordinates.
 
         Returns:
-            (N,) boolean mask (True = inside polygon), or None if no polygon stored.
+            (N,) boolean mask (True = inside any polygon), or None if no polygons stored.
         """
-        if self._last_selection_polygon is None:
+        if not self._selection_polygons:
             return None
-
-        polygon = self._last_selection_polygon
-        mv = self._last_selection_mv
-        proj = self._last_selection_proj
-        vp_x, vp_y, vp_w, vp_h = self._last_selection_viewport
 
         pts = np.asarray(points_3d, dtype=np.float64)
         n = pts.shape[0]
         ones = np.ones((n, 1), dtype=np.float64)
         pts_homo = np.hstack([pts, ones])  # (N, 4)
 
-        # Row-vector projection using stored matrices
-        clip = pts_homo @ mv @ proj  # (N, 4)
+        combined_mask = np.zeros(n, dtype=bool)
 
-        w = clip[:, 3]
-        valid_mask = w > 0
+        for polygon, mv, proj, viewport in self._selection_polygons:
+            vp_x, vp_y, vp_w, vp_h = viewport
 
-        ndc_x = np.zeros(n, dtype=np.float64)
-        ndc_y = np.zeros(n, dtype=np.float64)
-        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
-        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
+            clip = pts_homo @ mv @ proj  # (N, 4)
+            w = clip[:, 3]
+            valid_mask = w > 0
 
-        # Viewport transform: NDC -> Qt widget coordinates (top-left origin, Y down)
-        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
-        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+            ndc_x = np.zeros(n, dtype=np.float64)
+            ndc_y = np.zeros(n, dtype=np.float64)
+            ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
+            ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
 
-        return self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
+            screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
+            screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+
+            combined_mask |= self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
+
+        return combined_mask
 
     def _close_polygon_and_deselect(self):
         """Close the polygon and remove all points inside it from the current selection."""
@@ -1885,6 +1942,8 @@ class PCDViewerWidget(QOpenGLWidget):
         # Remove points that fall inside the polygon from the selection
         indices_to_remove = set(int(selected_indices[i]) for i in np.where(inside)[0])
         self.picked_points_indices[:] = [i for i in self.picked_points_indices if i not in indices_to_remove]
+        # Invalidate stored polygons so plugins fall back to coordinate matching
+        self._selection_polygons.clear()
 
         self.exit_polygon_mode()
 
