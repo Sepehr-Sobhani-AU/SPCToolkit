@@ -239,6 +239,143 @@ class PluginManager:
         """
         return self.analysis_plugins
 
+    def get_all_plugin_info(self):
+        """
+        Return info for every loaded plugin.
+
+        Returns:
+            List of dicts with keys: name, module, menu_path, type
+        """
+        info_list = []
+        for plugin_name, (plugin_class, menu_path, plugin_type) in self.plugins.items():
+            info_list.append({
+                'name': plugin_name,
+                'module': plugin_class.__module__,
+                'menu_path': menu_path,
+                'type': plugin_type,
+            })
+        return info_list
+
+    def reload_plugin(self, plugin_name):
+        """
+        Reload a plugin from disk using importlib.reload().
+
+        Args:
+            plugin_name: Name of the plugin to reload.
+
+        Returns:
+            (success: bool, message: str)
+        """
+        if plugin_name not in self.plugins:
+            return False, f"Plugin '{plugin_name}' not found."
+
+        old_class, menu_path, plugin_type = self.plugins[plugin_name]
+        module_name = old_class.__module__
+
+        try:
+            module = sys.modules.get(module_name)
+            if module is None:
+                return False, f"Module '{module_name}' not found in sys.modules."
+
+            # Reload the module from disk
+            module = importlib.reload(module)
+
+            # Find the new plugin class in the reloaded module
+            new_class = None
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                if issubclass(obj, ActionPlugin) and obj != ActionPlugin:
+                    new_class = obj
+                    break
+                elif issubclass(obj, Plugin) and obj not in (Plugin, AnalysisPlugin):
+                    new_class = obj
+                    break
+
+            if new_class is None:
+                return False, f"No plugin class found in reloaded module '{module_name}'."
+
+            # Re-register with existing slot
+            self.plugins[plugin_name] = (new_class, menu_path, plugin_type)
+            if plugin_type == "action":
+                self.action_plugins[plugin_name] = new_class
+            else:
+                self.analysis_plugins[plugin_name] = new_class
+
+            return True, f"Plugin '{plugin_name}' reloaded successfully."
+
+        except Exception as e:
+            return False, f"Error reloading '{plugin_name}': {e}"
+
+    def unload_plugin(self, plugin_name):
+        """
+        Unload a plugin, removing it from all registries and menu structure.
+
+        Args:
+            plugin_name: Name of the plugin to unload.
+
+        Returns:
+            (success: bool, message: str)
+        """
+        if plugin_name not in self.plugins:
+            return False, f"Plugin '{plugin_name}' not found."
+
+        _, menu_path, plugin_type = self.plugins.pop(plugin_name)
+
+        # Remove from type-specific registries
+        self.action_plugins.pop(plugin_name, None)
+        self.analysis_plugins.pop(plugin_name, None)
+
+        # Remove from menu structure
+        if menu_path and menu_path in self.menu_structure:
+            if plugin_name in self.menu_structure[menu_path]:
+                self.menu_structure[menu_path].remove(plugin_name)
+            # Clean up empty menu paths
+            if not self.menu_structure[menu_path]:
+                del self.menu_structure[menu_path]
+
+        return True, f"Plugin '{plugin_name}' unloaded."
+
+    def scan_and_load_new_plugins(self):
+        """
+        Walk the plugin filesystem and load any new plugin files not already loaded.
+
+        Returns:
+            List of newly loaded plugin names.
+        """
+        already_loaded_modules = set()
+        for plugin_name, (plugin_class, _, _) in self.plugins.items():
+            already_loaded_modules.add(plugin_class.__module__)
+
+        newly_loaded = []
+        before_names = set(self.plugins.keys())
+
+        if not os.path.exists(self.plugin_root):
+            return newly_loaded
+
+        for root, dirs, files in os.walk(self.plugin_root):
+            dirs[:] = [d for d in dirs if not d.startswith('__') and not d.startswith('.')]
+
+            rel_path = os.path.relpath(root, self.plugin_root)
+
+            if rel_path == '.':
+                menu_path = None
+                is_system_plugin = True
+            else:
+                menu_path = rel_path.replace(os.sep, '/')
+                is_system_plugin = False
+
+            for file in files:
+                if file.endswith('.py') and not file.startswith('__'):
+                    # Build module name to check if already loaded
+                    rel_dir = os.path.relpath(root, os.path.dirname(self.plugin_root))
+                    package_path = rel_dir.replace(os.sep, '.')
+                    module_name = f"{package_path}.{file[:-3]}"
+
+                    if module_name not in already_loaded_modules:
+                        self._load_plugin_file(root, file, menu_path, is_system_plugin)
+
+        newly_loaded = [name for name in self.plugins.keys() if name not in before_names]
+        return newly_loaded
+
     @staticmethod
     def _strip_prefix(name: str) -> str:
         """

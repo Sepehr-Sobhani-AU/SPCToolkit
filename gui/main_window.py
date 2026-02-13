@@ -409,6 +409,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return ' '.join(formatted_words)
 
+    def rebuild_plugin_menus(self):
+        """Clear all menus and rebuild them from current PluginManager state."""
+        self.menubar.clear()
+        self.menus.clear()
+        self.actions.clear()
+        self.populate_menus_from_plugins()
+
     def open_file_dialog(self):
         """Handler for 'Open' action to open and display a point cloud file."""
         self.file_manager.open_point_cloud_file(self)
