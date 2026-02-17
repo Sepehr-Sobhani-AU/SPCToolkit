@@ -205,6 +205,18 @@ class Clusters:
 
         self.colors = np.float32(point_colors)
 
+        # Sync cluster_colors dict so get_named_colors() works when has_names() is true
+        if self.cluster_names:
+            for label_val, idx_in_unique in zip(unique_labels, range(len(unique_labels))):
+                cid = int(label_val)
+                if cid in self.cluster_names and cid != -1:
+                    name = self.cluster_names[cid]
+                    # Use custom color if set, otherwise the random color
+                    if cid in self.custom_colors:
+                        self.cluster_colors[name] = np.array(self.custom_colors[cid], dtype=np.float32)
+                    else:
+                        self.cluster_colors[name] = np.array(cluster_colors[idx_in_unique], dtype=np.float32)
+
     def __repr__(self):
         n_clusters = len(np.unique(self.labels[self.labels != -1]))
         n_noise = np.sum(self.labels == -1)
