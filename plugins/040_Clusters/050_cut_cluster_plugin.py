@@ -187,4 +187,5 @@ class CutClusterPlugin(ActionPlugin):
 
         # Clear selection
         viewer_widget.picked_points_indices.clear()
+        viewer_widget._selection_polygons.clear()
         viewer_widget.update()

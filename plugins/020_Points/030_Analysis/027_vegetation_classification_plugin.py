@@ -2,9 +2,15 @@
 Multi-scale vegetation classification plugin.
 
 Computes eigenvalues at multiple neighborhood sizes (k values) and classifies
-points as Vegetation vs Non-Vegetation based on multi-scale sphericity consensus.
-Real vegetation scatters uniformly at all scales, while noise and sparse outliers
-only appear spherical at isolated scales.
+points as Vegetation vs Non-Vegetation based on how close their three eigenvalues
+are to each other across scales.
+
+Closeness metric:  min(λ₁/λ₂, λ₂/λ₃, λ₃/λ₁)
+  - 1.0 = all three eigenvalues identical
+  - Near 0 = eigenvalues very different
+
+Real vegetation scatters uniformly at all scales, producing nearly equal eigenvalues.
+Noise and sparse outliers only appear isotropic at isolated scales.
 
 Operates directly on a raw PointCloud — no pre-computed eigenvalues needed.
 Returns standard Clusters.
@@ -18,7 +24,6 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
-from core.services.eigenvalue_utils import EigenvalueUtils
 
 
 CLASS_NAMES = {0: "Vegetation", 1: "Non-Vegetation"}
@@ -29,13 +34,22 @@ CLASS_COLORS = {
 
 
 class VegetationClassificationPlugin(Plugin):
-    """Classify points as Vegetation or Non-Vegetation using multi-scale sphericity."""
+    """Classify points as Vegetation or Non-Vegetation using multi-scale eigenvalue closeness."""
 
     def get_name(self) -> str:
         return "vegetation_classification"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {
+            "formula": {
+                "type": "info",
+                "default": (
+                    "closeness = min(\u03bb\u2081/\u03bb\u2082, \u03bb\u2082/\u03bb\u2083, \u03bb\u2083/\u03bb\u2081)\n"
+                    "1.0 = all three eigenvalues identical  |  0.0 = very different\n"
+                    "Points above threshold at enough scales \u2192 Vegetation"
+                ),
+                "label": "Formula",
+            },
             "k_small": {
                 "type": "int",
                 "default": 15,
@@ -64,15 +78,15 @@ class VegetationClassificationPlugin(Plugin):
                 "type": "bool",
                 "default": True,
                 "label": "Smooth Eigenvalues",
-                "description": "Smooth eigenvalues per scale before computing features"
+                "description": "Smooth eigenvalues per scale before computing closeness"
             },
-            "sphericity_threshold": {
+            "closeness_threshold": {
                 "type": "float",
                 "default": 0.3,
                 "min": 0.0,
                 "max": 1.0,
-                "label": "Sphericity Threshold",
-                "description": "Sphericity cutoff per scale — points above this count as passing"
+                "label": "Closeness Threshold",
+                "description": "Minimum eigenvalue closeness to count as passing at a given scale"
             },
             "min_scales": {
                 "type": "int",
@@ -93,20 +107,31 @@ class VegetationClassificationPlugin(Plugin):
             )
 
         k_values = [params["k_small"], params["k_medium"], params["k_large"]]
-        threshold = params["sphericity_threshold"]
+        threshold = params["closeness_threshold"]
         min_scales = params["min_scales"]
         smooth = params["smooth"]
 
         n_points = len(point_cloud.points)
-        utils = EigenvalueUtils()
+        epsilon = 1e-10
 
-        # Compute sphericity pass/fail at each scale
+        # Compute eigenvalue closeness at each scale and vote
         vote_count = np.zeros(n_points, dtype=np.int32)
         for i, k in enumerate(k_values):
             print(f"  Computing eigenvalues at k={k} (scale {i + 1}/3)...")
             eigenvalues = point_cloud.get_eigenvalues(k, smooth=smooth)
-            features = utils.compute_geometric_features(eigenvalues)
-            vote_count += (features["sphericity"] > threshold).astype(np.int32)
+
+            # closeness = min(λ₁/λ₂, λ₂/λ₃, λ₃/λ₁)
+            l1 = eigenvalues[:, 0]
+            l2 = eigenvalues[:, 1]
+            l3 = eigenvalues[:, 2]
+
+            r12 = l1 / np.maximum(l2, epsilon)
+            r23 = l2 / np.maximum(l3, epsilon)
+            r31 = l3 / np.maximum(l1, epsilon)
+
+            closeness = np.nan_to_num(np.minimum(np.minimum(r12, r23), r31))
+
+            vote_count += (closeness > threshold).astype(np.int32)
 
         # Classify based on multi-scale consensus
         veg_mask = vote_count >= min_scales

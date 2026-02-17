@@ -1142,6 +1142,10 @@ class PCDViewerWidget(QOpenGLWidget):
             main_window = global_variables.global_main_window
             if main_window:
                 main_window.execute_action_plugin("merge_clusters")
+        elif event.key() == Qt.Key_Delete:
+            main_window = global_variables.global_main_window
+            if main_window:
+                main_window.execute_action_plugin("remove_clusters")
 
         # Ensure the parent class handles other key events
         super(PCDViewerWidget, self).keyPressEvent(event)

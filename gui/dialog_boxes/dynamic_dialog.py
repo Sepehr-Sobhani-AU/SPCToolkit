@@ -89,6 +89,10 @@ class DynamicDialog(QDialog):
                     else:
                         # If default not in options, set it as custom text
                         widget.setCurrentText(str(default_value))
+            elif param_type == "info":
+                # Read-only text label (for formulas, notes, etc.)
+                widget = QLabel(str(default_value))
+                widget.setWordWrap(True)
             elif param_type == "bool":
                 # Handle boolean type
                 widget = QCheckBox()
@@ -149,7 +153,9 @@ class DynamicDialog(QDialog):
         for param_name, widget in self.param_widgets.items():
             param_type = self.parameter_schema[param_name].get("type", "string")
 
-            if param_type == "int":
+            if param_type == "info":
+                continue  # Display-only, no value to collect
+            elif param_type == "int":
                 self.params[param_name] = widget.value()
             elif param_type == "float":
                 self.params[param_name] = widget.value()

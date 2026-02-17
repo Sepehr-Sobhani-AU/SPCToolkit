@@ -319,6 +319,9 @@ main_window.render_visible_data(zoom_extent=False)
   - F: Zoom to extent (fit all visible points in viewport)
   - + / =: Increase point size (geometric scaling x1.2)
   - -: Decrease point size (geometric scaling /1.2, min 0.5)
+  - C: Cut cluster (execute cut_cluster action plugin)
+  - M: Merge clusters (execute merge_clusters action plugin)
+  - Del: Remove clusters (execute remove_clusters action plugin)
 
 **ProcessOverlayWidget** (gui/widgets/process_overlay_widget.py):
 - Semi-transparent overlay that displays processing status messages
