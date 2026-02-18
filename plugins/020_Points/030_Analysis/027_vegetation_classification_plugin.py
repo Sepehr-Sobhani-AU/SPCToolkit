@@ -111,13 +111,15 @@ class VegetationClassificationPlugin(Plugin):
         min_scales = params["min_scales"]
         smooth = params["smooth"]
 
+        from config.config import global_variables
+
         n_points = len(point_cloud.points)
         epsilon = 1e-10
 
         # Compute eigenvalue closeness at each scale and vote
         vote_count = np.zeros(n_points, dtype=np.int32)
         for i, k in enumerate(k_values):
-            print(f"  Computing eigenvalues at k={k} (scale {i + 1}/3)...")
+            global_variables.global_progress = (int(i * 30), f"Computing eigenvalues at k={k} (scale {i + 1}/3)...")
             eigenvalues = point_cloud.get_eigenvalues(k, smooth=smooth)
 
             # closeness = min(λ₁/λ₂, λ₂/λ₃, λ₃/λ₁)
@@ -134,6 +136,7 @@ class VegetationClassificationPlugin(Plugin):
             vote_count += (closeness > threshold).astype(np.int32)
 
         # Classify based on multi-scale consensus
+        global_variables.global_progress = (90, "Classifying points...")
         veg_mask = vote_count >= min_scales
 
         labels = np.ones(n_points, dtype=np.int32)  # default: Non-Vegetation (1)
@@ -141,8 +144,6 @@ class VegetationClassificationPlugin(Plugin):
 
         n_veg = int(np.sum(veg_mask))
         pct = 100.0 * n_veg / n_points if n_points > 0 else 0.0
-        print(f"  Vegetation:     {n_veg:>8,d} points ({pct:5.1f}%)")
-        print(f"  Non-Vegetation: {n_points - n_veg:>8,d} points ({100.0 - pct:5.1f}%)")
 
         clusters = Clusters(
             labels=labels,

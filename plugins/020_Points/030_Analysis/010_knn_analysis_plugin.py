@@ -84,6 +84,8 @@ class KNNAnalysisPlugin(Plugin):
                 - Result type identifier "values"
                 - List containing the data_node's UID as a dependency
         """
+        from config.config import global_variables
+
         # Extract the point cloud from the data node
         point_cloud: PointCloud = data_node.data
 
@@ -93,11 +95,13 @@ class KNNAnalysisPlugin(Plugin):
 
         # Perform KNN search
         # k+1 because the first neighbor is the point itself (distance = 0)
+        global_variables.global_progress = (None, f"Computing {k}-nearest neighbors ({point_cloud.size:,} points)...")
         distances, indices = point_cloud.KNN(k=k + 1)
 
         # Remove the first column (distance to itself, which is always 0)
         neighbor_distances = distances[:, 1:]
 
+        global_variables.global_progress = (70, f"Computing {statistic}...")
         # Compute the requested statistic
         if statistic == "Average Distance":
             result_values = np.mean(neighbor_distances, axis=1).astype(np.float32)

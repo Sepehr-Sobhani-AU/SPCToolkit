@@ -85,6 +85,8 @@ class ComputeEigenvaluesPlugin(Plugin):
                 - Result type identifier "eigenvalues"
                 - List containing the data_node's UID as a dependency
         """
+        from config.config import global_variables
+
         # Extract the point cloud from the data node
         point_cloud: PointCloud = data_node.data
 
@@ -95,7 +97,9 @@ class ComputeEigenvaluesPlugin(Plugin):
 
         # Compute eigenvalues using the point cloud's built-in method
         # This method leverages EigenvalueUtils for efficient computation
+        global_variables.global_progress = (None, f"Computing eigenvalues (k={k}, {point_cloud.size:,} points)...")
         eigenvalues_array = point_cloud.get_eigenvalues(k=k, smooth=smooth, batch_size=batch_size)
+        global_variables.global_progress = (90, "Eigenvalue computation complete")
 
         # Wrap in Eigenvalues object
         eigenvalues = Eigenvalues(eigenvalues_array)

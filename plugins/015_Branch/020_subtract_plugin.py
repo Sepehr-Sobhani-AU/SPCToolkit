@@ -89,6 +89,7 @@ class SubtractPlugin(Plugin):
                 raise ValueError(f"Branch with UUID {subtract_uid} not found")
 
             # Use the controller to reconstruct the point cloud (thread-safe: read-only)
+            global_variables.global_progress = (None, "Reconstructing subtract branch...")
             subtract_pc = controller.reconstruct(subtract_uid)
             subtract_points = subtract_pc.points
 
@@ -98,6 +99,8 @@ class SubtractPlugin(Plugin):
         # Ensure the point clouds have the same dimensionality
         if target_points.shape[1] != subtract_points.shape[1]:
             raise ValueError("Point dimensions do not match between the two point clouds")
+
+        global_variables.global_progress = (50, f"Comparing {len(target_points):,} vs {len(subtract_points):,} points...")
 
         # Convert rows to structured dtype to enable vectorized comparison
         dtype = [('f0', target_points.dtype), ('f1', target_points.dtype), ('f2', target_points.dtype)]

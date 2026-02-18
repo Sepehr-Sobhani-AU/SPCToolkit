@@ -8,6 +8,7 @@ a single Clusters node with cluster_names mapping each cluster ID to its source 
 """
 
 from typing import Dict, Any
+import time
 import numpy as np
 import uuid
 
@@ -17,7 +18,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
 from core.services.batch_processor import BatchProcessor
 from config.config import global_variables
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QMessageBox, QApplication
 
 
 def run_clustering_direct(points: np.ndarray, algorithm: str, eps: float, min_samples: int,
@@ -307,7 +308,6 @@ class ClusterByValuePlugin(ActionPlugin):
         min_cluster_size = params.get("min_cluster_size", 50)
         target_batch_size = params.get("target_batch_size", 250000)
 
-        import time
         start_time = time.time()
 
         print(f"\n{'='*60}")
@@ -326,6 +326,34 @@ class ClusterByValuePlugin(ActionPlugin):
         # Get unique values
         unique_values = np.unique(attribute_values)
         print(f"Found {len(unique_values)} unique values")
+
+        # Show processing overlay
+        main_window.tree_overlay.position_over(tree_widget)
+        main_window.tree_overlay.show_processing(
+            f"Cluster by Value ({algorithm}) — {len(unique_values)} values, {len(points):,} points..."
+        )
+        main_window.disable_menus()
+        main_window.disable_tree()
+        QApplication.processEvents()
+
+        try:
+            self._do_clustering(
+                main_window, tree_widget, data_nodes,
+                points, attribute_values, attribute_name, unique_values,
+                algorithm, eps, min_samples, min_cluster_size, target_batch_size,
+                selected_uid_uuid, start_time
+            )
+        finally:
+            main_window.tree_overlay.hide_processing()
+            main_window.enable_menus()
+            main_window.enable_tree()
+
+    def _do_clustering(self, main_window, tree_widget, data_nodes,
+                       points, attribute_values, attribute_name, unique_values,
+                       algorithm, eps, min_samples, min_cluster_size, target_batch_size,
+                       selected_uid_uuid, start_time):
+        """Run the actual clustering loop (separated for try/finally cleanup)."""
+        n_values = len(unique_values)
 
         # Initialize output arrays
         output_cluster_labels = np.full(len(points), -1, dtype=np.int32)
@@ -363,7 +391,7 @@ class ClusterByValuePlugin(ActionPlugin):
 
         # Process each unique value with clustering
         print(f"\nClustering each value:")
-        for value in unique_values:
+        for val_idx, value in enumerate(unique_values):
             class_id = value_to_class_id[value]
             class_name = value_names[class_id]
 
@@ -378,6 +406,10 @@ class ClusterByValuePlugin(ActionPlugin):
                 continue
 
             print(f"  - {class_name}: {len(value_points):,} points...", end=" ", flush=True)
+            main_window.tree_overlay.show_processing(
+                f"Clustering value {val_idx + 1}/{n_values}: {class_name} ({len(value_points):,} pts)..."
+            )
+            QApplication.processEvents()
 
             # Run clustering on this value group
             if len(value_points) > target_batch_size:

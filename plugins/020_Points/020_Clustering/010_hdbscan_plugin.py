@@ -84,6 +84,8 @@ class HDBSCANPlugin(Plugin):
                 - Result type identifier "cluster_labels"
                 - List containing the data_node's UID as a dependency
         """
+        from config.config import global_variables
+
         # Extract the point cloud from the data node
         point_cloud: PointCloud = data_node.data
 
@@ -119,10 +121,10 @@ class HDBSCANPlugin(Plugin):
         )
 
         # Perform clustering
-        print(f"[HDBSCAN] Starting clustering with {len(points)} points...")
+        global_variables.global_progress = (None, f"HDBSCAN clustering {len(points):,} points...")
         cluster_labels = clusterer.fit_predict(points)
-        print(
-            f"[HDBSCAN] Clustering completed. Found {len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)} clusters")
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        global_variables.global_progress = (90, f"HDBSCAN done — {n_clusters} clusters found")
 
         # Create a Clusters object and set random colors
         clusters = Clusters(cluster_labels)
