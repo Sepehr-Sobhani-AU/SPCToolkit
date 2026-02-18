@@ -2029,28 +2029,37 @@ class PCDViewerWidget(QOpenGLWidget):
         slices = 16
 
         for tip, direction, radius, length in self.debug_cylinders:
+            d = np.array(direction, dtype=np.float64)
+            d_len = np.linalg.norm(d)
+            if d_len < 1e-12:
+                continue
+            d = d / d_len
+
             glPushMatrix()
             glTranslatef(float(tip[0]), float(tip[1]), float(tip[2]))
 
-            # Rotate Z-axis to align with cylinder direction
-            d = np.array(direction, dtype=np.float64)
-            dz = np.array([0.0, 0.0, 1.0])
-            dot = np.dot(dz, d)
-            if dot < -0.9999:
-                glRotatef(180.0, 1.0, 0.0, 0.0)
-            elif dot < 0.9999:
-                axis = np.cross(dz, d)
-                axis_len = np.linalg.norm(axis)
-                if axis_len > 1e-12:
-                    axis /= axis_len
-                    angle = float(np.degrees(np.arccos(np.clip(dot, -1, 1))))
-                    glRotatef(angle, float(axis[0]), float(axis[1]), float(axis[2]))
+            # Build rotation matrix that maps Z-axis to d
+            # Using two perpendicular vectors to form a complete basis
+            if abs(d[2]) < 0.9:
+                up = np.array([0.0, 0.0, 1.0])
+            else:
+                up = np.array([1.0, 0.0, 0.0])
+            u = np.cross(d, up)
+            u /= np.linalg.norm(u)
+            v = np.cross(d, u)
 
-            # Tube
+            # Column-major 4x4 rotation matrix: maps X->u, Y->v, Z->d
+            m = np.array([
+                u[0], u[1], u[2], 0.0,
+                v[0], v[1], v[2], 0.0,
+                d[0], d[1], d[2], 0.0,
+                0.0,  0.0,  0.0,  1.0,
+            ], dtype=np.float64)
+            glMultMatrixd(m)
+
+            # Tube + end caps (gluCylinder draws along +Z = d after rotation)
             gluCylinder(quadric, radius, radius, length, slices, 1)
-            # Bottom cap
             gluDisk(quadric, 0, radius, slices, 1)
-            # Top cap
             glTranslatef(0.0, 0.0, float(length))
             gluDisk(quadric, 0, radius, slices, 1)
 
