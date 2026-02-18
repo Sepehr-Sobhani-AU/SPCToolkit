@@ -90,6 +90,9 @@ class PowerLineDetectionPlugin(ActionPlugin):
         viewer_widget = global_variables.global_pcd_viewer_widget
         tree_widget = global_variables.global_tree_structure_widget
 
+        # Clear previous debug cylinders
+        viewer_widget.debug_cylinders = []
+
         # --- Validate: one branch selected ---
         selected_branches = controller.selected_branches
         if not selected_branches:
