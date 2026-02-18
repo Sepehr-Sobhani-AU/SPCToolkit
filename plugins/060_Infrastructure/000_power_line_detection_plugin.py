@@ -103,9 +103,9 @@ class PowerLineDetectionPlugin(ActionPlugin):
 
         selected_uid = selected_branches[0]
         node = controller.get_node(selected_uid)
-        if node is None or node.data_type != "point_cloud":
+        if node is None:
             QMessageBox.warning(main_window, "Invalid Branch",
-                                "Please select a point_cloud branch.")
+                                "Could not find the selected branch.")
             return
 
         # --- Validate: enough points selected ---
@@ -186,40 +186,84 @@ class PowerLineDetectionPlugin(ActionPlugin):
             ransac_threshold=params.get("ransac_threshold", 0.3),
         )
 
-        n_points = len(pc_points)
-        labels = np.full(n_points, -1, dtype=np.int32)
+        # --- Trace each cable and collect only cable points ---
+        all_cable_indices = []
+        cable_assignments = []  # parallel list: cable_id for each index
         cluster_names = {}
 
         for cable_id, cluster_label in enumerate(sorted(unique_labels)):
-            # Seed indices for this cable
             cable_seed_mask = seed_labels == cluster_label
             cable_seed_local = seed_indices[cable_seed_mask]
 
             cable_indices = tracer.trace_cable(cable_seed_local)
-            labels[cable_indices] = cable_id
+            all_cable_indices.append(cable_indices)
+            cable_assignments.append(np.full(len(cable_indices), cable_id, dtype=np.int32))
             cluster_names[cable_id] = f"Cable {cable_id + 1}"
 
-        n_cable_points = int(np.sum(labels >= 0))
+        if not all_cable_indices:
+            QMessageBox.warning(main_window, "No Cable Points",
+                                "Tracing did not find any cable points. "
+                                "Try adjusting the parameters.")
+            return
+
+        # Merge and deduplicate (a point could be claimed by overlapping cables)
+        combined_idx = np.concatenate(all_cable_indices)
+        combined_labels = np.concatenate(cable_assignments)
+        unique_idx, first_occ = np.unique(combined_idx, return_index=True)
+        cable_labels = combined_labels[first_occ]
+
+        n_cable_points = len(unique_idx)
         if n_cable_points == 0:
             QMessageBox.warning(main_window, "No Cable Points",
                                 "Tracing did not find any cable points. "
                                 "Try adjusting the parameters.")
             return
 
-        # --- Build Clusters result ---
-        clusters = Clusters(labels=labels, cluster_names=cluster_names)
+        # --- Build cable-only PointCloud ---
+        cable_points = pc_points[unique_idx]
+        cable_colors = point_cloud.colors[unique_idx] if point_cloud.colors is not None else None
+        cable_pc = PointCloud(points=cable_points, colors=cable_colors)
+
+        parent_uid_str = str(node.uid)
+        pc_uid = controller.add_analysis_result(
+            cable_pc, "point_cloud", [node.uid], node, "power_line_detection", params
+        )
+        pc_node = controller.get_node(pc_uid)
+        tree_widget.add_branch(
+            pc_uid, parent_uid_str,
+            pc_node.params if pc_node else f"power_line_detection,{params}"
+        )
+
+        # --- Add Clusters as child of cable PointCloud ---
+        clusters = Clusters(labels=cable_labels, cluster_names=cluster_names)
         clusters.set_random_color()
 
-        # --- Add to tree ---
-        uid = controller.add_analysis_result(
-            clusters, "cluster_labels", [node.uid], node, "power_line_detection", params
+        cl_uid = controller.add_analysis_result(
+            clusters, "cluster_labels", [pc_node.uid], pc_node, "power_line_cables", params
         )
-        result_node = controller.get_node(uid)
-        parent_uid_str = str(node.uid)
+        cl_node = controller.get_node(cl_uid)
         tree_widget.add_branch(
-            uid, parent_uid_str,
-            result_node.params if result_node else f"power_line_detection,{params}"
+            cl_uid, str(pc_uid),
+            cl_node.params if cl_node else f"power_line_cables,{params}"
         )
+
+        # --- Show debug cylinders as transparent overlay ---
+        viewer_widget.debug_cylinders = tracer.debug_cylinders
+
+        # --- Turn off input branch, turn on output branch ---
+        from PyQt5.QtCore import Qt
+        tree_widget.blockSignals(True)
+        # Hide the processed (input) branch
+        input_item = tree_widget.branches_dict.get(selected_uid)
+        if input_item:
+            input_item.setCheckState(0, Qt.Unchecked)
+            tree_widget.visibility_status[selected_uid] = False
+        # Show the clusters output branch
+        cl_item = tree_widget.branches_dict.get(cl_uid)
+        if cl_item:
+            cl_item.setCheckState(0, Qt.Checked)
+            tree_widget.visibility_status[cl_uid] = True
+        tree_widget.blockSignals(False)
 
         # --- Render and clear selection ---
         main_window.render_visible_data(zoom_extent=False)
@@ -227,8 +271,9 @@ class PowerLineDetectionPlugin(ActionPlugin):
         viewer_widget._selection_polygons.clear()
         viewer_widget.update()
 
-        n_cables = len(unique_labels)
+        n_cables = len(cluster_names)
         QMessageBox.information(
             main_window, "Power Line Detection Complete",
             f"Traced {n_cables} cable(s) — {n_cable_points:,} points classified."
         )
+

@@ -555,7 +555,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.disable_menus()
         self.disable_tree()
         try:
-            self._render_visible_data(visibility_status, zoom_extent=True)
+            self._render_visible_data(visibility_status, zoom_extent=False)
         except Exception as e:
             logger.error(f"_on_branch_added() FAILED: {e}")
             logger.error(traceback.format_exc())

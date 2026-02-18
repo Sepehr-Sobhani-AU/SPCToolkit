@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt, QTimer
 from OpenGL.GL import *
 from OpenGL.GLU import gluPerspective, gluProject, gluUnProject
 from OpenGL.GLU import gluNewQuadric, gluDeleteQuadric, gluQuadricDrawStyle
-from OpenGL.GLU import gluSphere
+from OpenGL.GLU import gluSphere, gluCylinder, gluDisk
 from OpenGL.GLU import GLU_FILL
 from OpenGL.arrays import vbo
 
@@ -424,6 +424,11 @@ class PCDViewerWidget(QOpenGLWidget):
         # Per-branch index ranges in combined vertex array: uid -> (start, end)
         self._branch_offsets = {}
 
+        # Debug: transparent cylinders for algorithm visualization (temporary)
+        # Each entry: (tip, direction, radius, length)
+        self.debug_cylinders = []
+
+
         # LOD state (for triggering DataManager re-render)
         self._current_sample_rate: float = 1.0
         self._lod_enabled: bool = True  # Dynamic LOD for large point clouds
@@ -703,6 +708,9 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.show_axis:
             # Draw axis symbol at the center of rotation
             self.draw_axis_symbol(self.center)
+
+        # Draw debug cylinders (temporary — algorithm visualization)
+        self.render_debug_cylinders()
 
         # Draw polygon selection overlay (2D on top of scene)
         self.render_polygon_overlay()
@@ -2002,6 +2010,56 @@ class PCDViewerWidget(QOpenGLWidget):
         # Odd number of crossings = inside
         inside = (crossings % 2 == 1) & valid_mask
         return inside
+
+    def render_debug_cylinders(self):
+        """Render solid transparent debug cylinders (temporary visualization)."""
+        if not self.debug_cylinders:
+            return
+
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(GL_FALSE)
+        glEnable(GL_LIGHTING)
+        glEnable(GL_LIGHT0)
+        glLightfv(GL_LIGHT0, GL_POSITION, [0.0, 0.0, 1.0, 0.0])
+        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, [0.0, 0.8, 1.0, 0.15])
+
+        quadric = gluNewQuadric()
+        gluQuadricDrawStyle(quadric, GLU_FILL)
+        slices = 16
+
+        for tip, direction, radius, length in self.debug_cylinders:
+            glPushMatrix()
+            glTranslatef(float(tip[0]), float(tip[1]), float(tip[2]))
+
+            # Rotate Z-axis to align with cylinder direction
+            d = np.array(direction, dtype=np.float64)
+            dz = np.array([0.0, 0.0, 1.0])
+            dot = np.dot(dz, d)
+            if dot < -0.9999:
+                glRotatef(180.0, 1.0, 0.0, 0.0)
+            elif dot < 0.9999:
+                axis = np.cross(dz, d)
+                axis_len = np.linalg.norm(axis)
+                if axis_len > 1e-12:
+                    axis /= axis_len
+                    angle = float(np.degrees(np.arccos(np.clip(dot, -1, 1))))
+                    glRotatef(angle, float(axis[0]), float(axis[1]), float(axis[2]))
+
+            # Tube
+            gluCylinder(quadric, radius, radius, length, slices, 1)
+            # Bottom cap
+            gluDisk(quadric, 0, radius, slices, 1)
+            # Top cap
+            glTranslatef(0.0, 0.0, float(length))
+            gluDisk(quadric, 0, radius, slices, 1)
+
+            glPopMatrix()
+
+        gluDeleteQuadric(quadric)
+        glDisable(GL_LIGHTING)
+        glDepthMask(GL_TRUE)
+        glDisable(GL_BLEND)
 
     def render_polygon_overlay(self):
         """Draw the polygon as a 2D overlay on top of the 3D scene."""

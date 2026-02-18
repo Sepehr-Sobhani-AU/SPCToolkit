@@ -42,6 +42,7 @@ class PowerLineTracer:
         self.min_points = min_points
         self.max_angle_cos = np.cos(np.radians(max_angle_deg))
         self.ransac_threshold = ransac_threshold
+        self.debug_cylinders = []  # [(tip, direction, radius, length), ...] for visualization
 
     def trace_cable(self, seed_indices: np.ndarray) -> np.ndarray:
         """
@@ -127,6 +128,12 @@ class PowerLineTracer:
             valid_mask = length_mask & radius_mask
             if np.sum(valid_mask) < self.min_points:
                 break
+
+            # Record cylinder for debug visualization
+            self.debug_cylinders.append((
+                current_tip.copy(), current_dir.copy(),
+                self.cylinder_radius, self.cylinder_length
+            ))
 
             valid_idx = candidate_idx[valid_mask]
             valid_pts = pts[valid_mask]
