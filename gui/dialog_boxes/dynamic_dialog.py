@@ -56,9 +56,10 @@ class DynamicDialog(QDialog):
                     widget.setMinimum(param_info["min"])
                 if "max" in param_info:
                     widget.setMaximum(param_info["max"])
-                # Set decimal precision (default 4, but allow custom)
-                decimals = param_info.get("decimals", 4)
+                # Set decimal precision (default 3, but allow custom)
+                decimals = param_info.get("decimals", 3)
                 widget.setDecimals(decimals)
+                widget.setSingleStep(10 ** -decimals)
                 widget.setValue(default_value)
             elif param_type == "dropdown":
                 widget = QComboBox()
