@@ -1,5 +1,5 @@
 import logging
-from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QApplication
+from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QApplication, QHeaderView
 from PyQt5.QtCore import pyqtSignal, Qt
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,11 @@ class TreeStructureWidget(QTreeWidget):
         # Configure tree widget properties
         self.setColumnCount(2)  # Column 0: Branch name/visibility, Column 1: Cache
         self.setHeaderLabels(["Branch", "Cache"])
+        # Column 0 (Branch) stretches to fill available space
+        # Column 1 (Cache) sizes to fit its content
+        self.header().setStretchLastSection(False)
+        self.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.setSelectionMode(QTreeWidget.MultiSelection)
 
         # Connect signals

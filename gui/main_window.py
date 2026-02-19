@@ -91,7 +91,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.addWidget(self.pcd_viewer_widget)
 
         # Initial sizes for the left and right panes
-        self.splitter.setSizes([200, 600])
+        self.splitter.setSizes([350, 600])
 
         # Create basic menu structure
         self.setup_base_menus()
