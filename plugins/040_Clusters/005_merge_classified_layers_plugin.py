@@ -56,7 +56,7 @@ class MergeClassifiedLayersPlugin(ActionPlugin):
 
             # Get display name from tree item
             item = tree_widget.branches_dict.get(uid_str)
-            display_name = item.text(0) if item else (node.params or uid_str[:8])
+            display_name = item.text(0) if item else (node.alias or node.params or uid_str[:8])
 
             try:
                 point_cloud = controller.reconstruct(uid_str)

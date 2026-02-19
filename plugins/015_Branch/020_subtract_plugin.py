@@ -40,7 +40,7 @@ class SubtractPlugin(Plugin):
         # Get all node UUIDs and names for the dropdown
         node_options = {}
         for node_uid, node in data_nodes.data_nodes.items():
-            node_options[str(node_uid)] = node.params
+            node_options[str(node_uid)] = node.alias or node.params
 
         # Set default if options exist
         default_value = ""

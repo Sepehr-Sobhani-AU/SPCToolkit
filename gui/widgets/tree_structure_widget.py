@@ -82,6 +82,7 @@ class TreeStructureWidget(QTreeWidget):
             # Create a new tree item for the branch
             item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
             item.setData(0, Qt.UserRole, uuid)
+            item.setData(0, Qt.UserRole + 1, name)  # Store name for rename detection
             if tooltip:
                 item.setToolTip(0, tooltip)
 
@@ -232,9 +233,21 @@ class TreeStructureWidget(QTreeWidget):
         uid = item.data(0, Qt.UserRole)
         if uid:
             if column == 0:
-                # Visibility checkbox changed
-                self.visibility_status[uid] = item.checkState(0) == Qt.Checked
-                self.branch_visibility_changed.emit(self.visibility_status)
+                # Detect text rename vs visibility toggle
+                stored_name = item.data(0, Qt.UserRole + 1)
+                current_text = item.text(0)
+                if stored_name is not None and current_text != stored_name:
+                    # Text was edited — persist rename to DataNode.alias
+                    item.setData(0, Qt.UserRole + 1, current_text)
+                    controller = global_variables.global_application_controller
+                    if controller:
+                        node = controller.get_node(uid)
+                        if node:
+                            node.alias = current_text
+                else:
+                    # Visibility checkbox changed
+                    self.visibility_status[uid] = item.checkState(0) == Qt.Checked
+                    self.branch_visibility_changed.emit(self.visibility_status)
             elif column == 1:
                 # Cache checkbox changed - use singleton pattern (NO signal!)
 
