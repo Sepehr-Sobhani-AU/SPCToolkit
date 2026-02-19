@@ -125,7 +125,7 @@ class ApplicationController:
             UID of the new node as string.
         """
         data_node_result = DataNode(
-            f"{analysis_type},{params}",
+            analysis_type,
             data=result,
             data_type=result_type,
             parent_uid=parent_node.uid,

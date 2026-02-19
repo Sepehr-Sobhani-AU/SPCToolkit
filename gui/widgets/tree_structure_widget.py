@@ -60,7 +60,7 @@ class TreeStructureWidget(QTreeWidget):
         # Always call parent event handler
         super().mousePressEvent(event)
 
-    def add_branch(self, uuid: str, parent_uuid: str, name: str, is_root: bool = False):
+    def add_branch(self, uuid: str, parent_uuid: str, name: str, is_root: bool = False, tooltip: str = None):
         """
         Adds a new branch to the tree.
 
@@ -69,6 +69,7 @@ class TreeStructureWidget(QTreeWidget):
             parent_uuid (str): Unique identifier of the parent branch. None for top-level branches.
             name (str): Name of the branch.
             is_root (bool): Whether this is a root PointCloud node (always cached).
+            tooltip (str): Optional tooltip text for the branch name column.
         """
         logger.debug(f"TreeStructureWidget.add_branch() called")
         logger.debug(f"  uuid: {uuid[:8] if uuid else 'None'}...")
@@ -81,6 +82,8 @@ class TreeStructureWidget(QTreeWidget):
             # Create a new tree item for the branch
             item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
             item.setData(0, Qt.UserRole, uuid)
+            if tooltip:
+                item.setToolTip(0, tooltip)
 
             # Column 0: Visibility checkbox
             item.setCheckState(0, Qt.Checked)

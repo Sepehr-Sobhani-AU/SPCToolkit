@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import QMessageBox
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.clusters import Clusters
+from core.entities.masks import Masks
 from core.entities.point_cloud import PointCloud
 from core.services.power_line_tracer import PowerLineTracer
 
@@ -89,9 +90,6 @@ class PowerLineDetectionPlugin(ActionPlugin):
         controller = global_variables.global_application_controller
         viewer_widget = global_variables.global_pcd_viewer_widget
         tree_widget = global_variables.global_tree_structure_widget
-
-        # Clear previous debug cylinders
-        viewer_widget.debug_cylinders = []
 
         # --- Validate: one branch selected ---
         selected_branches = controller.selected_branches
@@ -222,6 +220,20 @@ class PowerLineDetectionPlugin(ActionPlugin):
                                 "Try adjusting the parameters.")
             return
 
+        # --- Add remaining-points mask as child of input branch ---
+        remaining_mask = np.ones(len(pc_points), dtype=bool)
+        remaining_mask[unique_idx] = False
+        mask_data = Masks(mask=remaining_mask)
+
+        mask_uid = controller.add_analysis_result(
+            mask_data, "masks", [node.uid], node, "remaining_points", params
+        )
+        mask_node = controller.get_node(mask_uid)
+        tree_widget.add_branch(
+            mask_uid, str(node.uid),
+            "remaining_points", tooltip=str(params)
+        )
+
         # --- Build cable-only PointCloud ---
         cable_points = pc_points[unique_idx]
         cable_colors = point_cloud.colors[unique_idx] if point_cloud.colors is not None else None
@@ -234,7 +246,7 @@ class PowerLineDetectionPlugin(ActionPlugin):
         pc_node = controller.get_node(pc_uid)
         tree_widget.add_branch(
             pc_uid, parent_uid_str,
-            pc_node.params if pc_node else f"power_line_detection,{params}"
+            "power_line_detection", tooltip=str(params)
         )
 
         # --- Add Clusters as child of cable PointCloud ---
@@ -247,13 +259,10 @@ class PowerLineDetectionPlugin(ActionPlugin):
         cl_node = controller.get_node(cl_uid)
         tree_widget.add_branch(
             cl_uid, str(pc_uid),
-            cl_node.params if cl_node else f"power_line_cables,{params}"
+            "power_line_cables", tooltip=str(params)
         )
 
-        # --- Show debug cylinders as transparent overlay ---
-        viewer_widget.debug_cylinders = tracer.debug_cylinders
-
-        # --- Turn off input branch, turn on output branch ---
+        # --- Turn off input branch, turn on remaining-points mask and clusters ---
         from PyQt5.QtCore import Qt
         tree_widget.blockSignals(True)
         # Hide the processed (input) branch
@@ -261,6 +270,11 @@ class PowerLineDetectionPlugin(ActionPlugin):
         if input_item:
             input_item.setCheckState(0, Qt.Unchecked)
             tree_widget.visibility_status[selected_uid] = False
+        # Show the remaining-points mask branch
+        mask_item = tree_widget.branches_dict.get(mask_uid)
+        if mask_item:
+            mask_item.setCheckState(0, Qt.Checked)
+            tree_widget.visibility_status[mask_uid] = True
         # Show the clusters output branch
         cl_item = tree_widget.branches_dict.get(cl_uid)
         if cl_item:
@@ -275,8 +289,10 @@ class PowerLineDetectionPlugin(ActionPlugin):
         viewer_widget.update()
 
         n_cables = len(cluster_names)
+        n_remaining = int(remaining_mask.sum())
         QMessageBox.information(
             main_window, "Power Line Detection Complete",
-            f"Traced {n_cables} cable(s) — {n_cable_points:,} points classified."
+            f"Traced {n_cables} cable(s) — {n_cable_points:,} cable points, "
+            f"{n_remaining:,} remaining points."
         )
 

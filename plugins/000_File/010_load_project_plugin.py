@@ -145,11 +145,14 @@ class LoadProjectPlugin(ActionPlugin):
             # Detect if this is a root PointCloud node
             is_root = (node.data_type == "point_cloud" or node.data_type == "PointCloud")
 
+            display_name = node.params or node.data_type
+            tooltip = str(node.tags[1]) if len(node.tags) > 1 else None
             tree_widget.add_branch(
                 str(node.uid),
                 "",  # No parent
-                node.params or node.data_type,  # Use params or data_type as name
-                is_root=is_root
+                display_name,
+                is_root=is_root,
+                tooltip=tooltip
             )
 
         # Add child nodes recursively
@@ -173,10 +176,13 @@ class LoadProjectPlugin(ActionPlugin):
 
         # Add each child
         for child in children:
+            display_name = child.params or child.data_type
+            tooltip = str(child.tags[1]) if len(child.tags) > 1 else None
             tree_widget.add_branch(
                 str(child.uid),
                 str(parent_uid),
-                child.params or child.data_type  # Use params or data_type as name
+                display_name,
+                tooltip=tooltip
             )
 
             # Recursively add this child's children

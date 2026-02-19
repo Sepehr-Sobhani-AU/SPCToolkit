@@ -712,7 +712,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Update tree widget
         parent_uid_str = str(parent_node.uid)
         result_node = self.controller.get_node(uid)
-        self.tree_widget.add_branch(uid, parent_uid_str, result_node.params if result_node else f"{analysis_type},{params}")
+        display_name = analysis_type
+        tooltip = str(params)
+        self.tree_widget.add_branch(uid, parent_uid_str, display_name, tooltip=tooltip)
 
         # Show memory usage for new node
         if result_node and hasattr(result_node, 'memory_size') and result_node.memory_size:
