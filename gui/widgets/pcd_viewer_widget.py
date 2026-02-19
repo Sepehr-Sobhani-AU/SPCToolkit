@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt, QTimer
 from OpenGL.GL import *
 from OpenGL.GLU import gluPerspective, gluProject, gluUnProject
 from OpenGL.GLU import gluNewQuadric, gluDeleteQuadric, gluQuadricDrawStyle
-from OpenGL.GLU import gluSphere, gluCylinder, gluDisk
+from OpenGL.GLU import gluSphere
 from OpenGL.GLU import GLU_FILL
 from OpenGL.arrays import vbo
 
@@ -424,11 +424,6 @@ class PCDViewerWidget(QOpenGLWidget):
         # Per-branch index ranges in combined vertex array: uid -> (start, end)
         self._branch_offsets = {}
 
-        # Debug: transparent cylinders for algorithm visualization (temporary)
-        # Each entry: (tip, direction, radius, length)
-        self.debug_cylinders = []
-
-
         # LOD state (for triggering DataManager re-render)
         self._current_sample_rate: float = 1.0
         self._lod_enabled: bool = True  # Dynamic LOD for large point clouds
@@ -708,9 +703,6 @@ class PCDViewerWidget(QOpenGLWidget):
         if self.show_axis:
             # Draw axis symbol at the center of rotation
             self.draw_axis_symbol(self.center)
-
-        # Draw debug cylinders (temporary — algorithm visualization)
-        self.render_debug_cylinders()
 
         # Draw polygon selection overlay (2D on top of scene)
         self.render_polygon_overlay()
@@ -1479,15 +1471,27 @@ class PCDViewerWidget(QOpenGLWidget):
             new_center = self.points[min_distance_index, :3].copy()
 
             # Adjust pan to compensate for center change (prevents view shift)
-            # The transformation is: pan + center, so to keep the same view:
-            # new_pan + new_center = old_pan + old_center
-            # new_pan = old_pan + (old_center - new_center)
-            self.pan_x += old_center[0] - new_center[0]
-            self.pan_y += old_center[1] - new_center[1]
-            self.pan_z += old_center[2] - new_center[2]
+            # paintGL applies: P_view = R*P + (pan + center - R*center) + (0,0,-cam_dist)
+            # For stable view when center changes: pan_new = pan_old + (I - R) * delta
+            R = np.array(self.model_view_matrix[:3, :3]).T  # transpose: OpenGL stores column-major
+            delta = old_center - new_center
+            rotated_delta = R @ delta
+            self.pan_x += delta[0] - rotated_delta[0]
+            self.pan_y += delta[1] - rotated_delta[1]
+            self.pan_z += delta[2] - rotated_delta[2]
 
             # Update the center to the new point
             self.center = new_center
+
+            # Show axis briefly at new center + repaint
+            self.show_axis = True
+            self.update()
+            if self.axis_timer is not None:
+                self.axis_timer.stop()
+            self.axis_timer = QTimer(self)
+            self.axis_timer.setSingleShot(True)
+            self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
+            self.axis_timer.start(500)
 
     def reset_view(self):
         """
@@ -2010,65 +2014,6 @@ class PCDViewerWidget(QOpenGLWidget):
         # Odd number of crossings = inside
         inside = (crossings % 2 == 1) & valid_mask
         return inside
-
-    def render_debug_cylinders(self):
-        """Render solid transparent debug cylinders (temporary visualization)."""
-        if not self.debug_cylinders:
-            return
-
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glDepthMask(GL_FALSE)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)
-        glLightfv(GL_LIGHT0, GL_POSITION, [0.0, 0.0, 1.0, 0.0])
-        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, [0.0, 0.8, 1.0, 0.15])
-
-        quadric = gluNewQuadric()
-        gluQuadricDrawStyle(quadric, GLU_FILL)
-        slices = 16
-
-        for tip, direction, radius, length in self.debug_cylinders:
-            d = np.array(direction, dtype=np.float64)
-            d_len = np.linalg.norm(d)
-            if d_len < 1e-12:
-                continue
-            d = d / d_len
-
-            glPushMatrix()
-            glTranslatef(float(tip[0]), float(tip[1]), float(tip[2]))
-
-            # Build rotation matrix that maps Z-axis to d
-            # Using two perpendicular vectors to form a complete basis
-            if abs(d[2]) < 0.9:
-                up = np.array([0.0, 0.0, 1.0])
-            else:
-                up = np.array([1.0, 0.0, 0.0])
-            u = np.cross(d, up)
-            u /= np.linalg.norm(u)
-            v = np.cross(d, u)
-
-            # Column-major 4x4 rotation matrix: maps X->u, Y->v, Z->d
-            m = np.array([
-                u[0], u[1], u[2], 0.0,
-                v[0], v[1], v[2], 0.0,
-                d[0], d[1], d[2], 0.0,
-                0.0,  0.0,  0.0,  1.0,
-            ], dtype=np.float64)
-            glMultMatrixd(m)
-
-            # Tube + end caps (gluCylinder draws along +Z = d after rotation)
-            gluCylinder(quadric, radius, radius, length, slices, 1)
-            gluDisk(quadric, 0, radius, slices, 1)
-            glTranslatef(0.0, 0.0, float(length))
-            gluDisk(quadric, 0, radius, slices, 1)
-
-            glPopMatrix()
-
-        gluDeleteQuadric(quadric)
-        glDisable(GL_LIGHTING)
-        glDepthMask(GL_TRUE)
-        glDisable(GL_BLEND)
 
     def render_polygon_overlay(self):
         """Draw the polygon as a 2D overlay on top of the 3D scene."""
