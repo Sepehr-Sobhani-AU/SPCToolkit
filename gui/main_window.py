@@ -713,7 +713,7 @@ class MainWindow(QtWidgets.QMainWindow):
         parent_uid_str = str(parent_node.uid)
         result_node = self.controller.get_node(uid)
         display_name = analysis_type
-        tooltip = str(params)
+        tooltip = f"{analysis_type},{params}"
         self.tree_widget.add_branch(uid, parent_uid_str, display_name, tooltip=tooltip)
 
         # Show memory usage for new node

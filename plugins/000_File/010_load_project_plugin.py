@@ -146,7 +146,7 @@ class LoadProjectPlugin(ActionPlugin):
             is_root = (node.data_type == "point_cloud" or node.data_type == "PointCloud")
 
             display_name = node.alias or node.params or node.data_type
-            tooltip = str(node.tags[1]) if len(node.tags) > 1 else None
+            tooltip = f"{node.tags[0]},{node.tags[1]}" if len(node.tags) > 1 else None
             tree_widget.add_branch(
                 str(node.uid),
                 "",  # No parent
@@ -177,7 +177,7 @@ class LoadProjectPlugin(ActionPlugin):
         # Add each child
         for child in children:
             display_name = child.alias or child.params or child.data_type
-            tooltip = str(child.tags[1]) if len(child.tags) > 1 else None
+            tooltip = f"{child.tags[0]},{child.tags[1]}" if len(child.tags) > 1 else None
             tree_widget.add_branch(
                 str(child.uid),
                 str(parent_uid),

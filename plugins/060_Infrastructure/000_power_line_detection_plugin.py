@@ -231,7 +231,7 @@ class PowerLineDetectionPlugin(ActionPlugin):
         mask_node = controller.get_node(mask_uid)
         tree_widget.add_branch(
             mask_uid, str(node.uid),
-            "remaining_points", tooltip=str(params)
+            "remaining_points", tooltip=f"power_line_detection,{params}"
         )
 
         # --- Build cable-only PointCloud ---
@@ -246,7 +246,7 @@ class PowerLineDetectionPlugin(ActionPlugin):
         pc_node = controller.get_node(pc_uid)
         tree_widget.add_branch(
             pc_uid, parent_uid_str,
-            "power_line_detection", tooltip=str(params)
+            "power_line_detection", tooltip=f"power_line_detection,{params}"
         )
 
         # --- Add Clusters as child of cable PointCloud ---
@@ -259,7 +259,7 @@ class PowerLineDetectionPlugin(ActionPlugin):
         cl_node = controller.get_node(cl_uid)
         tree_widget.add_branch(
             cl_uid, str(pc_uid),
-            "power_line_cables", tooltip=str(params)
+            "power_line_cables", tooltip=f"power_line_detection,{params}"
         )
 
         # --- Turn off input branch, turn on remaining-points mask and clusters ---
