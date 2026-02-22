@@ -21,7 +21,7 @@ from core.entities.point_cloud import PointCloud
 class ExportPointCloudPlugin(ActionPlugin):
 
     def get_name(self) -> str:
-        return "export_point_cloud"
+        return "export_ply"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {}
