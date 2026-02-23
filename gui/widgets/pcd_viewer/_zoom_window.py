@@ -117,9 +117,9 @@ class ZoomWindowMixin:
         # rot_x, rot_y, rot_z are preserved (no change)
 
         # Raise zoom_max_factor so mouse wheel can zoom back out to the old view.
-        # Cap effective FOV at 120 degrees to prevent extreme wide-angle distortion.
+        # FOV is capped at base value in the renderer, so no distortion risk —
+        # only camera distance increases when zoom_factor > 1.
         max_zoom_out = old_effective_distance / self.camera_distance if self.camera_distance > 0 else 1.0
-        fov_limit = 120.0 / self.fov
-        self._zoom_max_factor = max(1.0, min(max_zoom_out, fov_limit))
+        self._zoom_max_factor = max(1.0, max_zoom_out * 1.5)
 
         self.exit_zoom_window_mode()
