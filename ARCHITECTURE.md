@@ -251,7 +251,7 @@ sequenceDiagram
 ### Threading Model
 
 - **Thread Type:** Python `threading.Thread` (NOT QThread)
-- **Communication:** Flag polling via QTimer (100ms), NOT callbacks
+- **Communication:** Flag polling via QTimer (100ms) + callbacks for progress/completion/error
 - **Thread Safety:** Plugins only READ data, return NEW objects
 - **No Deep Copy:** Memory efficient - relies on read-only access
 
