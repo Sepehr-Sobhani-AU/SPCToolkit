@@ -60,94 +60,117 @@ class ImportE57Plugin(ActionPlugin):
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
+        # Count total scans for progress reporting
+        total_scans = 0
+        for fp in file_paths:
+            try:
+                total_scans += pye57.E57(fp).scan_count
+            except Exception:
+                total_scans += 1  # Count as 1 for progress even if it fails
+
         success_count = 0
+        scan_counter = 0
         failed_files = []
 
-        for file_path in file_paths:
-            try:
-                e57_file = pye57.E57(file_path)
-                scan_count = e57_file.scan_count
-                filename = os.path.basename(file_path)
+        main_window.disable_menus()
+        main_window.disable_tree()
+        try:
+            for file_path in file_paths:
+                try:
+                    e57_file = pye57.E57(file_path)
+                    scan_count = e57_file.scan_count
+                    filename = os.path.basename(file_path)
 
-                for scan_idx in range(scan_count):
-                    try:
-                        header = e57_file.get_header(scan_idx)
-                        data = e57_file.read_scan(scan_idx, ignore_missing_fields=True)
-
-                        # Extract XYZ coordinates
-                        x = np.asarray(data["cartesianX"], dtype=np.float64)
-                        y = np.asarray(data["cartesianY"], dtype=np.float64)
-                        z = np.asarray(data["cartesianZ"], dtype=np.float64)
-                        points_xyz = np.column_stack([x, y, z])
-
-                        # Remove invalid points (NaN or Inf)
-                        valid = np.isfinite(points_xyz).all(axis=1)
-                        if not valid.all():
-                            points_xyz = points_xyz[valid]
-                            logger.info(f"Removed {(~valid).sum()} invalid points from scan {scan_idx}")
-
-                        if len(points_xyz) == 0:
-                            logger.warning(f"Scan {scan_idx} has no valid points, skipping")
-                            continue
-
-                        # Extract colors if available
-                        colors = None
-                        if "colorRed" in data and "colorGreen" in data and "colorBlue" in data:
-                            r = np.asarray(data["colorRed"], dtype=np.float32)
-                            g = np.asarray(data["colorGreen"], dtype=np.float32)
-                            b = np.asarray(data["colorBlue"], dtype=np.float32)
-                            if valid is not None and not valid.all():
-                                r, g, b = r[valid], g[valid], b[valid]
-                            max_val = max(r.max(), g.max(), b.max(), 1.0)
-                            if max_val > 255:
-                                colors = np.column_stack([r, g, b]) / 65535.0
-                            elif max_val > 1.0:
-                                colors = np.column_stack([r, g, b]) / 255.0
-                            else:
-                                colors = np.column_stack([r, g, b])
-
-                        # Fallback: intensity as grayscale
-                        intensity_arr = None
-                        if "intensity" in data:
-                            intensity_arr = np.asarray(data["intensity"], dtype=np.float32)
-                            if valid is not None and not valid.all():
-                                intensity_arr = intensity_arr[valid]
-                            if colors is None:
-                                i_min, i_max = intensity_arr.min(), intensity_arr.max()
-                                intensity_norm = (intensity_arr - i_min) / (i_max - i_min + 1e-6)
-                                colors = np.column_stack([intensity_norm] * 3)
-
-                        # Translate to origin for float32 precision (GPU-accelerated)
-                        min_bound = points_xyz.min(axis=0)
-                        points_translated, colors = translate_and_convert(
-                            points_xyz, min_bound, colors
+                    for scan_idx in range(scan_count):
+                        scan_counter += 1
+                        percent = int((scan_counter / total_scans) * 100)
+                        main_window.show_progress(
+                            f"Importing {filename} scan {scan_idx + 1}/{scan_count} ({scan_counter}/{total_scans})...",
+                            percent
                         )
 
-                        # Create PointCloud
-                        scan_name = f"{filename}" if scan_count == 1 else f"{filename} [scan {scan_idx}]"
-                        point_cloud = PointCloud(points_translated, colors=colors)
-                        point_cloud.name = scan_name
-                        point_cloud.translation = min_bound
+                        try:
+                            header = e57_file.get_header(scan_idx)
+                            data = e57_file.read_scan(scan_idx, ignore_missing_fields=True)
 
-                        if intensity_arr is not None:
-                            point_cloud.add_attribute('intensity', intensity_arr)
+                            # Extract XYZ coordinates
+                            x = np.asarray(data["cartesianX"], dtype=np.float64)
+                            y = np.asarray(data["cartesianY"], dtype=np.float64)
+                            z = np.asarray(data["cartesianZ"], dtype=np.float64)
+                            points_xyz = np.column_stack([x, y, z])
 
-                        # Add to data manager
-                        uid = self._add_point_cloud(
-                            point_cloud, controller, data_nodes, tree_widget
-                        )
-                        success_count += 1
-                        logger.info(
-                            f"Imported {scan_name}: {len(points_translated)} points, UID={uid}"
-                        )
+                            # Remove invalid points (NaN or Inf)
+                            valid = np.isfinite(points_xyz).all(axis=1)
+                            if not valid.all():
+                                points_xyz = points_xyz[valid]
+                                logger.info(f"Removed {(~valid).sum()} invalid points from scan {scan_idx}")
 
-                    except Exception as e:
-                        logger.error(f"Failed scan {scan_idx} in {filename}: {e}")
-                        failed_files.append((f"{filename} scan {scan_idx}", str(e)))
+                            if len(points_xyz) == 0:
+                                logger.warning(f"Scan {scan_idx} has no valid points, skipping")
+                                continue
 
-            except Exception as e:
-                logger.error(f"Failed to open {file_path}: {e}")
-                failed_files.append((os.path.basename(file_path), str(e)))
+                            # Extract colors if available
+                            colors = None
+                            if "colorRed" in data and "colorGreen" in data and "colorBlue" in data:
+                                r = np.asarray(data["colorRed"], dtype=np.float32)
+                                g = np.asarray(data["colorGreen"], dtype=np.float32)
+                                b = np.asarray(data["colorBlue"], dtype=np.float32)
+                                if valid is not None and not valid.all():
+                                    r, g, b = r[valid], g[valid], b[valid]
+                                max_val = max(r.max(), g.max(), b.max(), 1.0)
+                                if max_val > 255:
+                                    colors = np.column_stack([r, g, b]) / 65535.0
+                                elif max_val > 1.0:
+                                    colors = np.column_stack([r, g, b]) / 255.0
+                                else:
+                                    colors = np.column_stack([r, g, b])
+
+                            # Fallback: intensity as grayscale
+                            intensity_arr = None
+                            if "intensity" in data:
+                                intensity_arr = np.asarray(data["intensity"], dtype=np.float32)
+                                if valid is not None and not valid.all():
+                                    intensity_arr = intensity_arr[valid]
+                                if colors is None:
+                                    i_min, i_max = intensity_arr.min(), intensity_arr.max()
+                                    intensity_norm = (intensity_arr - i_min) / (i_max - i_min + 1e-6)
+                                    colors = np.column_stack([intensity_norm] * 3)
+
+                            # Translate to origin for float32 precision (GPU-accelerated)
+                            min_bound = points_xyz.min(axis=0)
+                            points_translated, colors = translate_and_convert(
+                                points_xyz, min_bound, colors
+                            )
+
+                            # Create PointCloud
+                            scan_name = f"{filename}" if scan_count == 1 else f"{filename} [scan {scan_idx}]"
+                            point_cloud = PointCloud(points_translated, colors=colors)
+                            point_cloud.name = scan_name
+                            point_cloud.translation = min_bound
+
+                            if intensity_arr is not None:
+                                point_cloud.add_attribute('intensity', intensity_arr)
+
+                            # Add to data manager
+                            uid = self._add_point_cloud(
+                                point_cloud, controller, data_nodes, tree_widget
+                            )
+                            success_count += 1
+                            logger.info(
+                                f"Imported {scan_name}: {len(points_translated)} points, UID={uid}"
+                            )
+
+                        except Exception as e:
+                            logger.error(f"Failed scan {scan_idx} in {filename}: {e}")
+                            failed_files.append((f"{filename} scan {scan_idx}", str(e)))
+
+                except Exception as e:
+                    logger.error(f"Failed to open {file_path}: {e}")
+                    failed_files.append((os.path.basename(file_path), str(e)))
+        finally:
+            main_window.clear_progress()
+            main_window.enable_menus()
+            main_window.enable_tree()
 
         # Summary
         if failed_files:

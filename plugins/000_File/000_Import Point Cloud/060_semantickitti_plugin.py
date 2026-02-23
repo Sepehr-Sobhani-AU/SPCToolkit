@@ -177,12 +177,19 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         logger.info(f"Last file: {file_paths[-1]}")
 
         # Import based on merge_scans option
-        if params.get("merge_scans", False):
-            logger.info("Using MERGED import mode")
-            self._import_merged(file_paths, params, main_window)
-        else:
-            logger.info("Using SEPARATE import mode")
-            self._import_separate(file_paths, params, main_window)
+        main_window.disable_menus()
+        main_window.disable_tree()
+        try:
+            if params.get("merge_scans", False):
+                logger.info("Using MERGED import mode")
+                self._import_merged(file_paths, params, main_window)
+            else:
+                logger.info("Using SEPARATE import mode")
+                self._import_separate(file_paths, params, main_window)
+        finally:
+            main_window.clear_progress()
+            main_window.enable_menus()
+            main_window.enable_tree()
 
     # Helper methods for loading labels and poses
 
@@ -385,6 +392,11 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         total_points_imported = 0
 
         for file_idx, file_path in enumerate(file_paths):
+            percent = int(((file_idx + 1) / len(file_paths)) * 100)
+            main_window.show_progress(
+                f"Importing {os.path.basename(file_path)} ({file_idx + 1}/{len(file_paths)})...",
+                percent
+            )
             logger.info(f"--- Processing file {file_idx + 1}/{len(file_paths)}: {os.path.basename(file_path)} ---")
             try:
                 # Load .bin file
@@ -629,6 +641,10 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         progress_interval = max(1, len(file_paths) // 20)
 
         for idx, file_path in enumerate(file_paths):
+            percent = int(((idx + 1) / len(file_paths)) * 100)
+            main_window.show_progress(
+                f"Loading scan {idx + 1}/{len(file_paths)}...", percent
+            )
             try:
                 # Load .bin file
                 data = np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)

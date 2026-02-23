@@ -60,75 +60,88 @@ class ImportLASPlugin(ActionPlugin):
         data_nodes = global_variables.global_data_nodes
         tree_widget = global_variables.global_tree_structure_widget
 
+        total_files = len(file_paths)
         success_count = 0
         failed_files = []
 
-        for file_path in file_paths:
-            try:
-                las = laspy.read(file_path)
-                points_xyz = np.column_stack([
-                    np.array(las.x, dtype=np.float64),
-                    np.array(las.y, dtype=np.float64),
-                    np.array(las.z, dtype=np.float64),
-                ])
-
-                # Extract colors if available (LAS stores as 16-bit)
-                colors = None
-                if hasattr(las, 'red') and hasattr(las, 'green') and hasattr(las, 'blue'):
-                    r = np.array(las.red, dtype=np.float32)
-                    g = np.array(las.green, dtype=np.float32)
-                    b = np.array(las.blue, dtype=np.float32)
-                    max_val = max(r.max(), g.max(), b.max(), 1.0)
-                    if max_val > 255:
-                        # 16-bit color values
-                        colors = np.column_stack([r, g, b]) / 65535.0
-                    else:
-                        colors = np.column_stack([r, g, b]) / max(max_val, 1.0)
-
-                # Fallback: use intensity as grayscale color
-                if colors is None and hasattr(las, 'intensity'):
-                    intensity = np.array(las.intensity, dtype=np.float32)
-                    i_min, i_max = intensity.min(), intensity.max()
-                    intensity_norm = (intensity - i_min) / (i_max - i_min + 1e-6)
-                    colors = np.column_stack([intensity_norm] * 3)
-
-                # Translate to origin for float32 precision (GPU-accelerated)
-                min_bound = points_xyz.min(axis=0)
-                points_translated, colors = translate_and_convert(
-                    points_xyz, min_bound, colors
+        main_window.disable_menus()
+        main_window.disable_tree()
+        try:
+            for file_idx, file_path in enumerate(file_paths):
+                filename = os.path.basename(file_path)
+                percent = int(((file_idx + 1) / total_files) * 100)
+                main_window.show_progress(
+                    f"Importing {filename} ({file_idx + 1}/{total_files})...", percent
                 )
 
-                # Create PointCloud
-                filename = os.path.basename(file_path)
-                point_cloud = PointCloud(points_translated, colors=colors)
-                point_cloud.name = filename
-                point_cloud.translation = min_bound
+                try:
+                    las = laspy.read(file_path)
+                    points_xyz = np.column_stack([
+                        np.array(las.x, dtype=np.float64),
+                        np.array(las.y, dtype=np.float64),
+                        np.array(las.z, dtype=np.float64),
+                    ])
 
-                # Add standard LAS attributes
-                if hasattr(las, 'intensity'):
-                    point_cloud.add_attribute('intensity',
-                                              np.array(las.intensity, dtype=np.float32))
-                if hasattr(las, 'classification'):
-                    point_cloud.add_attribute('classification',
-                                              np.array(las.classification, dtype=np.int32))
-                if hasattr(las, 'return_number'):
-                    point_cloud.add_attribute('return_number',
-                                              np.array(las.return_number, dtype=np.int32))
-                if hasattr(las, 'number_of_returns'):
-                    point_cloud.add_attribute('number_of_returns',
-                                              np.array(las.number_of_returns, dtype=np.int32))
-                if hasattr(las, 'gps_time'):
-                    point_cloud.add_attribute('gps_time',
-                                              np.array(las.gps_time, dtype=np.float64))
+                    # Extract colors if available (LAS stores as 16-bit)
+                    colors = None
+                    if hasattr(las, 'red') and hasattr(las, 'green') and hasattr(las, 'blue'):
+                        r = np.array(las.red, dtype=np.float32)
+                        g = np.array(las.green, dtype=np.float32)
+                        b = np.array(las.blue, dtype=np.float32)
+                        max_val = max(r.max(), g.max(), b.max(), 1.0)
+                        if max_val > 255:
+                            # 16-bit color values
+                            colors = np.column_stack([r, g, b]) / 65535.0
+                        else:
+                            colors = np.column_stack([r, g, b]) / max(max_val, 1.0)
 
-                # Add to data manager
-                uid = self._add_point_cloud(point_cloud, controller, data_nodes, tree_widget)
-                success_count += 1
-                logger.info(f"Imported {filename}: {len(points_translated)} points, UID={uid}")
+                    # Fallback: use intensity as grayscale color
+                    if colors is None and hasattr(las, 'intensity'):
+                        intensity = np.array(las.intensity, dtype=np.float32)
+                        i_min, i_max = intensity.min(), intensity.max()
+                        intensity_norm = (intensity - i_min) / (i_max - i_min + 1e-6)
+                        colors = np.column_stack([intensity_norm] * 3)
 
-            except Exception as e:
-                logger.error(f"Failed to import {file_path}: {e}")
-                failed_files.append((os.path.basename(file_path), str(e)))
+                    # Translate to origin for float32 precision (GPU-accelerated)
+                    min_bound = points_xyz.min(axis=0)
+                    points_translated, colors = translate_and_convert(
+                        points_xyz, min_bound, colors
+                    )
+
+                    # Create PointCloud
+                    point_cloud = PointCloud(points_translated, colors=colors)
+                    point_cloud.name = filename
+                    point_cloud.translation = min_bound
+
+                    # Add standard LAS attributes
+                    if hasattr(las, 'intensity'):
+                        point_cloud.add_attribute('intensity',
+                                                  np.array(las.intensity, dtype=np.float32))
+                    if hasattr(las, 'classification'):
+                        point_cloud.add_attribute('classification',
+                                                  np.array(las.classification, dtype=np.int32))
+                    if hasattr(las, 'return_number'):
+                        point_cloud.add_attribute('return_number',
+                                                  np.array(las.return_number, dtype=np.int32))
+                    if hasattr(las, 'number_of_returns'):
+                        point_cloud.add_attribute('number_of_returns',
+                                                  np.array(las.number_of_returns, dtype=np.int32))
+                    if hasattr(las, 'gps_time'):
+                        point_cloud.add_attribute('gps_time',
+                                                  np.array(las.gps_time, dtype=np.float64))
+
+                    # Add to data manager
+                    uid = self._add_point_cloud(point_cloud, controller, data_nodes, tree_widget)
+                    success_count += 1
+                    logger.info(f"Imported {filename}: {len(points_translated)} points, UID={uid}")
+
+                except Exception as e:
+                    logger.error(f"Failed to import {file_path}: {e}")
+                    failed_files.append((os.path.basename(file_path), str(e)))
+        finally:
+            main_window.clear_progress()
+            main_window.enable_menus()
+            main_window.enable_tree()
 
         # Summary
         if failed_files:

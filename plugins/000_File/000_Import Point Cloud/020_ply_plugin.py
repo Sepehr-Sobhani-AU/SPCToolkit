@@ -42,6 +42,13 @@ class ImportPointCloudPlugin(ActionPlugin):
             main_window: The main application window
             params: Not used for this plugin (empty dict)
         """
-        # Trigger the file manager's open dialog
-        file_manager = global_variables.global_file_manager
-        file_manager.open_point_cloud_file(main_window)
+        main_window.disable_menus()
+        main_window.disable_tree()
+        main_window.show_progress("Importing PLY file...")
+        try:
+            file_manager = global_variables.global_file_manager
+            file_manager.open_point_cloud_file(main_window)
+        finally:
+            main_window.clear_progress()
+            main_window.enable_menus()
+            main_window.enable_tree()

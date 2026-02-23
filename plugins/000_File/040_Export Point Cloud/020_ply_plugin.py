@@ -39,8 +39,13 @@ class ExportPointCloudPlugin(ActionPlugin):
             return
 
         # Reconstruct each selected branch into a PointCloud
+        total_branches = len(controller.selected_branches)
         point_clouds = []
-        for uid in controller.selected_branches:
+        for i, uid in enumerate(controller.selected_branches):
+            percent = int(((i + 1) / total_branches) * 70)
+            main_window.show_progress(
+                f"Reconstructing branch {i + 1}/{total_branches}...", percent
+            )
             try:
                 pc = controller.reconstruct(uid)
                 if pc is not None:
@@ -96,14 +101,22 @@ class ExportPointCloudPlugin(ActionPlugin):
         if not file_path.lower().endswith('.ply'):
             file_path += '.ply'
 
+        main_window.disable_menus()
+        main_window.disable_tree()
         try:
+            main_window.show_progress("Writing PLY file...", 80)
             _write_ply(merged, file_path, shift)
+            main_window.show_progress("Export complete", 100)
         except Exception as e:
             QMessageBox.critical(
                 main_window,
                 "Export Error",
                 f"Failed to export point cloud:\n{str(e)}"
             )
+        finally:
+            main_window.clear_progress()
+            main_window.enable_menus()
+            main_window.enable_tree()
 
 
 def _collect_scalar_attributes(pc: PointCloud) -> List[Tuple[str, np.ndarray, str]]:

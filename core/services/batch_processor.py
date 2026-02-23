@@ -282,6 +282,9 @@ class BatchProcessor:
 
         # Process each grid cell
         for i, cell_idx in enumerate(unique_cells):
+            if global_variables.global_cancel_event.is_set():
+                raise InterruptedError("Cancelled by user")
+
             # Get batch points and primary mask
             batch_indices, is_primary = self.get_batch_for_grid_cell(cell_idx)
 
@@ -370,6 +373,9 @@ class BatchProcessor:
 
         # Process each cell
         for batch_idx, cell_idx in enumerate(unique_cells):
+            if global_variables.global_cancel_event.is_set():
+                raise InterruptedError("Cancelled by user")
+
             # Get batch points and primary mask
             batch_indices, is_primary = self.get_batch_for_grid_cell(cell_idx)
 

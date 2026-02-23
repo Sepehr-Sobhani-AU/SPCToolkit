@@ -72,10 +72,12 @@ class LoadProjectPlugin(ActionPlugin):
                 return
 
         # Call file_manager to load project
+        main_window.show_progress("Loading project file...")
         loaded_data_nodes, message = file_manager.load_project(parent=main_window)
 
         # Check if loading was successful
         if loaded_data_nodes is None:
+            main_window.clear_progress()
             if "cancelled" not in message.lower():
                 QMessageBox.warning(
                     main_window,
@@ -84,47 +86,62 @@ class LoadProjectPlugin(ActionPlugin):
                 )
             return
 
-        # Extract tree visibility state if available
-        tree_visibility = None
-        if hasattr(file_manager, '_last_loaded_tree_visibility'):
-            tree_visibility = file_manager._last_loaded_tree_visibility
+        main_window.disable_menus()
+        main_window.disable_tree()
+        try:
+            # Extract tree visibility state if available
+            tree_visibility = None
+            if hasattr(file_manager, '_last_loaded_tree_visibility'):
+                tree_visibility = file_manager._last_loaded_tree_visibility
 
-        # Replace data_nodes across all services via ApplicationController
-        controller.load_project(loaded_data_nodes)
+            main_window.show_progress("Replacing project data...", 20)
 
-        # Clear the tree widget
-        tree_widget.clear()
+            # Replace data_nodes across all services via ApplicationController
+            controller.load_project(loaded_data_nodes)
 
-        # Clear the viewer
-        viewer_widget.set_points(None)
-        viewer_widget.update()
+            main_window.show_progress("Clearing tree...", 30)
 
-        # Block signals during tree rebuild to prevent automatic reconstruction
-        tree_widget.blockSignals(True)
+            # Clear the tree widget
+            tree_widget.clear()
 
-        # Rebuild tree from loaded data_nodes
-        self.rebuild_tree(tree_widget, loaded_data_nodes)
+            # Clear the viewer
+            viewer_widget.set_points(None)
+            viewer_widget.update()
 
-        # Restore visibility state or set all to invisible
-        if tree_visibility is not None:
-            self.restore_tree_visibility(tree_widget, tree_visibility)
-        else:
-            # Set all branches to invisible (unchecked) for older project files
-            self.set_all_branches_invisible(tree_widget)
+            # Block signals during tree rebuild to prevent automatic reconstruction
+            tree_widget.blockSignals(True)
 
-        # Unblock signals
-        tree_widget.blockSignals(False)
+            # Rebuild tree from loaded data_nodes (with per-node progress)
+            self.rebuild_tree(tree_widget, loaded_data_nodes, main_window)
 
-        # Update memory labels for all loaded branches
-        memory_labels = controller.update_all_branch_memory_labels()
-        for uid_str, memory_size in memory_labels.items():
-            if uid_str in tree_widget.branches_dict:
-                tree_widget.update_cache_tooltip(uid_str, memory_size)
+            # Restore visibility state or set all to invisible
+            if tree_visibility is not None:
+                self.restore_tree_visibility(tree_widget, tree_visibility)
+            else:
+                # Set all branches to invisible (unchecked) for older project files
+                self.set_all_branches_invisible(tree_widget)
 
-        # Update viewer to show visible branches and zoom to extent
-        main_window.render_visible_data(zoom_extent=True)
+            # Unblock signals
+            tree_widget.blockSignals(False)
 
-    def rebuild_tree(self, tree_widget, data_nodes):
+            main_window.show_progress("Updating memory labels...", 80)
+
+            # Update memory labels for all loaded branches
+            memory_labels = controller.update_all_branch_memory_labels()
+            for uid_str, memory_size in memory_labels.items():
+                if uid_str in tree_widget.branches_dict:
+                    tree_widget.update_cache_tooltip(uid_str, memory_size)
+
+            main_window.show_progress("Rendering...", 90)
+
+            # Update viewer to show visible branches and zoom to extent
+            main_window.render_visible_data(zoom_extent=True)
+        finally:
+            main_window.clear_progress()
+            main_window.enable_menus()
+            main_window.enable_tree()
+
+    def rebuild_tree(self, tree_widget, data_nodes, main_window=None):
         """
         Rebuild the tree widget from loaded data_nodes.
 
@@ -133,15 +150,24 @@ class LoadProjectPlugin(ActionPlugin):
         Args:
             tree_widget: The TreeStructureWidget instance
             data_nodes: The loaded DataNodes instance
+            main_window: Optional main window for progress reporting
         """
         # Get all nodes
         all_nodes = data_nodes.data_nodes
+        total_nodes = len(all_nodes)
+        node_counter = [0]  # Mutable counter for recursive tracking
 
         # Find root nodes (nodes with no parent)
         root_nodes = [node for node in all_nodes.values() if node.parent_uid is None]
 
         # Add root nodes first
         for node in root_nodes:
+            node_counter[0] += 1
+            if main_window and total_nodes > 0:
+                percent = 40 + int((node_counter[0] / total_nodes) * 30)
+                main_window.show_progress(
+                    f"Rebuilding tree ({node_counter[0]}/{total_nodes} nodes)...", percent
+                )
             # Detect if this is a root PointCloud node
             is_root = (node.data_type == "point_cloud" or node.data_type == "PointCloud")
 
@@ -157,9 +183,13 @@ class LoadProjectPlugin(ActionPlugin):
 
         # Add child nodes recursively
         for root_node in root_nodes:
-            self._add_children_recursive(tree_widget, data_nodes, root_node.uid)
+            self._add_children_recursive(
+                tree_widget, data_nodes, root_node.uid,
+                main_window, total_nodes, node_counter
+            )
 
-    def _add_children_recursive(self, tree_widget, data_nodes, parent_uid):
+    def _add_children_recursive(self, tree_widget, data_nodes, parent_uid,
+                                main_window=None, total_nodes=0, node_counter=None):
         """
         Recursively add child nodes to the tree.
 
@@ -167,6 +197,9 @@ class LoadProjectPlugin(ActionPlugin):
             tree_widget: The TreeStructureWidget instance
             data_nodes: The DataNodes instance
             parent_uid: The UID of the parent node
+            main_window: Optional main window for progress reporting
+            total_nodes: Total number of nodes for progress calculation
+            node_counter: Mutable list [count] for tracking progress across recursion
         """
         # Find all children of this parent
         children = [
@@ -176,6 +209,13 @@ class LoadProjectPlugin(ActionPlugin):
 
         # Add each child
         for child in children:
+            if node_counter is not None:
+                node_counter[0] += 1
+                if main_window and total_nodes > 0:
+                    percent = 40 + int((node_counter[0] / total_nodes) * 30)
+                    main_window.show_progress(
+                        f"Rebuilding tree ({node_counter[0]}/{total_nodes} nodes)...", percent
+                    )
             display_name = child.alias or child.params or child.data_type
             tooltip = f"{child.tags[0]},{child.tags[1]}" if len(child.tags) > 1 else None
             tree_widget.add_branch(
@@ -186,7 +226,10 @@ class LoadProjectPlugin(ActionPlugin):
             )
 
             # Recursively add this child's children
-            self._add_children_recursive(tree_widget, data_nodes, child.uid)
+            self._add_children_recursive(
+                tree_widget, data_nodes, child.uid,
+                main_window, total_nodes, node_counter
+            )
 
     def set_all_branches_invisible(self, tree_widget):
         """

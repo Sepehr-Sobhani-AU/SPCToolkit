@@ -116,6 +116,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._progress_label.hide()
         self.statusbar.addWidget(self._progress_label)
 
+        # Cancel button for running analysis (hidden by default)
+        self._cancel_button = QtWidgets.QPushButton("Cancel")
+        self._cancel_button.setMaximumWidth(60)
+        self._cancel_button.setMaximumHeight(18)
+        self._cancel_button.hide()
+        self._cancel_button.clicked.connect(self._on_cancel_clicked)
+        self.statusbar.addWidget(self._cancel_button)
+
         # Create permanent hardware info label in status bar (right-aligned)
         self._hardware_status_label = QtWidgets.QLabel()
         self._hardware_status_label.setTextFormat(QtCore.Qt.RichText)
@@ -645,6 +653,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_progress(f"Running {analysis_type}...")
         self.disable_menus()
         self.disable_tree()
+        self._cancel_button.setText("Cancel")
+        self._cancel_button.setEnabled(True)
+        self._cancel_button.show()
 
         self.controller.run_analysis(
             plugin_name=analysis_type,
@@ -679,8 +690,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Re-enable UI
         self.clear_progress()
+        self._cancel_button.hide()
         self.enable_menus()
         self.enable_tree()
+
+        # Check for cancellation
+        if self.controller.analysis_executor.was_cancelled():
+            logger.info("Analysis was cancelled by user")
+            self.controller.analysis_executor.cleanup()
+            return
 
         # Check for error
         error = self.controller.analysis_executor.get_error()
@@ -746,11 +764,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # Trigger visibility update to render the child
         self.tree_widget.branch_visibility_changed.emit(self.tree_widget.visibility_status)
 
+    def _on_cancel_clicked(self):
+        """Handle cancel button click."""
+        self.controller.analysis_executor.request_cancel()
+        self._cancel_button.setEnabled(False)
+        self._cancel_button.setText("Cancelling...")
+        self.show_progress("Cancelling...")
+
     def _on_analysis_error(self, error_msg: str):
         """Handle analysis error callback."""
         logger.error(f"Analysis error: {error_msg}")
         global_variables.global_progress = (None, "")
         self.clear_progress()
+        self._cancel_button.hide()
         self.enable_menus()
         self.enable_tree()
 

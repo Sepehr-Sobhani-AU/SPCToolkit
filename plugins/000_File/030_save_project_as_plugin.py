@@ -66,16 +66,24 @@ class SaveProjectAsPlugin(ActionPlugin):
 
         # Call file_manager to save project
         # new_file=True means always prompt for a new location
-        success, message = file_manager.save_project(
-            data_nodes=data_nodes,
-            parent=main_window,
-            new_file=True
-        )
-
-        # Only show error messages, not success messages
-        if not success and "cancelled" not in message.lower():
-            QMessageBox.warning(
-                main_window,
-                "Save Failed",
-                message
+        main_window.disable_menus()
+        main_window.disable_tree()
+        main_window.show_progress("Saving project...")
+        try:
+            success, message = file_manager.save_project(
+                data_nodes=data_nodes,
+                parent=main_window,
+                new_file=True
             )
+
+            # Only show error messages, not success messages
+            if not success and "cancelled" not in message.lower():
+                QMessageBox.warning(
+                    main_window,
+                    "Save Failed",
+                    message
+                )
+        finally:
+            main_window.clear_progress()
+            main_window.enable_menus()
+            main_window.enable_tree()
