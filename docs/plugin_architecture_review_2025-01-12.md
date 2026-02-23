@@ -841,9 +841,9 @@ class MyPlugin(ActionPlugin):
 
 **Example Use Case:**
 ```python
-# Want to hide "Train PointNet" plugin if TensorFlow not installed
+# Want to hide "Train PointNet" plugin if PyTorch not installed
 def on_load(self):
-    if not self._check_tensorflow():
+    if not self._check_pytorch():
         return False  # Don't show in menu
 ```
 
@@ -1380,9 +1380,9 @@ class Plugin(ABC):
 ```python
 class TrainPointNetPlugin(ActionPlugin):
     def on_load(self) -> bool:
-        # Only show if TensorFlow is installed
+        # Only show if PyTorch is installed
         try:
-            import tensorflow
+            import torch
             return True
         except ImportError:
             return False

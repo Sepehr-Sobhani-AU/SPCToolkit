@@ -232,7 +232,7 @@ class PointNetClassifier:
     """
     Wrapper class for PointNet model with training and inference capabilities.
 
-    Provides a similar interface to the TensorFlow version for easy migration.
+    Wrapper around the PyTorch PointNet model for training and inference.
     """
 
     def __init__(self, num_points=1024, num_features=9, num_classes=3, use_tnet=True, device=None):

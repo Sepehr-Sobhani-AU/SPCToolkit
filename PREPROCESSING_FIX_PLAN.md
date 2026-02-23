@@ -42,7 +42,7 @@ Current pipeline samples AFTER computing features, resulting in:
 Current blockers:
 - `load_training_data()` tries to stack variable-size arrays → fails
 - `PointNetClassifier.train()` expects fixed-size numpy arrays
-- Need TensorFlow dataset with random sampling per epoch
+- Need PyTorch dataset with random sampling per epoch
 
 ### ⏳ PENDING
 **Step 3**: Update `inference.py` to match training pipeline
@@ -78,7 +78,7 @@ def load_training_data(self, data_dir):
     return all_data, labels, class_mapping, metadata, num_features
 ```
 
-### B. Create TensorFlow Dataset with Sampling
+### B. Create PyTorch Dataset with Sampling
 
 Add to plugin:
 
@@ -86,7 +86,7 @@ Add to plugin:
 def create_variable_size_dataset(data_list, labels, num_points=1024,
                                   shuffle=True, augment=False):
     """
-    Create TensorFlow dataset from variable-size point clouds.
+    Create PyTorch dataset from variable-size point clouds.
 
     Args:
         data_list: List of numpy arrays with shape (N_i, 9)
@@ -96,7 +96,7 @@ def create_variable_size_dataset(data_list, labels, num_points=1024,
         augment: Apply augmentation
 
     Returns:
-        tf.data.Dataset
+        torch.utils.data.DataLoader
     """
     def generator():
         indices = list(range(len(data_list)))
@@ -120,17 +120,9 @@ def create_variable_size_dataset(data_list, labels, num_points=1024,
                 pad_idx = np.random.choice(n, deficit, replace=True)
                 sampled = np.vstack([sampled, sample[pad_idx]])
 
-            yield sampled, label
+            yield torch.tensor(sampled, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
 
-    dataset = tf.data.Dataset.from_generator(
-        generator,
-        output_signature=(
-            tf.TensorSpec(shape=(num_points, None), dtype=tf.float32),
-            tf.TensorSpec(shape=(), dtype=tf.int32)
-        )
-    )
-
-    return dataset
+    return generator
 ```
 
 ### C. Update Training Call
@@ -142,29 +134,20 @@ Replace lines ~336-340 in plugin's execute():
 # history = classifier.train(X_train, y_train, X_val, y_val, ...)
 
 # NEW:
-# Create datasets
-train_dataset = self.create_variable_size_dataset(
-    X_train, y_train,
-    num_points=1024,
-    shuffle=True,
-    augment=augment_enable
-)
-train_dataset = train_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+# Create datasets and dataloaders
+from torch.utils.data import DataLoader
 
-val_dataset = self.create_variable_size_dataset(
-    X_val, y_val,
-    num_points=1024,
-    shuffle=False,
-    augment=False
-)
-val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+train_dataset = VariableSizeDataset(X_train, y_train, num_points=1024, augment=augment_enable)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
 
-# Train with datasets
-history = classifier.model.fit(
-    train_dataset,
-    validation_data=val_dataset,
+val_dataset = VariableSizeDataset(X_val, y_val, num_points=1024, augment=False)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+
+# Train with dataloaders
+history = classifier.train(
+    train_loader,
+    val_loader=val_loader,
     epochs=epochs,
-    callbacks=callbacks,
     class_weight=class_weights,
     verbose=1
 )

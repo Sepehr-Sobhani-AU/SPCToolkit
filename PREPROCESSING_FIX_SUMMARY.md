@@ -70,14 +70,14 @@ Mean Squared Error: 2.015957e-01
 ### 2. `plugins/060_ML_Models/000_PointNet/010_train_model_plugin.py` ✅
 **Changes**:
 - Updated `load_training_data()` to return lists (not fixed arrays)
-- Added `create_variable_size_dataset()` for TensorFlow pipeline
+- Added `create_variable_size_dataset()` for PyTorch DataLoader pipeline
 - Modified `execute()` to split data using indices (variable size)
-- Replaced `classifier.train()` with direct `model.fit()` using datasets
-- Integrated augmentation into TensorFlow pipeline
+- Replaced `classifier.train()` with direct training loop using DataLoaders
+- Integrated augmentation into PyTorch pipeline
 
 **Key Functions**:
 - `load_training_data()` - Returns variable-size lists
-- `create_variable_size_dataset()` - Creates TF dataset with random sampling
+- `create_variable_size_dataset()` - Creates PyTorch dataset with random sampling
 
 ### 3. `models/pointnet/inference.py` ✅
 **Changes**:

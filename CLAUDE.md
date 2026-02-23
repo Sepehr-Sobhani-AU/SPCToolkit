@@ -61,7 +61,7 @@ class MyManager:
 **CRITICAL**: Always maximize GPU usage. Never accept CPU fallbacks silently.
 
 - Prefer CuPy over NumPy for array operations when possible
-- Use TensorFlow with GPU for ML operations
+- Use PyTorch with GPU (CUDA) for ML operations
 - Use Open3D GPU methods when available
 - If GPU fails, report the error — do not silently fall back to CPU
 
@@ -189,7 +189,7 @@ Core dependencies (based on imports):
 - PyOpenGL: 3D visualization
 - numpy: Numerical operations
 - open3d: 3D geometry processing (OBB, I/O, DBSCAN)
-- tensorflow: Eigenvalue utilities (GPU)
+- pytorch: ML operations, eigenvalue utilities (GPU)
 - scipy: KDTree, statistics
 - pandas: Data manipulation
 - sklearn (optional): Alternative DBSCAN

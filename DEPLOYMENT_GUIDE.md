@@ -20,7 +20,7 @@ All code changes have been implemented to fix the preprocessing mismatch bug tha
 
 ### 2. **Training Plugin** (`plugins/060_ML_Models/000_PointNet/010_train_model_plugin.py`)
 - Handles variable-size data (lists instead of fixed arrays)
-- Creates TensorFlow datasets with random sampling per epoch
+- Creates PyTorch datasets with random sampling per epoch
 - Samples different 1024 points each epoch = better augmentation!
 - Applies augmentation (rotation, mirror, scaling, jitter) during training
 
@@ -105,7 +105,7 @@ for path in samples:
 
 4. Monitor training - you should see:
    ```
-   Creating TensorFlow datasets with random sampling...
+   Creating PyTorch datasets with random sampling...
    Data augmentation: ENABLED
      Z-axis rotation: True
      Z-axis mirroring: True
