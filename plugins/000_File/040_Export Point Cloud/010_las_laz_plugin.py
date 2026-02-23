@@ -81,7 +81,7 @@ class ExportLASPlugin(ActionPlugin):
         detected_translation = find_root_translation(
             data_nodes, controller.selected_branches[0]
         )
-        detected_shift = -detected_translation
+        detected_shift = detected_translation
 
         dialog = ShiftDialog(main_window, detected_shift)
         if dialog.exec_() != QDialog.Accepted:

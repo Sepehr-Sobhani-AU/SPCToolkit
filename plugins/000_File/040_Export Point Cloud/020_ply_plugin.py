@@ -69,14 +69,14 @@ class ExportPointCloudPlugin(ActionPlugin):
 
         # Recover the original coordinate translation from the root PointCloud.
         # On import, points are shifted to the origin for float32 precision;
-        # the offset is stored as root_pc.translation = -min_bound.
+        # the offset is stored as root_pc.translation = min_bound.
         detected_translation = find_root_translation(
             data_nodes, controller.selected_branches[0]
         )
 
         # Show shift dialog so user can verify / adjust
-        # The shift to restore = -translation (i.e. add min_bound back)
-        detected_shift = -detected_translation
+        # The shift to restore = translation (i.e. add min_bound back)
+        detected_shift = detected_translation
         dialog = ShiftDialog(main_window, detected_shift)
         if dialog.exec_() != QDialog.Accepted:
             return

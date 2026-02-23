@@ -99,8 +99,10 @@ class ImportE57Plugin(ActionPlugin):
                             if valid is not None and not valid.all():
                                 r, g, b = r[valid], g[valid], b[valid]
                             max_val = max(r.max(), g.max(), b.max(), 1.0)
-                            if max_val > 1.0:
-                                colors = np.column_stack([r, g, b]) / max(max_val, 1.0)
+                            if max_val > 255:
+                                colors = np.column_stack([r, g, b]) / 65535.0
+                            elif max_val > 1.0:
+                                colors = np.column_stack([r, g, b]) / 255.0
                             else:
                                 colors = np.column_stack([r, g, b])
 
