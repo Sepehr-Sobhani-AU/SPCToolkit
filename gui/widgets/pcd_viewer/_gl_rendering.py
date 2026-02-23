@@ -74,7 +74,10 @@ class GLRenderingMixin:
         # Cap FOV at base value so zooming out (zoom_factor > 1) only moves
         # the camera back without widening FOV, preventing fisheye distortion.
         effective_fov = self.fov * min(self.zoom_factor, 1.0)
-        gluPerspective(effective_fov, aspect, max(self.near_plane, 0.1), self.far_plane)
+        # Dynamic far plane: ensure it covers the camera distance + scene extent
+        effective_distance = self.camera_distance * self.zoom_factor
+        far_plane = max(self.far_plane, effective_distance + (self.max_extent or 0) * 2)
+        gluPerspective(effective_fov, aspect, max(self.near_plane, 0.1), far_plane)
 
         # Update model-view matrix
         glMatrixMode(GL_MODELVIEW)
@@ -218,7 +221,9 @@ class GLRenderingMixin:
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         effective_fov = self.fov * min(self.zoom_factor, 1.0)
-        gluPerspective(effective_fov, aspect, max(self.near_plane, 0.1), self.far_plane)
+        effective_distance = self.camera_distance * self.zoom_factor
+        far_plane = max(self.far_plane, effective_distance + (self.max_extent or 0) * 2)
+        gluPerspective(effective_fov, aspect, max(self.near_plane, 0.1), far_plane)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 

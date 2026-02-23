@@ -99,16 +99,21 @@ class ZoomWindowMixin:
         new_size = max_bounds - min_bounds
         new_max_extent = max(np.max(new_size), 1e-6)
 
-        # Save old effective distance so the user can zoom back out to it
+        # Compute the new camera distance for this region
+        half_fov_rad = np.radians(self.fov / 2)
+        new_camera_distance = new_max_extent / (2 * np.tan(half_fov_rad)) * 1.2
+
+        # Guard: if the new distance is >= old, the rectangle doesn't zoom in
         old_effective_distance = self.camera_distance * self.zoom_factor
+        if new_camera_distance >= old_effective_distance:
+            self.exit_zoom_window_mode()
+            return
 
         # Set camera parameters (preserve rotation)
         self.center = new_center
         self.size = new_size
         self.max_extent = float(new_max_extent)
-
-        half_fov_rad = np.radians(self.fov / 2)
-        self.camera_distance = new_max_extent / (2 * np.tan(half_fov_rad)) * 1.2
+        self.camera_distance = new_camera_distance
         self.zoom_factor = 1.0
 
         self.pan_x = -self.center[0]
@@ -116,10 +121,10 @@ class ZoomWindowMixin:
         self.pan_z = -self.center[2]
         # rot_x, rot_y, rot_z are preserved (no change)
 
-        # Raise zoom_max_factor so mouse wheel can zoom back out to the old view.
+        # Allow zooming back out well past the original view.
         # FOV is capped at base value in the renderer, so no distortion risk —
         # only camera distance increases when zoom_factor > 1.
-        max_zoom_out = old_effective_distance / self.camera_distance if self.camera_distance > 0 else 1.0
-        self._zoom_max_factor = max(1.0, max_zoom_out * 1.5)
+        max_zoom_out = old_effective_distance / self.camera_distance
+        self._zoom_max_factor = max(1.0, max_zoom_out * 3.0)
 
         self.exit_zoom_window_mode()
