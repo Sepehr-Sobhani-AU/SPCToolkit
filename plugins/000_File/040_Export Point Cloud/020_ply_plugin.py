@@ -9,13 +9,13 @@ Multiple selected branches are merged before export.
 from typing import Dict, Any, List, Tuple
 
 import numpy as np
-from PyQt5.QtWidgets import (QFileDialog, QMessageBox, QDialog, QVBoxLayout,
-                               QLabel, QLineEdit, QDialogButtonBox,
-                               QGroupBox, QGridLayout)
+from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
+from services.coordinate_service import find_root_translation
+from plugins.dialogs.shift_dialog import ShiftDialog
 
 
 class ExportPointCloudPlugin(ActionPlugin):
@@ -70,14 +70,14 @@ class ExportPointCloudPlugin(ActionPlugin):
         # Recover the original coordinate translation from the root PointCloud.
         # On import, points are shifted to the origin for float32 precision;
         # the offset is stored as root_pc.translation = -min_bound.
-        detected_translation = _find_root_translation(
+        detected_translation = find_root_translation(
             data_nodes, controller.selected_branches[0]
         )
 
         # Show shift dialog so user can verify / adjust
         # The shift to restore = -translation (i.e. add min_bound back)
         detected_shift = -detected_translation
-        dialog = _ShiftDialog(main_window, detected_shift)
+        dialog = ShiftDialog(main_window, detected_shift)
         if dialog.exec_() != QDialog.Accepted:
             return
         shift = dialog.get_shift()
@@ -104,72 +104,6 @@ class ExportPointCloudPlugin(ActionPlugin):
                 "Export Error",
                 f"Failed to export point cloud:\n{str(e)}"
             )
-
-
-class _ShiftDialog(QDialog):
-    """Dialog showing the detected coordinate shift, editable by the user."""
-
-    def __init__(self, parent, shift: np.ndarray):
-        super().__init__(parent)
-        self.setWindowTitle("Coordinate Shift")
-        self.setMinimumWidth(340)
-
-        layout = QVBoxLayout(self)
-
-        info = QLabel(
-            "On import, the point cloud was shifted to the origin.\n"
-            "The detected shift to restore original coordinates is shown below.\n"
-            "Adjust if needed, or set all to 0 for no shift."
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        group = QGroupBox("Shift (added to exported points)")
-        grid = QGridLayout(group)
-
-        self._edits = {}
-        for row, (axis, val) in enumerate(zip(("X", "Y", "Z"), shift)):
-            grid.addWidget(QLabel(f"{axis}:"), row, 0)
-            edit = QLineEdit(f"{val:.6f}")
-            self._edits[axis] = edit
-            grid.addWidget(edit, row, 1)
-
-        layout.addWidget(group)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def get_shift(self) -> np.ndarray:
-        values = []
-        for axis in ("X", "Y", "Z"):
-            try:
-                values.append(float(self._edits[axis].text()))
-            except ValueError:
-                values.append(0.0)
-        return np.array(values, dtype=np.float64)
-
-
-def _find_root_translation(data_nodes, uid_str: str) -> np.ndarray:
-    """
-    Walk up from a node to the root PointCloud and return its translation.
-
-    On import, points are shifted to the origin (points -= min_bound) and
-    the offset is stored as translation = -min_bound on the root PointCloud.
-    To restore original coordinates: original = points - translation.
-    """
-    import uuid as _uuid
-    node = data_nodes.get_node(_uuid.UUID(uid_str))
-    visited = set()
-    while node is not None and node.uid not in visited:
-        visited.add(node.uid)
-        if node.data_type == "point_cloud" and node.parent_uid is None:
-            return getattr(node.data, 'translation', np.zeros(3))
-        if node.parent_uid is None:
-            break
-        node = data_nodes.get_node(node.parent_uid)
-    return np.zeros(3)
 
 
 def _collect_scalar_attributes(pc: PointCloud) -> List[Tuple[str, np.ndarray, str]]:

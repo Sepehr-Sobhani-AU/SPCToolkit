@@ -9,15 +9,14 @@ Preserves per-point attributes (intensity, classification, etc.).
 from typing import Dict, Any
 import os
 import logging
-import uuid as _uuid
 import numpy as np
-from PyQt5.QtWidgets import (QFileDialog, QMessageBox, QDialog, QVBoxLayout,
-                               QLabel, QLineEdit, QDialogButtonBox,
-                               QGroupBox, QGridLayout)
+from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
+from services.coordinate_service import apply_shift, find_root_translation
+from plugins.dialogs.shift_dialog import ShiftDialog
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +78,12 @@ class ExportLASPlugin(ActionPlugin):
             merged = PointCloud.merge(point_clouds, name="Export")
 
         # Detect coordinate translation from root PointCloud
-        detected_translation = _find_root_translation(
+        detected_translation = find_root_translation(
             data_nodes, controller.selected_branches[0]
         )
         detected_shift = -detected_translation
 
-        dialog = _ShiftDialog(main_window, detected_shift)
+        dialog = ShiftDialog(main_window, detected_shift)
         if dialog.exec_() != QDialog.Accepted:
             return
         shift = dialog.get_shift()
@@ -118,93 +117,6 @@ class ExportLASPlugin(ActionPlugin):
             )
 
 
-def _find_root_translation(data_nodes, uid_str: str) -> np.ndarray:
-    """Walk up to the root PointCloud and return its translation."""
-    node = data_nodes.get_node(_uuid.UUID(uid_str))
-    visited = set()
-    while node is not None and node.uid not in visited:
-        visited.add(node.uid)
-        if node.data_type == "point_cloud" and node.parent_uid is None:
-            return getattr(node.data, 'translation', np.zeros(3))
-        if node.parent_uid is None:
-            break
-        node = data_nodes.get_node(node.parent_uid)
-    return np.zeros(3)
-
-
-class _ShiftDialog(QDialog):
-    """Dialog showing the detected coordinate shift, editable by the user."""
-
-    def __init__(self, parent, shift: np.ndarray):
-        super().__init__(parent)
-        self.setWindowTitle("Coordinate Shift")
-        self.setMinimumWidth(340)
-
-        layout = QVBoxLayout(self)
-
-        info = QLabel(
-            "On import, the point cloud was shifted to the origin.\n"
-            "The detected shift to restore original coordinates is shown below.\n"
-            "Adjust if needed, or set all to 0 for no shift."
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        group = QGroupBox("Shift (added to exported points)")
-        grid = QGridLayout(group)
-
-        self._edits = {}
-        for row, (axis, val) in enumerate(zip(("X", "Y", "Z"), shift)):
-            grid.addWidget(QLabel(f"{axis}:"), row, 0)
-            edit = QLineEdit(f"{val:.6f}")
-            self._edits[axis] = edit
-            grid.addWidget(edit, row, 1)
-
-        layout.addWidget(group)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def get_shift(self) -> np.ndarray:
-        values = []
-        for axis in ("X", "Y", "Z"):
-            try:
-                values.append(float(self._edits[axis].text()))
-            except ValueError:
-                values.append(0.0)
-        return np.array(values, dtype=np.float64)
-
-
-def _apply_shift_gpu(points_f32, shift):
-    """
-    Apply coordinate shift and convert to float64.
-    Uses GPU (CuPy) when available, falls back to CPU.
-    """
-    from infrastructure.hardware_detector import HardwareDetector
-
-    apply_shift = shift is not None and np.any(shift != 0)
-
-    if HardwareDetector.can_use_cupy():
-        try:
-            import cupy as cp
-            pts_gpu = cp.asarray(points_f32).astype(cp.float64)
-            if apply_shift:
-                pts_gpu += cp.asarray(shift, dtype=cp.float64)
-            result = cp.asnumpy(pts_gpu)
-            del pts_gpu
-            logger.info(f"GPU-accelerated coordinate shift ({len(result)} pts)")
-            return result
-        except Exception as e:
-            logger.warning(f"GPU shift failed, falling back to CPU: {e}")
-
-    points = points_f32.astype(np.float64)
-    if apply_shift:
-        points += shift.astype(np.float64)
-    return points
-
-
 def _write_las(pc: PointCloud, file_path: str, shift: np.ndarray = None) -> None:
     """
     Write a PointCloud to a LAS/LAZ file.
@@ -217,7 +129,7 @@ def _write_las(pc: PointCloud, file_path: str, shift: np.ndarray = None) -> None
     n = pc.size
 
     # Apply coordinate shift in float64 (GPU-accelerated)
-    points = _apply_shift_gpu(pc.points, shift)
+    points = apply_shift(pc.points, shift)
 
     # Determine if we need extra attributes
     has_classification = (pc.attributes.get('classification') is not None

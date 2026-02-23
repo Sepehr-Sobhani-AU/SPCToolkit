@@ -17,42 +17,9 @@ from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
 from core.entities.data_node import DataNode
+from services.coordinate_service import translate_and_convert
 
 logger = logging.getLogger(__name__)
-
-
-def _translate_and_convert(points_xyz, min_bound, colors):
-    """
-    Translate points to origin and convert to float32.
-    Uses GPU (CuPy) when available for large arrays, falls back to CPU.
-    """
-    from infrastructure.hardware_detector import HardwareDetector
-
-    if HardwareDetector.can_use_cupy():
-        try:
-            import cupy as cp
-            pts_gpu = cp.asarray(points_xyz)
-            mb_gpu = cp.asarray(min_bound)
-            result_gpu = (pts_gpu - mb_gpu).astype(cp.float32)
-            points_out = cp.asnumpy(result_gpu)
-            del pts_gpu, mb_gpu, result_gpu
-
-            if colors is not None:
-                c_gpu = cp.asarray(colors).astype(cp.float32)
-                colors_out = cp.asnumpy(c_gpu)
-                del c_gpu
-            else:
-                colors_out = None
-
-            logger.info(f"GPU-accelerated coordinate translation ({len(points_out)} pts)")
-            return points_out, colors_out
-
-        except Exception as e:
-            logger.warning(f"GPU translation failed, falling back to CPU: {e}")
-
-    points_out = (points_xyz - min_bound).astype(np.float32)
-    colors_out = colors.astype(np.float32) if colors is not None else None
-    return points_out, colors_out
 
 
 class ImportLASPlugin(ActionPlugin):
@@ -127,7 +94,7 @@ class ImportLASPlugin(ActionPlugin):
 
                 # Translate to origin for float32 precision (GPU-accelerated)
                 min_bound = points_xyz.min(axis=0)
-                points_translated, colors = _translate_and_convert(
+                points_translated, colors = translate_and_convert(
                     points_xyz, min_bound, colors
                 )
 
