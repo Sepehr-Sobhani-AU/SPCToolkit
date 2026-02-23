@@ -141,7 +141,7 @@ class DataPreviewWindow(QDialog):
         content_splitter.addWidget(left_panel_widget)
 
         # Right panel: Viewer (lazy import to avoid OpenGL dependency at module load)
-        from gui.widgets.pcd_viewer_widget import PCDViewerWidget
+        from gui.widgets.pcd_viewer import PCDViewerWidget
         self.viewer = PCDViewerWidget()
         content_splitter.addWidget(self.viewer)
 
