@@ -71,7 +71,10 @@ class GLRenderingMixin:
         w = self.width()
         h = self.height()
         aspect = w / h if h != 0 else 1
-        gluPerspective(self.fov * self.zoom_factor, aspect, max(self.near_plane, 0.1), self.far_plane)
+        # Cap FOV at base value so zooming out (zoom_factor > 1) only moves
+        # the camera back without widening FOV, preventing fisheye distortion.
+        effective_fov = self.fov * min(self.zoom_factor, 1.0)
+        gluPerspective(effective_fov, aspect, max(self.near_plane, 0.1), self.far_plane)
 
         # Update model-view matrix
         glMatrixMode(GL_MODELVIEW)
@@ -214,7 +217,8 @@ class GLRenderingMixin:
 
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        gluPerspective(self.fov * self.zoom_factor, aspect, max(self.near_plane, 0.1), self.far_plane)
+        effective_fov = self.fov * min(self.zoom_factor, 1.0)
+        gluPerspective(effective_fov, aspect, max(self.near_plane, 0.1), self.far_plane)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
