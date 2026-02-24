@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import QMessageBox, QApplication
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
+from plugins.dialogs.data_generation_progress_dialog import DataGenerationProgressDialog
 
 
 class ImportExternalDatasetPlugin(ActionPlugin):
@@ -155,6 +156,16 @@ class ImportExternalDatasetPlugin(ActionPlugin):
                 class_remap = json.load(f)
             print(f"Loaded class remap with {len(class_remap)} entries")
 
+        # Create progress dialog
+        progress_dialog = DataGenerationProgressDialog(parent=main_window, total_steps=100)
+        progress_dialog.setWindowTitle("Import External Dataset")
+        progress_dialog.show()
+        progress_dialog.set_operation(f"Reading {dataset_format} files...")
+        QApplication.processEvents()
+
+        cancel_event = global_variables.global_cancel_event
+        cancel_event.clear()
+
         try:
             main_window.disable_menus()
             main_window.disable_tree()
@@ -175,9 +186,15 @@ class ImportExternalDatasetPlugin(ActionPlugin):
             else:
                 scenes = self._load_custom(input_dir)
 
+            if progress_dialog.cancelled or cancel_event.is_set():
+                print("Import cancelled during scene loading.")
+                progress_dialog.mark_complete(success=False, message="Import cancelled.")
+                return
+
             if not scenes:
                 QMessageBox.warning(main_window, "No Data",
                     f"No valid scene files found in:\n{input_dir}")
+                progress_dialog.mark_complete(success=False, message="No data found.")
                 return
 
             print(f"Loaded {len(scenes)} scenes")
@@ -205,11 +222,24 @@ class ImportExternalDatasetPlugin(ActionPlugin):
             # Process scenes into blocks
             total_saved = 0
             scene_idx = 0
+            total_blocks_estimated = len(scenes)  # rough estimate, updated per scene
+            was_cancelled = False
 
             for scene_points, scene_labels in scenes:
+                # Check cancel before each scene
+                if progress_dialog.cancelled or cancel_event.is_set():
+                    was_cancelled = True
+                    break
+
                 scene_idx += 1
                 main_window.tree_overlay.show_processing(
                     f"Processing scene {scene_idx}/{len(scenes)}...")
+                progress_dialog.set_operation(
+                    f"Processing scene {scene_idx}/{len(scenes)}...")
+                progress_dialog.update_progress(
+                    scene_idx, len(scenes),
+                    current_class=f"Scene {scene_idx}",
+                    processed_count=total_saved)
                 QApplication.processEvents()
 
                 # Remap labels to contiguous IDs
@@ -232,6 +262,11 @@ class ImportExternalDatasetPlugin(ActionPlugin):
                                            block_size, points_per_block)
 
                 for block_idx, (block_pts, block_lbl) in enumerate(blocks):
+                    # Check cancel before each block
+                    if progress_dialog.cancelled or cancel_event.is_set():
+                        was_cancelled = True
+                        break
+
                     features = self._compute_features(block_pts, params)
                     if features is None:
                         continue
@@ -255,7 +290,21 @@ class ImportExternalDatasetPlugin(ActionPlugin):
                     )
                     total_saved += 1
 
+                    # Keep UI responsive during block processing
+                    if block_idx % 5 == 0:
+                        QApplication.processEvents()
+
+                if was_cancelled:
+                    break
+
                 print(f"  Scene {scene_idx}: {len(blocks)} blocks saved")
+
+            if was_cancelled:
+                print(f"\nImport cancelled. Saved {total_saved} blocks before cancellation.")
+                progress_dialog.mark_complete(
+                    success=False,
+                    message=f"Import cancelled. {total_saved} blocks saved before cancellation.")
+                return
 
             # Save metadata
             feature_order = ["X_norm", "Y_norm", "Z_norm"] if params['normalize'] else ["X", "Y", "Z"]
@@ -307,6 +356,10 @@ class ImportExternalDatasetPlugin(ActionPlugin):
             print(f"Import Complete! Saved {total_saved} training samples.")
             print(f"{'='*80}")
 
+            progress_dialog.mark_complete(
+                success=True,
+                message=f"Import complete! {total_saved} samples from {len(scenes)} scenes.")
+
             QMessageBox.information(main_window, "Import Complete",
                 f"Successfully imported {total_saved} training samples\n"
                 f"from {len(scenes)} scenes.\n\n"
@@ -317,6 +370,11 @@ class ImportExternalDatasetPlugin(ActionPlugin):
         except Exception as e:
             import traceback
             traceback.print_exc()
+            try:
+                progress_dialog.mark_complete(
+                    success=False, message=f"Error: {str(e)}")
+            except:
+                pass
             QMessageBox.critical(main_window, "Import Error",
                                f"An error occurred:\n\n{str(e)}")
 

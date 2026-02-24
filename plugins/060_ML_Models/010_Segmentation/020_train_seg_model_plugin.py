@@ -3,17 +3,20 @@ Train PointNet Segmentation Model Plugin (PyTorch)
 
 Trains a PointNet segmentation model for per-point semantic labeling using
 training data (.npz files) from a specified directory.
+
+Training runs in a background thread with QTimer polling to keep the UI responsive.
 """
 
 import os
 import json
 import csv
 import time
+import threading
 import numpy as np
 from typing import Dict, Any
 from datetime import datetime
 from PyQt5.QtWidgets import QMessageBox
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtCore
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 
@@ -31,15 +34,17 @@ from plugins.dialogs.training_progress_window import TrainingProgressWindow
 class SegPointCloudDataset(Dataset):
     """PyTorch Dataset for segmentation training data (.npz files with features + labels)."""
 
-    def __init__(self, file_paths, num_points, augment=False):
+    def __init__(self, file_paths, num_points, num_classes, augment=False):
         """
         Args:
             file_paths: List of .npz file paths, each containing 'features' (N,F) and 'labels' (N,)
             num_points: Target number of points per sample (random subsample)
+            num_classes: Number of valid classes (labels clamped to [0, num_classes-1])
             augment: Whether to apply data augmentation
         """
         self.file_paths = file_paths
         self.num_points = num_points
+        self.num_classes = num_classes
         self.augment = augment
 
     def __len__(self):
@@ -49,6 +54,9 @@ class SegPointCloudDataset(Dataset):
         data = np.load(self.file_paths[idx])
         features = data['features'].astype(np.float32)
         labels = data['labels'].astype(np.int64)
+
+        # Clamp labels to valid range for CrossEntropyLoss
+        np.clip(labels, 0, self.num_classes - 1, out=labels)
 
         # Random subsample to fixed number of points
         num_available = features.shape[0]
@@ -95,7 +103,7 @@ class TrainSegModelPlugin(ActionPlugin):
         "output_dir": "models",
         "num_points": 4096,
         "epochs": 100,
-        "batch_size": 16,
+        "batch_size": 4,
         "learning_rate": 0.001,
         "val_split": 0.2,
         "use_tnet": True,
@@ -234,6 +242,7 @@ class TrainSegModelPlugin(ActionPlugin):
         print(f"Random seed: {random_seed}")
         print(f"Output: {unique_output_dir}")
 
+        # --- Setup phase (main thread, fast) ---
         try:
             main_window.disable_menus()
             main_window.disable_tree()
@@ -245,14 +254,28 @@ class TrainSegModelPlugin(ActionPlugin):
             if len(npz_files) == 0:
                 QMessageBox.critical(main_window, "No Data",
                                    f"No .npz files found in:\n{data_dir}")
+                main_window.tree_overlay.hide_processing()
+                main_window.enable_menus()
+                main_window.enable_tree()
                 return
 
             num_classes = len(class_mapping)
+
+            # Validate label ranges in a sample of files
+            label_min, label_max = 0, 0
+            for f in npz_files[:min(20, len(npz_files))]:
+                sample_labels = np.load(f)['labels']
+                label_min = min(label_min, sample_labels.min())
+                label_max = max(label_max, sample_labels.max())
+            if label_min < 0 or label_max >= num_classes:
+                print(f"WARNING: Labels out of range! Found [{label_min}, {label_max}] "
+                      f"but num_classes={num_classes}. Labels will be clamped to [0, {num_classes-1}].")
 
             print(f"\nDataset: {len(npz_files)} samples")
             print(f"Classes: {num_classes} - {class_mapping}")
             print(f"Features per point: {num_features}")
             print(f"Points per block: {num_points}")
+            print(f"Label range in data: [{label_min}, {label_max}]")
 
             # Split train/val
             main_window.tree_overlay.show_processing("Splitting data...")
@@ -277,20 +300,38 @@ class TrainSegModelPlugin(ActionPlugin):
                 print(f"  {name}: {weight:.3f}")
 
             # Create datasets and dataloaders
-            train_dataset = SegPointCloudDataset(train_files, num_points, augment=True)
-            val_dataset = SegPointCloudDataset(val_files, num_points, augment=False)
+            train_dataset = SegPointCloudDataset(train_files, num_points, num_classes, augment=True)
+            val_dataset = SegPointCloudDataset(val_files, num_points, num_classes, augment=False)
 
-            train_loader = DataLoader(
-                train_dataset, batch_size=batch_size, shuffle=True,
-                num_workers=4, pin_memory=True, drop_last=False
-            )
-            val_loader = DataLoader(
-                val_dataset, batch_size=batch_size, shuffle=False,
-                num_workers=4, pin_memory=True
-            )
+            num_workers = 4
+            try:
+                train_loader = DataLoader(
+                    train_dataset, batch_size=batch_size, shuffle=True,
+                    num_workers=num_workers, pin_memory=True, drop_last=True
+                )
+                val_loader = DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False,
+                    num_workers=num_workers, pin_memory=True
+                )
+                # Test that multiprocessing works by fetching one batch
+                _ = next(iter(train_loader))
+            except (RuntimeError, OSError):
+                print("Warning: num_workers=4 failed, falling back to num_workers=0")
+                num_workers = 0
+                train_loader = DataLoader(
+                    train_dataset, batch_size=batch_size, shuffle=True,
+                    num_workers=0, pin_memory=True, drop_last=True
+                )
+                val_loader = DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False,
+                    num_workers=0, pin_memory=True
+                )
 
             # Create model
             main_window.tree_overlay.show_processing("Creating model...")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             model = PointNetSegmentation(
                 num_points=num_points,
@@ -320,186 +361,313 @@ class TrainSegModelPlugin(ActionPlugin):
             y = (screen_geometry.height() - progress_window.height()) // 2
             progress_window.move(x, y)
 
-            # Training loop
             main_window.tree_overlay.show_processing("Training model...")
 
-            history = {'loss': [], 'acc': [], 'miou': [], 'val_loss': [], 'val_acc': [], 'val_miou': []}
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(main_window, "Setup Error",
+                               f"Failed to set up training:\n\n{str(e)}")
+            main_window.tree_overlay.hide_processing()
+            main_window.enable_menus()
+            main_window.enable_tree()
+            return
+
+        # --- Background training thread ---
+        # Shared state between thread and main thread (GIL-safe for simple append/read)
+        training_state = {
+            'epoch_results': [],   # thread appends, main thread pops
+            'is_running': True,
+            'error': None,
+            'history': {'loss': [], 'acc': [], 'miou': [], 'val_loss': [], 'val_acc': [], 'val_miou': []},
+            'best_val_miou': 0.0,
+            'was_cancelled': False,
+            'last_epoch': 0,
+            'last_val_miou': 0.0,
+            'last_val_acc': 0.0,
+        }
+
+        def _train_loop():
+            """Training loop running in background thread."""
+            history = training_state['history']
             best_val_miou = 0.0
             epochs_without_improvement = 0
-            was_cancelled = False
 
-            for epoch in range(epochs):
-                if progress_window.training_cancelled:
-                    was_cancelled = True
-                    break
+            try:
+                for epoch in range(epochs):
+                    if progress_window.training_cancelled:
+                        training_state['was_cancelled'] = True
+                        break
 
-                # Training phase
-                model.train()
-                train_loss = 0.0
-                train_correct = 0
-                train_total = 0
-                train_iou_sum = 0.0
-                train_iou_count = 0
+                    # Training phase
+                    model.train()
+                    train_loss = 0.0
+                    train_correct = 0
+                    train_total = 0
+                    train_iou_sum = 0.0
+                    train_iou_count = 0
 
-                for batch_features, batch_labels in train_loader:
-                    batch_features = batch_features.to(device)
-                    batch_labels = batch_labels.to(device)
+                    for batch_features, batch_labels in train_loader:
+                        if progress_window.training_cancelled:
+                            training_state['was_cancelled'] = True
+                            break
 
-                    optimizer.zero_grad()
-                    logits = model(batch_features)  # (B, N, C)
-
-                    B, N, C = logits.shape
-                    loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
-
-                    loss.backward()
-                    optimizer.step()
-
-                    train_loss += loss.item() * B
-                    preds = torch.argmax(logits, dim=2)
-                    train_correct += (preds == batch_labels).sum().item()
-                    train_total += B * N
-
-                    miou = self._compute_miou(preds, batch_labels, num_classes)
-                    if miou is not None:
-                        train_iou_sum += miou * B
-                        train_iou_count += B
-
-                num_batches = max(train_iou_count, 1)
-                train_loss /= num_batches
-                train_acc = train_correct / max(train_total, 1)
-                train_miou = train_iou_sum / num_batches
-
-                # Validation phase
-                model.eval()
-                val_loss = 0.0
-                val_correct = 0
-                val_total = 0
-                val_iou_sum = 0.0
-                val_iou_count = 0
-
-                with torch.no_grad():
-                    for batch_features, batch_labels in val_loader:
                         batch_features = batch_features.to(device)
                         batch_labels = batch_labels.to(device)
 
-                        logits = model(batch_features)
+                        optimizer.zero_grad()
+                        logits = model(batch_features)  # (B, N, C)
+
                         B, N, C = logits.shape
                         loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
 
-                        val_loss += loss.item() * B
+                        loss.backward()
+                        optimizer.step()
+
+                        train_loss += loss.item() * B
                         preds = torch.argmax(logits, dim=2)
-                        val_correct += (preds == batch_labels).sum().item()
-                        val_total += B * N
+                        train_correct += (preds == batch_labels).sum().item()
+                        train_total += B * N
 
-                        miou = self._compute_miou(preds, batch_labels, num_classes)
+                        miou = TrainSegModelPlugin._compute_miou(preds, batch_labels, num_classes)
                         if miou is not None:
-                            val_iou_sum += miou * B
-                            val_iou_count += B
+                            train_iou_sum += miou * B
+                            train_iou_count += B
 
-                val_batches = max(val_iou_count, 1)
-                val_loss /= val_batches
-                val_acc = val_correct / max(val_total, 1)
-                val_miou = val_iou_sum / val_batches
+                    if training_state['was_cancelled']:
+                        break
 
-                # Update history
-                history['loss'].append(train_loss)
-                history['acc'].append(train_acc)
-                history['miou'].append(train_miou)
-                history['val_loss'].append(val_loss)
-                history['val_acc'].append(val_acc)
-                history['val_miou'].append(val_miou)
+                    num_batches = max(train_iou_count, 1)
+                    train_loss /= num_batches
+                    train_acc = train_correct / max(train_total, 1)
+                    train_miou = train_iou_sum / num_batches
 
-                current_lr = optimizer.param_groups[0]['lr']
+                    # Validation phase
+                    model.eval()
+                    val_loss = 0.0
+                    val_correct = 0
+                    val_total = 0
+                    val_iou_sum = 0.0
+                    val_iou_count = 0
 
-                # Update progress window (uses acc fields for display)
+                    with torch.no_grad():
+                        for batch_features, batch_labels in val_loader:
+                            batch_features = batch_features.to(device)
+                            batch_labels = batch_labels.to(device)
+
+                            logits = model(batch_features)
+                            B, N, C = logits.shape
+                            loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
+
+                            val_loss += loss.item() * B
+                            preds = torch.argmax(logits, dim=2)
+                            val_correct += (preds == batch_labels).sum().item()
+                            val_total += B * N
+
+                            miou = TrainSegModelPlugin._compute_miou(preds, batch_labels, num_classes)
+                            if miou is not None:
+                                val_iou_sum += miou * B
+                                val_iou_count += B
+
+                    val_batches = max(val_iou_count, 1)
+                    val_loss /= val_batches
+                    val_acc = val_correct / max(val_total, 1)
+                    val_miou = val_iou_sum / val_batches
+
+                    # Update history
+                    history['loss'].append(train_loss)
+                    history['acc'].append(train_acc)
+                    history['miou'].append(train_miou)
+                    history['val_loss'].append(val_loss)
+                    history['val_acc'].append(val_acc)
+                    history['val_miou'].append(val_miou)
+
+                    current_lr = optimizer.param_groups[0]['lr']
+
+                    # Queue epoch result for main thread to display
+                    training_state['epoch_results'].append({
+                        'epoch': epoch + 1,
+                        'train_loss': train_loss,
+                        'train_acc': train_acc,
+                        'train_miou': train_miou,
+                        'val_loss': val_loss,
+                        'val_acc': val_acc,
+                        'val_miou': val_miou,
+                        'learning_rate': current_lr,
+                    })
+
+                    training_state['last_epoch'] = epoch
+                    training_state['last_val_miou'] = val_miou
+                    training_state['last_val_acc'] = val_acc
+
+                    # Check improvement (track mIoU)
+                    if val_miou > best_val_miou:
+                        best_val_miou = val_miou
+                        epochs_without_improvement = 0
+
+                        torch.save({
+                            'epoch': epoch,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'val_miou': val_miou,
+                            'val_acc': val_acc,
+                            'class_mapping': class_mapping,
+                            'num_points': num_points,
+                            'num_features': num_features,
+                            'num_classes': num_classes,
+                            'use_tnet': use_tnet,
+                            'task_type': 'segmentation'
+                        }, os.path.join(unique_output_dir, 'seg_model_best.pt'))
+                    else:
+                        epochs_without_improvement += 1
+
+                    scheduler.step(val_miou)
+
+                    if epochs_without_improvement >= early_stopping_patience:
+                        print(f"\nEarly stopping after {epoch+1} epochs")
+                        break
+
+                training_state['best_val_miou'] = best_val_miou
+
+                # Save final model
+                torch.save({
+                    'epoch': training_state['last_epoch'],
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_miou': training_state['last_val_miou'],
+                    'val_acc': training_state['last_val_acc'],
+                    'class_mapping': class_mapping,
+                    'num_points': num_points,
+                    'num_features': num_features,
+                    'num_classes': num_classes,
+                    'use_tnet': use_tnet,
+                    'task_type': 'segmentation',
+                    'history': history
+                }, os.path.join(unique_output_dir, 'seg_model_final.pt'))
+
+                # Save class mapping
+                with open(os.path.join(unique_output_dir, 'class_mapping.json'), 'w') as f:
+                    json.dump(class_mapping, f, indent=2)
+
+                # Save training metadata
+                training_metadata = {
+                    'framework': 'PyTorch',
+                    'pytorch_version': torch.__version__,
+                    'task_type': 'segmentation',
+                    'folder_name': folder_name,
+                    'timestamp': timestamp,
+                    'num_points': num_points,
+                    'num_features': num_features,
+                    'num_classes': num_classes,
+                    'class_mapping': class_mapping,
+                    'training_samples': len(train_files),
+                    'validation_samples': len(val_files),
+                    'epochs_completed': len(history['loss']),
+                    'best_val_miou': float(best_val_miou),
+                    'final_val_miou': float(history['val_miou'][-1]) if history['val_miou'] else 0.0,
+                    'final_val_acc': float(history['val_acc'][-1]) if history['val_acc'] else 0.0,
+                    'use_tnet': use_tnet,
+                    'learning_rate': learning_rate,
+                    'batch_size': batch_size,
+                    'early_stopping_patience': early_stopping_patience,
+                    'validation_split': val_split,
+                    'random_seed': random_seed,
+                    'run_number': run_number,
+                    'source_metadata': metadata
+                }
+
+                with open(os.path.join(unique_output_dir, 'training_metadata.json'), 'w') as f:
+                    json.dump(training_metadata, f, indent=2)
+
+            except RuntimeError as e:
+                err_str = str(e)
+                is_cuda_error = (
+                    "out of memory" in err_str.lower() or
+                    "CUDNN" in err_str.upper() or
+                    "device-side assert" in err_str.lower()
+                )
+                if is_cuda_error:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if "device-side assert" in err_str.lower():
+                        training_state['error'] = (
+                            f"CUDA device-side assert at epoch {training_state['last_epoch']+1}.\n\n"
+                            f"This usually means label values are out of range for "
+                            f"the number of classes ({num_classes}).\n\n"
+                            f"Check that training data labels are in [0, {num_classes-1}]."
+                        )
+                    else:
+                        training_state['error'] = (
+                            f"GPU memory exceeded.\n\n"
+                            f"Current batch_size={batch_size}, num_points={num_points}.\n"
+                            f"Try reducing batch size or points per block."
+                        )
+                else:
+                    training_state['error'] = str(e)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                training_state['error'] = str(e)
+            finally:
+                training_state['is_running'] = False
+
+        # Launch training thread
+        thread = threading.Thread(target=_train_loop, daemon=True)
+        thread.start()
+
+        # --- QTimer polling (main thread) ---
+        poll_timer = QtCore.QTimer()
+
+        def _on_poll():
+            """Poll training thread state and update UI."""
+            # Process queued epoch results
+            while training_state['epoch_results']:
+                result = training_state['epoch_results'].pop(0)
+                epoch = result['epoch']
+
                 progress_window.update_epoch(
-                    epoch + 1, train_loss, train_acc,
-                    val_loss, val_acc, learning_rate=current_lr
+                    epoch, result['train_loss'], result['train_acc'],
+                    result['val_loss'], result['val_acc'],
+                    learning_rate=result['learning_rate']
                 )
 
-                print(f"Epoch {epoch+1:3d}/{epochs} - "
-                      f"loss: {train_loss:.4f} - acc: {train_acc:.4f} - mIoU: {train_miou:.4f} - "
-                      f"val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f} - val_mIoU: {val_miou:.4f}")
+                is_new_best = result['val_miou'] >= training_state['best_val_miou']
+                best_marker = f"  -> New best model (val_mIoU: {result['val_miou']:.5f})" if is_new_best else ""
 
-                # Check improvement (track mIoU)
-                if val_miou > best_val_miou:
-                    best_val_miou = val_miou
-                    epochs_without_improvement = 0
-                    print(f"  -> New best model (val_mIoU: {val_miou:.5f})")
+                print(f"Epoch {epoch:3d}/{epochs} - "
+                      f"loss: {result['train_loss']:.4f} - acc: {result['train_acc']:.4f} - mIoU: {result['train_miou']:.4f} - "
+                      f"val_loss: {result['val_loss']:.4f} - val_acc: {result['val_acc']:.4f} - val_mIoU: {result['val_miou']:.4f}"
+                      f"{best_marker}")
 
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'val_miou': val_miou,
-                        'val_acc': val_acc,
-                        'class_mapping': class_mapping,
-                        'num_points': num_points,
-                        'num_features': num_features,
-                        'num_classes': num_classes,
-                        'use_tnet': use_tnet,
-                        'task_type': 'segmentation'
-                    }, os.path.join(unique_output_dir, 'seg_model_best.pt'))
-                else:
-                    epochs_without_improvement += 1
+            # Check if thread finished
+            if not training_state['is_running']:
+                poll_timer.stop()
+                _on_training_finished()
 
-                scheduler.step(val_miou)
+        def _on_training_finished():
+            """Handle training thread completion on main thread."""
+            main_window.tree_overlay.hide_processing()
+            main_window.enable_menus()
+            main_window.enable_tree()
 
-                if epochs_without_improvement >= early_stopping_patience:
-                    print(f"\nEarly stopping after {epoch+1} epochs")
-                    break
+            history = training_state['history']
+            best_val_miou = training_state['best_val_miou']
+            was_cancelled = training_state['was_cancelled']
+            error = training_state['error']
+            epochs_completed = len(history['loss'])
 
-            # Save final model
-            main_window.tree_overlay.show_processing("Saving model...")
-
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_miou': val_miou,
-                'val_acc': val_acc,
-                'class_mapping': class_mapping,
-                'num_points': num_points,
-                'num_features': num_features,
-                'num_classes': num_classes,
-                'use_tnet': use_tnet,
-                'task_type': 'segmentation',
-                'history': history
-            }, os.path.join(unique_output_dir, 'seg_model_final.pt'))
-
-            # Save class mapping
-            with open(os.path.join(unique_output_dir, 'class_mapping.json'), 'w') as f:
-                json.dump(class_mapping, f, indent=2)
-
-            # Save training metadata
-            training_metadata = {
-                'framework': 'PyTorch',
-                'pytorch_version': torch.__version__,
-                'task_type': 'segmentation',
-                'folder_name': folder_name,
-                'timestamp': timestamp,
-                'num_points': num_points,
-                'num_features': num_features,
-                'num_classes': num_classes,
-                'class_mapping': class_mapping,
-                'training_samples': len(train_files),
-                'validation_samples': len(val_files),
-                'epochs_completed': len(history['loss']),
-                'best_val_miou': float(best_val_miou),
-                'final_val_miou': float(history['val_miou'][-1]) if history['val_miou'] else 0.0,
-                'final_val_acc': float(history['val_acc'][-1]) if history['val_acc'] else 0.0,
-                'use_tnet': use_tnet,
-                'learning_rate': learning_rate,
-                'batch_size': batch_size,
-                'early_stopping_patience': early_stopping_patience,
-                'validation_split': val_split,
-                'random_seed': random_seed,
-                'run_number': run_number,
-                'source_metadata': metadata
-            }
-
-            with open(os.path.join(unique_output_dir, 'training_metadata.json'), 'w') as f:
-                json.dump(training_metadata, f, indent=2)
+            if error:
+                print(f"\nERROR during training:\n{error}")
+                try:
+                    progress_window.training_complete = True
+                    progress_window.cancel_button.setVisible(False)
+                    progress_window.close_button.setVisible(True)
+                    progress_window.status_label.setText("Training failed")
+                except:
+                    pass
+                QMessageBox.critical(main_window, "Training Error",
+                                   f"An error occurred:\n\n{error}")
+                return
 
             progress_window.training_completed(best_val_miou, cancelled=was_cancelled)
 
@@ -512,7 +680,7 @@ class TrainSegModelPlugin(ActionPlugin):
             print("Training Complete!" if not was_cancelled else "Training Cancelled!")
             print(f"{'='*80}")
             print(f"Best val mIoU: {best_val_miou:.4f}")
-            print(f"Epochs completed: {training_metadata['epochs_completed']}")
+            print(f"Epochs completed: {epochs_completed}")
             print(f"Model saved to: {unique_output_dir}/")
             print(f"{'='*80}")
 
@@ -520,36 +688,17 @@ class TrainSegModelPlugin(ActionPlugin):
                 QMessageBox.information(main_window, "Training Cancelled",
                     f"Training cancelled.\n\n"
                     f"Best val mIoU: {best_val_miou:.2%}\n"
-                    f"Epochs: {training_metadata['epochs_completed']}\n\n"
+                    f"Epochs: {epochs_completed}\n\n"
                     f"Saved to:\n{unique_output_dir}/")
             else:
                 QMessageBox.information(main_window, "Training Complete",
                     f"Segmentation training completed!\n\n"
                     f"Best val mIoU: {best_val_miou:.2%}\n"
-                    f"Epochs: {training_metadata['epochs_completed']}\n\n"
+                    f"Epochs: {epochs_completed}\n\n"
                     f"Saved to:\n{unique_output_dir}/")
 
-        except Exception as e:
-            import traceback
-            error_msg = traceback.format_exc()
-            print(f"\nERROR during training:\n{error_msg}")
-
-            try:
-                if 'progress_window' in locals():
-                    progress_window.training_complete = True
-                    progress_window.cancel_button.setVisible(False)
-                    progress_window.close_button.setVisible(True)
-                    progress_window.status_label.setText("Training failed")
-            except:
-                pass
-
-            QMessageBox.critical(main_window, "Training Error",
-                               f"An error occurred:\n\n{str(e)}")
-
-        finally:
-            main_window.tree_overlay.hide_processing()
-            main_window.enable_menus()
-            main_window.enable_tree()
+        poll_timer.timeout.connect(_on_poll)
+        poll_timer.start(100)
 
     def _load_training_data(self, data_dir):
         """
