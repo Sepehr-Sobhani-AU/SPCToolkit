@@ -5,6 +5,7 @@ Trains a PointNet model for cluster classification using training data from a sp
 The directory should contain subfolders where each subfolder name is a class label and contains .npy files.
 """
 
+import gc
 import os
 import json
 import csv
@@ -726,6 +727,27 @@ class TrainPointNetPlugin(ActionPlugin):
                 main_window.tree_overlay.hide_processing()
                 main_window.enable_menus()
                 main_window.enable_tree()
+
+                # Release RAM and VRAM — drop references to large training objects.
+                # Assignment to None is safe even if the variable was never bound
+                # (an early exception just means it becomes a fresh local).
+                model = None
+                optimizer = None
+                scheduler = None
+                criterion = None
+                train_dataset = None
+                val_dataset = None
+                train_loader = None
+                val_loader = None
+                class_weights = None
+                data = None
+                X_train = None
+                X_val = None
+                best_model_state = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+                print("Training memory released (model, datasets, CUDA cache).")
 
         # Print summary
         if repetitions > 1 and len(all_run_results) > 0:

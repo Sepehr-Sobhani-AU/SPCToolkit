@@ -7,6 +7,7 @@ training data (.npz files) from a specified directory.
 Training runs in a background thread with QTimer polling to keep the UI responsive.
 """
 
+import gc
 import os
 import json
 import csv
@@ -695,7 +696,7 @@ class TrainSegModelPlugin(ActionPlugin):
                     csv_path = os.path.join(unique_output_dir, 'per_class_iou.csv')
                     with open(csv_path, 'w', newline='') as f:
                         writer = csv.writer(f)
-                        writer.writerow(['class_id', 'class_name', 'best_iou', 'final_iou'])
+                        writer.writerow(['class_id', 'class_name', 'iou_at_best_miou', 'final_iou'])
                         for cid in sorted(set(list(best_pci.keys()) + list(final_pci.keys()))):
                             if cid in ignore_classes:
                                 continue
@@ -805,28 +806,50 @@ class TrainSegModelPlugin(ActionPlugin):
                 print(f"\nERROR during training:\n{error}")
                 QMessageBox.critical(progress_window, "Training Error",
                                    f"An error occurred:\n\n{error}")
-                return
-
-            print(f"\n{'='*80}")
-            print("Training Complete!" if not was_cancelled else "Training Cancelled!")
-            print(f"{'='*80}")
-            print(f"Best val mIoU: {best_val_miou:.4f}")
-            print(f"Epochs completed: {epochs_completed}")
-            print(f"Model saved to: {unique_output_dir}/")
-            print(f"{'='*80}")
-
-            if was_cancelled:
+            elif was_cancelled:
+                print(f"\n{'='*80}")
+                print("Training Cancelled!")
+                print(f"{'='*80}")
+                print(f"Best val mIoU: {best_val_miou:.4f}")
+                print(f"Epochs completed: {epochs_completed}")
+                print(f"Model saved to: {unique_output_dir}/")
+                print(f"{'='*80}")
                 QMessageBox.information(progress_window, "Training Cancelled",
                     f"Training cancelled.\n\n"
                     f"Best val mIoU: {best_val_miou:.2%}\n"
                     f"Epochs: {epochs_completed}\n\n"
                     f"Saved to:\n{unique_output_dir}/")
             else:
+                print(f"\n{'='*80}")
+                print("Training Complete!")
+                print(f"{'='*80}")
+                print(f"Best val mIoU: {best_val_miou:.4f}")
+                print(f"Epochs completed: {epochs_completed}")
+                print(f"Model saved to: {unique_output_dir}/")
+                print(f"{'='*80}")
                 QMessageBox.information(progress_window, "Training Complete",
                     f"Segmentation training completed!\n\n"
                     f"Best val mIoU: {best_val_miou:.2%}\n"
                     f"Epochs: {epochs_completed}\n\n"
                     f"Saved to:\n{unique_output_dir}/")
+
+            # Release RAM and VRAM — drop closure references to large objects
+            nonlocal model, optimizer, scheduler, criterion
+            nonlocal train_dataset, val_dataset, train_loader, val_loader
+            nonlocal class_weights_tensor
+            model = None
+            optimizer = None
+            scheduler = None
+            criterion = None
+            train_dataset = None
+            val_dataset = None
+            train_loader = None
+            val_loader = None
+            class_weights_tensor = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            print("Training memory released (model, datasets, CUDA cache).")
 
         poll_timer.timeout.connect(_on_poll)
         poll_timer.start(100)
