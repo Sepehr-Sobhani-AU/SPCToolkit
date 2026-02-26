@@ -51,6 +51,7 @@ _Tree_Group/
 base_dataset/
 clusters/
 models/
+!models/pointnet/
 Trained Models/
 Trained_Models/
 training_data/
