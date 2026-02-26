@@ -352,13 +352,15 @@ class TrainPointNetPlugin(ActionPlugin):
                 train_dataset = PointCloudDataset(X_train, y_train, num_points, augment=False)
                 val_dataset = PointCloudDataset(X_val, y_val, num_points, augment=False)
 
+                # num_workers=0: data is pre-loaded in memory so there's no I/O benefit
+                # from multiprocessing, and forked workers cause segfaults with CUDA
                 train_loader = DataLoader(
                     train_dataset, batch_size=batch_size, shuffle=True,
-                    num_workers=4, pin_memory=True, drop_last=False
+                    num_workers=0, pin_memory=True, drop_last=False
                 )
                 val_loader = DataLoader(
                     val_dataset, batch_size=batch_size, shuffle=False,
-                    num_workers=4, pin_memory=True
+                    num_workers=0, pin_memory=True
                 )
 
                 print(f"\nModel configuration:")
@@ -380,7 +382,7 @@ class TrainPointNetPlugin(ActionPlugin):
                 # Setup optimizer and scheduler
                 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, mode='max', factor=0.5, patience=10, verbose=True
+                    optimizer, mode='max', factor=0.5, patience=10
                 )
                 criterion = nn.CrossEntropyLoss()
 
@@ -581,11 +583,6 @@ class TrainPointNetPlugin(ActionPlugin):
 
                 # Mark training as completed
                 progress_window.training_completed(best_val_acc, cancelled=was_cancelled)
-
-                try:
-                    progress_window.close()
-                except:
-                    pass
 
                 print("\n" + "="*80)
                 if was_cancelled:

@@ -42,18 +42,24 @@ class SegPointCloudDataset(Dataset):
             num_classes: Number of valid classes (labels clamped to [0, num_classes-1])
             augment: Whether to apply data augmentation
         """
-        self.file_paths = file_paths
         self.num_points = num_points
         self.num_classes = num_classes
         self.augment = augment
+        # Pre-load all data into memory to avoid per-access disk I/O
+        # (concurrent np.load in forked workers causes segfaults with large datasets)
+        self.all_features = []
+        self.all_labels = []
+        for fp in file_paths:
+            data = np.load(fp)
+            self.all_features.append(data['features'].astype(np.float32))
+            self.all_labels.append(data['labels'].astype(np.int64))
 
     def __len__(self):
-        return len(self.file_paths)
+        return len(self.all_features)
 
     def __getitem__(self, idx):
-        data = np.load(self.file_paths[idx])
-        features = data['features'].astype(np.float32)
-        labels = data['labels'].astype(np.int64)
+        features = self.all_features[idx]
+        labels = self.all_labels[idx]
 
         # Clamp labels to valid range for CrossEntropyLoss
         np.clip(labels, 0, self.num_classes - 1, out=labels)
@@ -303,29 +309,16 @@ class TrainSegModelPlugin(ActionPlugin):
             train_dataset = SegPointCloudDataset(train_files, num_points, num_classes, augment=True)
             val_dataset = SegPointCloudDataset(val_files, num_points, num_classes, augment=False)
 
-            num_workers = 4
-            try:
-                train_loader = DataLoader(
-                    train_dataset, batch_size=batch_size, shuffle=True,
-                    num_workers=num_workers, pin_memory=True, drop_last=True
-                )
-                val_loader = DataLoader(
-                    val_dataset, batch_size=batch_size, shuffle=False,
-                    num_workers=num_workers, pin_memory=True
-                )
-                # Test that multiprocessing works by fetching one batch
-                _ = next(iter(train_loader))
-            except (RuntimeError, OSError):
-                print("Warning: num_workers=4 failed, falling back to num_workers=0")
-                num_workers = 0
-                train_loader = DataLoader(
-                    train_dataset, batch_size=batch_size, shuffle=True,
-                    num_workers=0, pin_memory=True, drop_last=True
-                )
-                val_loader = DataLoader(
-                    val_dataset, batch_size=batch_size, shuffle=False,
-                    num_workers=0, pin_memory=True
-                )
+            # num_workers=0: data is pre-loaded in memory so there's no I/O benefit
+            # from multiprocessing, and forked workers cause segfaults with large datasets
+            train_loader = DataLoader(
+                train_dataset, batch_size=batch_size, shuffle=True,
+                num_workers=0, pin_memory=True, drop_last=True
+            )
+            val_loader = DataLoader(
+                val_dataset, batch_size=batch_size, shuffle=False,
+                num_workers=0, pin_memory=True
+            )
 
             # Create model
             main_window.tree_overlay.show_processing("Creating model...")
@@ -346,7 +339,7 @@ class TrainSegModelPlugin(ActionPlugin):
 
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='max', factor=0.5, patience=10, verbose=True
+                optimizer, mode='max', factor=0.5, patience=10
             )
             criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
 
@@ -628,7 +621,9 @@ class TrainSegModelPlugin(ActionPlugin):
                 progress_window.update_epoch(
                     epoch, result['train_loss'], result['train_acc'],
                     result['val_loss'], result['val_acc'],
-                    learning_rate=result['learning_rate']
+                    learning_rate=result['learning_rate'],
+                    train_miou=result['train_miou'],
+                    val_miou=result['val_miou']
                 )
 
                 is_new_best = result['val_miou'] >= training_state['best_val_miou']
@@ -670,11 +665,6 @@ class TrainSegModelPlugin(ActionPlugin):
                 return
 
             progress_window.training_completed(best_val_miou, cancelled=was_cancelled)
-
-            try:
-                progress_window.close()
-            except:
-                pass
 
             print(f"\n{'='*80}")
             print("Training Complete!" if not was_cancelled else "Training Cancelled!")
