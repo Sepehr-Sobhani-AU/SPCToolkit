@@ -31,20 +31,53 @@ from models.pointnet.pointnet_seg_model import PointNetSegmentation
 from plugins.dialogs.training_progress_window import TrainingProgressWindow
 
 
+class FocalLoss(nn.Module):
+    """Focal loss for addressing class imbalance in segmentation.
+
+    Down-weights well-classified examples so the model focuses on hard/rare points.
+    """
+
+    def __init__(self, weight=None, gamma=2.0, ignore_index=-100, label_smoothing=0.1):
+        super().__init__()
+        self.weight = weight
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits, targets):
+        ce = F.cross_entropy(logits, targets, weight=self.weight,
+                             reduction='none', ignore_index=self.ignore_index,
+                             label_smoothing=self.label_smoothing)
+        pt = torch.exp(-ce)
+        focal = ((1 - pt) ** self.gamma) * ce
+        # Average only over non-ignored elements
+        valid_mask = targets != self.ignore_index
+        if valid_mask.sum() == 0:
+            return focal.sum() * 0.0
+        return focal[valid_mask].mean()
+
+
 class SegPointCloudDataset(Dataset):
     """PyTorch Dataset for segmentation training data (.npz files with features + labels)."""
 
-    def __init__(self, file_paths, num_points, num_classes, augment=False):
+    def __init__(self, file_paths, num_points, num_classes, augment=False,
+                 feature_mean=None, feature_std=None, ignore_classes=None):
         """
         Args:
             file_paths: List of .npz file paths, each containing 'features' (N,F) and 'labels' (N,)
             num_points: Target number of points per sample (random subsample)
             num_classes: Number of valid classes (labels clamped to [0, num_classes-1])
             augment: Whether to apply data augmentation
+            feature_mean: Optional per-feature mean array (F,) for standardization
+            feature_std: Optional per-feature std array (F,) for standardization
+            ignore_classes: Optional list of class IDs to remap to -100 (ignored by loss)
         """
         self.num_points = num_points
         self.num_classes = num_classes
         self.augment = augment
+        self.feature_mean = feature_mean
+        self.feature_std = feature_std
+        self.ignore_classes = set(ignore_classes) if ignore_classes else set()
         # Pre-load all data into memory to avoid per-access disk I/O
         # (concurrent np.load in forked workers causes segfaults with large datasets)
         self.all_features = []
@@ -58,11 +91,16 @@ class SegPointCloudDataset(Dataset):
         return len(self.all_features)
 
     def __getitem__(self, idx):
-        features = self.all_features[idx]
-        labels = self.all_labels[idx]
+        features = self.all_features[idx].copy()
+        labels = self.all_labels[idx].copy()
 
         # Clamp labels to valid range for CrossEntropyLoss
         np.clip(labels, 0, self.num_classes - 1, out=labels)
+
+        # Remap ignored classes to -100 (PyTorch ignore_index)
+        if self.ignore_classes:
+            for cls_id in self.ignore_classes:
+                labels[labels == cls_id] = -100
 
         # Random subsample to fixed number of points
         num_available = features.shape[0]
@@ -77,10 +115,14 @@ class SegPointCloudDataset(Dataset):
         if self.augment:
             features = self._augment(features)
 
+        # Per-feature standardization
+        if self.feature_mean is not None and self.feature_std is not None:
+            features = (features - self.feature_mean) / self.feature_std
+
         return torch.FloatTensor(features), torch.LongTensor(labels)
 
     def _augment(self, features):
-        """Apply random rotation around Z-axis and jitter to XYZ."""
+        """Apply random rotation, scaling, and jitter to XYZ and normals."""
         theta = np.random.uniform(0, 2 * np.pi)
         cos_theta = np.cos(theta)
         sin_theta = np.sin(theta)
@@ -91,14 +133,29 @@ class SegPointCloudDataset(Dataset):
             [0, 0, 1]
         ], dtype=np.float32)
 
-        xyz = features[:, :3]
-        other = features[:, 3:]
+        # Random isotropic scaling
+        scale = np.random.uniform(0.9, 1.1)
 
-        rotated_xyz = xyz @ rotation_matrix.T
-        jitter = np.random.normal(0, 0.01, rotated_xyz.shape).astype(np.float32)
+        xyz = features[:, :3]
+        rotated_xyz = (xyz @ rotation_matrix.T) * scale
+        jitter = np.random.normal(0, 0.02, rotated_xyz.shape).astype(np.float32)
         rotated_xyz = rotated_xyz + jitter
 
-        return np.concatenate([rotated_xyz, other], axis=1)
+        parts = [rotated_xyz]
+
+        if features.shape[1] >= 6:
+            # Rotate normals (columns 3:6) by the same rotation (no scaling — unit vectors)
+            normals = features[:, 3:6]
+            rotated_normals = normals @ rotation_matrix.T
+            parts.append(rotated_normals)
+            # Eigenvalues are rotation-invariant but scale with point scale
+            if features.shape[1] > 6:
+                eigenvalues = features[:, 6:]
+                parts.append(eigenvalues * (scale ** 2))
+        elif features.shape[1] > 3:
+            parts.append(features[:, 3:])
+
+        return np.concatenate(parts, axis=1)
 
 
 class TrainSegModelPlugin(ActionPlugin):
@@ -295,19 +352,48 @@ class TrainSegModelPlugin(ActionPlugin):
             print(f"Training samples: {len(train_files)}")
             print(f"Validation samples: {len(val_files)}")
 
+            # Compute per-feature standardization stats from training set
+            main_window.tree_overlay.show_processing("Computing feature statistics...")
+            feature_mean, feature_std = self._compute_feature_stats(train_files)
+            print(f"\nPer-feature stats (mean / std):")
+            feature_names = ['X_norm', 'Y_norm', 'Z_norm', 'Nx', 'Ny', 'Nz', 'E1', 'E2', 'E3']
+            for i in range(len(feature_mean)):
+                fname = feature_names[i] if i < len(feature_names) else f"F{i}"
+                print(f"  {fname}: mean={feature_mean[i]:.6f}  std={feature_std[i]:.6f}")
+
+            # Find and configure ignored classes
+            ignore_classes = self._find_ignore_classes(class_mapping)
+            if ignore_classes:
+                ignored_names = [class_mapping.get(c, f"Class_{c}") for c in ignore_classes]
+                print(f"\nIgnoring classes: {ignore_classes} ({', '.join(ignored_names)})")
+                print(f"  These will be excluded from loss computation and mIoU evaluation.")
+            else:
+                print(f"\nNo classes to ignore.")
+
             # Compute class weights from training set
             main_window.tree_overlay.show_processing("Computing class weights...")
             class_weights = self._compute_class_weights(train_files, num_classes)
+            # Zero out weights for ignored classes
+            for cls_id in ignore_classes:
+                if 0 <= cls_id < num_classes:
+                    class_weights[cls_id] = 0.0
             class_weights_tensor = torch.FloatTensor(class_weights).to(device)
 
             print(f"\nClass weights:")
             for cid, weight in enumerate(class_weights):
                 name = class_mapping.get(cid, f"Class_{cid}")
-                print(f"  {name}: {weight:.3f}")
+                ignored_tag = " (IGNORED)" if cid in ignore_classes else ""
+                print(f"  {name}: {weight:.3f}{ignored_tag}")
 
             # Create datasets and dataloaders
-            train_dataset = SegPointCloudDataset(train_files, num_points, num_classes, augment=True)
-            val_dataset = SegPointCloudDataset(val_files, num_points, num_classes, augment=False)
+            train_dataset = SegPointCloudDataset(
+                train_files, num_points, num_classes, augment=True,
+                feature_mean=feature_mean, feature_std=feature_std,
+                ignore_classes=ignore_classes)
+            val_dataset = SegPointCloudDataset(
+                val_files, num_points, num_classes, augment=False,
+                feature_mean=feature_mean, feature_std=feature_std,
+                ignore_classes=ignore_classes)
 
             # num_workers=0: data is pre-loaded in memory so there's no I/O benefit
             # from multiprocessing, and forked workers cause segfaults with large datasets
@@ -337,11 +423,11 @@ class TrainSegModelPlugin(ActionPlugin):
             print(f"\nModel: {total_params:,} parameters")
             print(f"T-Net: {use_tnet}")
 
-            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-4)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='max', factor=0.5, patience=10
+                optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6
             )
-            criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+            criterion = FocalLoss(weight=class_weights_tensor, gamma=2.0)
 
             # Create progress window
             progress_window = TrainingProgressWindow(parent=main_window, total_epochs=epochs)
@@ -378,6 +464,8 @@ class TrainSegModelPlugin(ActionPlugin):
             'last_epoch': 0,
             'last_val_miou': 0.0,
             'last_val_acc': 0.0,
+            'best_val_per_class_iou': {},
+            'final_val_per_class_iou': {},
         }
 
         def _train_loop():
@@ -397,8 +485,8 @@ class TrainSegModelPlugin(ActionPlugin):
                     train_loss = 0.0
                     train_correct = 0
                     train_total = 0
-                    train_iou_sum = 0.0
-                    train_iou_count = 0
+                    train_batch_count = 0
+                    train_confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
 
                     for batch_features, batch_labels in train_loader:
                         if progress_window.training_cancelled:
@@ -415,33 +503,33 @@ class TrainSegModelPlugin(ActionPlugin):
                         loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
 
                         loss.backward()
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                         optimizer.step()
 
                         train_loss += loss.item() * B
+                        train_batch_count += B
                         preds = torch.argmax(logits, dim=2)
-                        train_correct += (preds == batch_labels).sum().item()
-                        train_total += B * N
+                        valid = batch_labels != -100
+                        train_correct += (preds[valid] == batch_labels[valid]).sum().item()
+                        train_total += valid.sum().item()
 
-                        miou = TrainSegModelPlugin._compute_miou(preds, batch_labels, num_classes)
-                        if miou is not None:
-                            train_iou_sum += miou * B
-                            train_iou_count += B
+                        TrainSegModelPlugin._update_confusion_matrix(
+                            train_confusion, preds, batch_labels, num_classes)
 
                     if training_state['was_cancelled']:
                         break
 
-                    num_batches = max(train_iou_count, 1)
-                    train_loss /= num_batches
+                    train_loss /= max(train_batch_count, 1)
                     train_acc = train_correct / max(train_total, 1)
-                    train_miou = train_iou_sum / num_batches
+                    train_miou, train_per_class_iou = TrainSegModelPlugin._miou_from_confusion(train_confusion, ignore_classes)
 
                     # Validation phase
                     model.eval()
                     val_loss = 0.0
                     val_correct = 0
                     val_total = 0
-                    val_iou_sum = 0.0
-                    val_iou_count = 0
+                    val_batch_count = 0
+                    val_confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
 
                     with torch.no_grad():
                         for batch_features, batch_labels in val_loader:
@@ -453,19 +541,18 @@ class TrainSegModelPlugin(ActionPlugin):
                             loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
 
                             val_loss += loss.item() * B
+                            val_batch_count += B
                             preds = torch.argmax(logits, dim=2)
-                            val_correct += (preds == batch_labels).sum().item()
-                            val_total += B * N
+                            valid = batch_labels != -100
+                            val_correct += (preds[valid] == batch_labels[valid]).sum().item()
+                            val_total += valid.sum().item()
 
-                            miou = TrainSegModelPlugin._compute_miou(preds, batch_labels, num_classes)
-                            if miou is not None:
-                                val_iou_sum += miou * B
-                                val_iou_count += B
+                            TrainSegModelPlugin._update_confusion_matrix(
+                                val_confusion, preds, batch_labels, num_classes)
 
-                    val_batches = max(val_iou_count, 1)
-                    val_loss /= val_batches
+                    val_loss /= max(val_batch_count, 1)
                     val_acc = val_correct / max(val_total, 1)
-                    val_miou = val_iou_sum / val_batches
+                    val_miou, val_per_class_iou = TrainSegModelPlugin._miou_from_confusion(val_confusion, ignore_classes)
 
                     # Update history
                     history['loss'].append(train_loss)
@@ -493,9 +580,21 @@ class TrainSegModelPlugin(ActionPlugin):
                     training_state['last_val_miou'] = val_miou
                     training_state['last_val_acc'] = val_acc
 
+                    # Print per-class IoU breakdown
+                    iou_parts = []
+                    for cid in sorted(val_per_class_iou.keys()):
+                        name = class_mapping.get(cid, f"C{cid}")
+                        iou_parts.append(f"{name}: {val_per_class_iou[cid]:.3f}")
+                    if iou_parts:
+                        print(f"  Per-class IoU: {' | '.join(iou_parts)}")
+
+                    # Always track final per-class IoU
+                    training_state['final_val_per_class_iou'] = val_per_class_iou.copy()
+
                     # Check improvement (track mIoU)
                     if val_miou > best_val_miou:
                         best_val_miou = val_miou
+                        training_state['best_val_per_class_iou'] = val_per_class_iou.copy()
                         epochs_without_improvement = 0
 
                         torch.save({
@@ -509,7 +608,10 @@ class TrainSegModelPlugin(ActionPlugin):
                             'num_features': num_features,
                             'num_classes': num_classes,
                             'use_tnet': use_tnet,
-                            'task_type': 'segmentation'
+                            'task_type': 'segmentation',
+                            'feature_mean': feature_mean.tolist(),
+                            'feature_std': feature_std.tolist(),
+                            'ignore_classes': ignore_classes,
                         }, os.path.join(unique_output_dir, 'seg_model_best.pt'))
                     else:
                         epochs_without_improvement += 1
@@ -535,7 +637,10 @@ class TrainSegModelPlugin(ActionPlugin):
                     'num_classes': num_classes,
                     'use_tnet': use_tnet,
                     'task_type': 'segmentation',
-                    'history': history
+                    'history': history,
+                    'feature_mean': feature_mean.tolist(),
+                    'feature_std': feature_std.tolist(),
+                    'ignore_classes': ignore_classes,
                 }, os.path.join(unique_output_dir, 'seg_model_final.pt'))
 
                 # Save class mapping
@@ -566,11 +671,42 @@ class TrainSegModelPlugin(ActionPlugin):
                     'validation_split': val_split,
                     'random_seed': random_seed,
                     'run_number': run_number,
-                    'source_metadata': metadata
+                    'source_metadata': metadata,
+                    'feature_mean': feature_mean.tolist(),
+                    'feature_std': feature_std.tolist(),
+                    'ignore_classes': ignore_classes,
+                    'best_per_class_iou': {
+                        class_mapping.get(cid, f"Class_{cid}"): float(iou)
+                        for cid, iou in training_state['best_val_per_class_iou'].items()
+                    },
+                    'final_per_class_iou': {
+                        class_mapping.get(cid, f"Class_{cid}"): float(iou)
+                        for cid, iou in training_state['final_val_per_class_iou'].items()
+                    },
                 }
 
                 with open(os.path.join(unique_output_dir, 'training_metadata.json'), 'w') as f:
                     json.dump(training_metadata, f, indent=2)
+
+                # Write per-class IoU CSV
+                best_pci = training_state['best_val_per_class_iou']
+                final_pci = training_state['final_val_per_class_iou']
+                csv_path = os.path.join(unique_output_dir, 'per_class_iou.csv')
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['class_id', 'class_name', 'best_iou', 'final_iou'])
+                    for cid in sorted(set(list(best_pci.keys()) + list(final_pci.keys()))):
+                        if cid in ignore_classes:
+                            continue
+                        name = class_mapping.get(cid, f"Class_{cid}")
+                        writer.writerow([cid, name,
+                                        f"{best_pci.get(cid, 0.0):.6f}",
+                                        f"{final_pci.get(cid, 0.0):.6f}"])
+                    # Summary row
+                    best_miou = sum(best_pci.values()) / max(len(best_pci), 1)
+                    final_miou = sum(final_pci.values()) / max(len(final_pci), 1)
+                    writer.writerow(['', 'mIoU', f"{best_miou:.6f}", f"{final_miou:.6f}"])
+                print(f"Per-class IoU saved to: {csv_path}")
 
             except RuntimeError as e:
                 err_str = str(e)
@@ -666,6 +802,10 @@ class TrainSegModelPlugin(ActionPlugin):
 
             progress_window.training_completed(best_val_miou, cancelled=was_cancelled)
 
+            # Save screenshot of the training progress dialog
+            progress_window.save_snapshot(
+                os.path.join(unique_output_dir, 'training_progress.png'))
+
             print(f"\n{'='*80}")
             print("Training Complete!" if not was_cancelled else "Training Cancelled!")
             print(f"{'='*80}")
@@ -739,6 +879,39 @@ class TrainSegModelPlugin(ActionPlugin):
 
         return npz_files, class_mapping, metadata, num_features
 
+    def _compute_feature_stats(self, file_paths):
+        """Compute per-feature mean and std from a subset of training files.
+
+        Returns:
+            (feature_mean, feature_std) as numpy arrays of shape (F,)
+        """
+        sample_files = file_paths[:min(200, len(file_paths))]
+        all_features = []
+
+        for fp in sample_files:
+            data = np.load(fp)
+            all_features.append(data['features'].astype(np.float32))
+
+        combined = np.vstack(all_features)
+        feature_mean = np.mean(combined, axis=0).astype(np.float32)
+        feature_std = np.std(combined, axis=0).astype(np.float32)
+        feature_std = np.maximum(feature_std, 1e-6)
+
+        return feature_mean, feature_std
+
+    def _find_ignore_classes(self, class_mapping):
+        """Find class IDs for semantically meaningless classes like 'unlabeled' or 'outlier'.
+
+        Returns:
+            List of class IDs to ignore during training.
+        """
+        ignore_names = {'unlabeled', 'outlier'}
+        ignore_classes = []
+        for cls_id, name in class_mapping.items():
+            if name.lower().strip() in ignore_names:
+                ignore_classes.append(cls_id)
+        return sorted(ignore_classes)
+
     def _compute_class_weights(self, file_paths, num_classes):
         """Compute class weights from subset of training files for balanced loss."""
         # Sample a subset for efficiency
@@ -764,19 +937,61 @@ class TrainSegModelPlugin(ActionPlugin):
             if 0 <= cls < num_classes:
                 full_weights[cls] = weight
 
+        # Cap extreme weights — very rare classes get weights of 100+
+        # which causes gradient instability. Use sqrt-dampened weights instead.
+        median_w = np.median(full_weights[full_weights > 0])
+        full_weights = np.sqrt(full_weights / median_w) * median_w
+        full_weights = np.clip(full_weights, 0.1, 20.0).astype(np.float32)
+
         return full_weights
 
     @staticmethod
-    def _compute_miou(predictions, labels, num_classes):
-        """Compute mean IoU across classes present in batch."""
-        iou_list = []
-        for cls in range(num_classes):
-            pred_mask = (predictions == cls)
-            label_mask = (labels == cls)
-            intersection = (pred_mask & label_mask).sum().item()
-            union = (pred_mask | label_mask).sum().item()
-            if union > 0:
-                iou_list.append(intersection / union)
-        if len(iou_list) == 0:
-            return None
-        return sum(iou_list) / len(iou_list)
+    def _update_confusion_matrix(confusion, preds, labels, num_classes):
+        """Add batch predictions to a running (num_classes, num_classes) confusion matrix.
+
+        Args:
+            confusion: np.ndarray of shape (num_classes, num_classes), modified in-place
+            preds: torch.Tensor of predicted class indices
+            labels: torch.Tensor of ground-truth class indices
+            num_classes: int
+        """
+        p = preds.cpu().numpy().flatten()
+        l = labels.cpu().numpy().flatten()
+        # Only count valid labels
+        mask = (l >= 0) & (l < num_classes) & (p >= 0) & (p < num_classes)
+        indices = l[mask] * num_classes + p[mask]
+        confusion += np.bincount(
+            indices, minlength=num_classes * num_classes
+        ).reshape(num_classes, num_classes)
+
+    @staticmethod
+    def _miou_from_confusion(confusion, ignore_classes=None):
+        """Compute per-class IoU from a confusion matrix and return (mIoU, per_class_iou).
+
+        IoU_c = TP_c / (TP_c + FP_c + FN_c)
+
+        Args:
+            confusion: np.ndarray of shape (num_classes, num_classes)
+                       confusion[i, j] = # points with true class i predicted as class j
+            ignore_classes: Optional set of class IDs to exclude from mIoU computation
+
+        Returns:
+            (miou, per_class_iou) where per_class_iou is a dict {class_id: iou} for classes
+            with non-zero support. miou is the mean across those classes.
+        """
+        ignore_set = set(ignore_classes) if ignore_classes else set()
+        num_classes = confusion.shape[0]
+        per_class_iou = {}
+        for c in range(num_classes):
+            if c in ignore_set:
+                continue
+            tp = confusion[c, c]
+            fp = confusion[:, c].sum() - tp
+            fn = confusion[c, :].sum() - tp
+            denom = tp + fp + fn
+            if denom > 0:
+                per_class_iou[c] = tp / denom
+        if len(per_class_iou) == 0:
+            return 0.0, {}
+        miou = sum(per_class_iou.values()) / len(per_class_iou)
+        return miou, per_class_iou

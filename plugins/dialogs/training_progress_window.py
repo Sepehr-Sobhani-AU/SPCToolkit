@@ -3,13 +3,21 @@
 Training Progress Window - Shows real-time PointNet training progress with GPU monitoring.
 """
 
-import subprocess
 import time
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5 import QtWidgets, QtCore, QtGui
+
+# Use pynvml for fork-free GPU monitoring (subprocess.run forks, which is unsafe
+# when another thread has an active CUDA context — causes segfaults).
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    _nvml_available = True
+except Exception:
+    _nvml_available = False
 
 
 class TrainingProgressWindow(QtWidgets.QDialog):
@@ -274,33 +282,25 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         self.gpu_timer.start(2000)  # Update every 2 seconds
 
     def _update_gpu_stats(self):
-        """Update GPU statistics using nvidia-smi."""
-        try:
-            # Query GPU stats using nvidia-smi
-            result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu',
-                 '--format=csv,noheader,nounits'],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
+        """Update GPU statistics using pynvml (no fork — safe with concurrent CUDA)."""
+        if _nvml_available:
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
 
-            if result.returncode == 0:
-                # Parse output: "85, 3072, 8192, 72"
-                stats = result.stdout.strip().split(',')
-                if len(stats) >= 4:
-                    gpu_util = stats[0].strip()
-                    mem_used = float(stats[1].strip()) / 1024  # Convert MB to GB
-                    mem_total = float(stats[2].strip()) / 1024
-                    temp = stats[3].strip()
+                mem_used_gb = mem.used / (1024 ** 3)
+                mem_total_gb = mem.total / (1024 ** 3)
 
-                    self.gpu_usage_label.setText(f"GPU Usage:       {gpu_util}%")
-                    self.gpu_memory_label.setText(f"GPU Memory:      {mem_used:.2f} / {mem_total:.2f} GB ({mem_used/mem_total*100:.0f}%)")
-                    self.gpu_temp_label.setText(f"GPU Temperature: {temp}°C")
-            else:
+                self.gpu_usage_label.setText(f"GPU Usage:       {util.gpu}%")
+                self.gpu_memory_label.setText(
+                    f"GPU Memory:      {mem_used_gb:.2f} / {mem_total_gb:.2f} GB "
+                    f"({mem.used / mem.total * 100:.0f}%)")
+                self.gpu_temp_label.setText(f"GPU Temperature: {temp}°C")
+            except Exception:
                 self._set_gpu_unavailable()
-
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        else:
             self._set_gpu_unavailable()
 
     def _set_gpu_unavailable(self):
@@ -355,9 +355,10 @@ class TrainingProgressWindow(QtWidgets.QDialog):
                                label='Validation', linewidth=1)
             self.ax_acc.legend(loc='lower right', fontsize=9)
 
-        # Adjust layout and refresh canvas
+        # Adjust layout and refresh canvas (draw_idle defers to the next event
+        # loop iteration — safer than synchronous draw() from timer callbacks)
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def update_epoch(self, epoch, train_loss, train_acc, val_loss, val_acc,
                      learning_rate=None, train_miou=None, val_miou=None):
@@ -449,14 +450,10 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         # Update learning curve plots
         self._update_plots()
 
-        # Force update
-        QtWidgets.QApplication.processEvents()
-
     def training_started(self):
         """Mark training as started."""
         self.start_time = time.time()
         self.status_label.setText("Training started...")
-        QtWidgets.QApplication.processEvents()
 
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
@@ -508,6 +505,16 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         self.show()
 
         QtWidgets.QApplication.processEvents()
+
+    def save_snapshot(self, file_path):
+        """Save a screenshot of the entire dialog to an image file.
+
+        Args:
+            file_path: Output file path (e.g. '/path/to/training_progress.png')
+        """
+        pixmap = self.grab()
+        pixmap.save(file_path, 'PNG')
+        print(f"Training progress snapshot saved to: {file_path}")
 
     def closeEvent(self, event):
         """Override close event to prevent closing during training."""
