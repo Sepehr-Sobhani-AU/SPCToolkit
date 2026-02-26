@@ -410,6 +410,8 @@ class TrainPointNetPlugin(ActionPlugin):
                 history = {'loss': [], 'acc': [], 'val_loss': [], 'val_acc': []}
                 best_val_acc = 0.0
                 best_model_state = None
+                best_per_class_acc = {}
+                final_per_class_acc = {}
                 epochs_without_improvement = 0
                 was_cancelled = False
 
@@ -454,6 +456,7 @@ class TrainPointNetPlugin(ActionPlugin):
                     val_loss = 0.0
                     val_correct = 0
                     val_total = 0
+                    val_confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
 
                     with torch.no_grad():
                         for batch_data, batch_labels in val_loader:
@@ -468,8 +471,23 @@ class TrainPointNetPlugin(ActionPlugin):
                             val_correct += (predictions == batch_labels).sum().item()
                             val_total += batch_data.size(0)
 
+                            # Update confusion matrix
+                            p = predictions.cpu().numpy()
+                            l = batch_labels.cpu().numpy()
+                            for pred_i, true_i in zip(p, l):
+                                if 0 <= true_i < num_classes and 0 <= pred_i < num_classes:
+                                    val_confusion[true_i, pred_i] += 1
+
                     val_loss /= val_total
                     val_acc = val_correct / val_total
+
+                    # Compute per-class accuracy from confusion matrix
+                    val_per_class_acc = {}
+                    for c in range(num_classes):
+                        class_total = val_confusion[c].sum()
+                        if class_total > 0:
+                            val_per_class_acc[c] = float(val_confusion[c, c]) / class_total
+                    final_per_class_acc = val_per_class_acc.copy()
 
                     # Update history
                     history['loss'].append(train_loss)
@@ -503,6 +521,7 @@ class TrainPointNetPlugin(ActionPlugin):
                     if val_acc > best_val_acc:
                         best_val_acc = val_acc
                         best_model_state = model.state_dict().copy()
+                        best_per_class_acc = val_per_class_acc.copy()
                         epochs_without_improvement = 0
                         print(f"  -> New best model (val_acc: {val_acc:.5f})")
 
@@ -578,15 +597,43 @@ class TrainPointNetPlugin(ActionPlugin):
                         'num_points': int(num_points),
                         'note': 'Each epoch randomly samples different subsets of points'
                     },
-                    'source_metadata': metadata
+                    'source_metadata': metadata,
+                    'best_per_class_accuracy': {
+                        class_mapping.get(cid, f"Class_{cid}"): float(acc)
+                        for cid, acc in best_per_class_acc.items()
+                    },
+                    'final_per_class_accuracy': {
+                        class_mapping.get(cid, f"Class_{cid}"): float(acc)
+                        for cid, acc in final_per_class_acc.items()
+                    },
                 }
 
                 metadata_path = os.path.join(unique_output_dir, 'training_metadata.json')
                 with open(metadata_path, 'w') as f:
                     json.dump(training_metadata, f, indent=2)
 
+                # Write per-class accuracy CSV
+                csv_path = os.path.join(unique_output_dir, 'per_class_accuracy.csv')
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['class_id', 'class_name', 'best_accuracy', 'final_accuracy'])
+                    for cid in sorted(set(list(best_per_class_acc.keys()) + list(final_per_class_acc.keys()))):
+                        name = class_mapping.get(cid, f"Class_{cid}")
+                        writer.writerow([cid, name,
+                                        f"{best_per_class_acc.get(cid, 0.0):.6f}",
+                                        f"{final_per_class_acc.get(cid, 0.0):.6f}"])
+                    # Summary row
+                    best_mean = sum(best_per_class_acc.values()) / max(len(best_per_class_acc), 1)
+                    final_mean = sum(final_per_class_acc.values()) / max(len(final_per_class_acc), 1)
+                    writer.writerow(['', 'Mean', f"{best_mean:.6f}", f"{final_mean:.6f}"])
+                print(f"Per-class accuracy saved to: {csv_path}")
+
                 # Mark training as completed
                 progress_window.training_completed(best_val_acc, cancelled=was_cancelled)
+
+                # Save screenshot of the training progress dialog
+                progress_window.save_snapshot(
+                    os.path.join(unique_output_dir, 'training_progress.png'))
 
                 print("\n" + "="*80)
                 if was_cancelled:
