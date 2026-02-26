@@ -569,6 +569,12 @@ class TrainPointNetPlugin(ActionPlugin):
                 with open(mapping_path, 'w') as f:
                     json.dump(class_mapping, f, indent=2)
 
+                # Mark training as completed and save screenshot BEFORE
+                # metadata/CSV so the dialog is always closeable
+                progress_window.training_completed(best_val_acc, cancelled=was_cancelled)
+                progress_window.save_snapshot(
+                    os.path.join(unique_output_dir, 'training_progress.png'))
+
                 # Save training metadata
                 training_metadata = {
                     'framework': 'PyTorch',
@@ -628,13 +634,6 @@ class TrainPointNetPlugin(ActionPlugin):
                     writer.writerow(['', 'Mean', f"{best_mean:.6f}", f"{final_mean:.6f}"])
                 print(f"Per-class accuracy saved to: {csv_path}")
 
-                # Mark training as completed
-                progress_window.training_completed(best_val_acc, cancelled=was_cancelled)
-
-                # Save screenshot of the training progress dialog
-                progress_window.save_snapshot(
-                    os.path.join(unique_output_dir, 'training_progress.png'))
-
                 print("\n" + "="*80)
                 if was_cancelled:
                     print("Training Cancelled by User")
@@ -649,7 +648,7 @@ class TrainPointNetPlugin(ActionPlugin):
                 if repetitions == 1:
                     if was_cancelled:
                         QMessageBox.information(
-                            main_window,
+                            progress_window,
                             "Training Cancelled",
                             f"Training was cancelled by user.\n\n"
                             f"Best validation accuracy: {best_val_acc:.2%}\n"
@@ -658,7 +657,7 @@ class TrainPointNetPlugin(ActionPlugin):
                         )
                     else:
                         QMessageBox.information(
-                            main_window,
+                            progress_window,
                             "Training Complete",
                             f"PointNet training completed successfully!\n\n"
                             f"Best validation accuracy: {best_val_acc:.2%}\n"
@@ -711,15 +710,14 @@ class TrainPointNetPlugin(ActionPlugin):
 
                 try:
                     if 'progress_window' in locals():
-                        progress_window.training_complete = True
-                        progress_window.cancel_button.setVisible(False)
-                        progress_window.close_button.setVisible(True)
+                        progress_window.training_completed(0.0, cancelled=False)
                         progress_window.status_label.setText("Training failed - see error message")
                 except:
                     pass
 
+                error_parent = progress_window if 'progress_window' in locals() else main_window
                 QMessageBox.critical(
-                    main_window,
+                    error_parent,
                     f"Training Error (Run {run_number}/{repetitions})",
                     f"An error occurred during training:\n\n{str(e)}"
                 )

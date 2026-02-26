@@ -688,25 +688,28 @@ class TrainSegModelPlugin(ActionPlugin):
                 with open(os.path.join(unique_output_dir, 'training_metadata.json'), 'w') as f:
                     json.dump(training_metadata, f, indent=2)
 
-                # Write per-class IoU CSV
-                best_pci = training_state['best_val_per_class_iou']
-                final_pci = training_state['final_val_per_class_iou']
-                csv_path = os.path.join(unique_output_dir, 'per_class_iou.csv')
-                with open(csv_path, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['class_id', 'class_name', 'best_iou', 'final_iou'])
-                    for cid in sorted(set(list(best_pci.keys()) + list(final_pci.keys()))):
-                        if cid in ignore_classes:
-                            continue
-                        name = class_mapping.get(cid, f"Class_{cid}")
-                        writer.writerow([cid, name,
-                                        f"{best_pci.get(cid, 0.0):.6f}",
-                                        f"{final_pci.get(cid, 0.0):.6f}"])
-                    # Summary row
-                    best_miou = sum(best_pci.values()) / max(len(best_pci), 1)
-                    final_miou = sum(final_pci.values()) / max(len(final_pci), 1)
-                    writer.writerow(['', 'mIoU', f"{best_miou:.6f}", f"{final_miou:.6f}"])
-                print(f"Per-class IoU saved to: {csv_path}")
+                # Write per-class IoU CSV (non-fatal — don't block training completion)
+                try:
+                    best_pci = training_state['best_val_per_class_iou']
+                    final_pci = training_state['final_val_per_class_iou']
+                    csv_path = os.path.join(unique_output_dir, 'per_class_iou.csv')
+                    with open(csv_path, 'w', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(['class_id', 'class_name', 'best_iou', 'final_iou'])
+                        for cid in sorted(set(list(best_pci.keys()) + list(final_pci.keys()))):
+                            if cid in ignore_classes:
+                                continue
+                            name = class_mapping.get(cid, f"Class_{cid}")
+                            writer.writerow([cid, name,
+                                            f"{best_pci.get(cid, 0.0):.6f}",
+                                            f"{final_pci.get(cid, 0.0):.6f}"])
+                        # Summary row
+                        best_miou = sum(best_pci.values()) / max(len(best_pci), 1)
+                        final_miou = sum(final_pci.values()) / max(len(final_pci), 1)
+                        writer.writerow(['', 'mIoU', f"{best_miou:.6f}", f"{final_miou:.6f}"])
+                    print(f"Per-class IoU saved to: {csv_path}")
+                except Exception as csv_err:
+                    print(f"Warning: Failed to save per-class IoU CSV: {csv_err}")
 
             except RuntimeError as e:
                 err_str = str(e)
@@ -787,24 +790,22 @@ class TrainSegModelPlugin(ActionPlugin):
             error = training_state['error']
             epochs_completed = len(history['loss'])
 
+            # Always mark dialog as completed first so it's closeable
             if error:
-                print(f"\nERROR during training:\n{error}")
-                try:
-                    progress_window.training_complete = True
-                    progress_window.cancel_button.setVisible(False)
-                    progress_window.close_button.setVisible(True)
-                    progress_window.status_label.setText("Training failed")
-                except:
-                    pass
-                QMessageBox.critical(main_window, "Training Error",
-                                   f"An error occurred:\n\n{error}")
-                return
+                progress_window.training_completed(0.0, cancelled=False)
+                progress_window.status_label.setText("Training failed")
+            else:
+                progress_window.training_completed(best_val_miou, cancelled=was_cancelled)
 
-            progress_window.training_completed(best_val_miou, cancelled=was_cancelled)
-
-            # Save screenshot of the training progress dialog
+            # Save screenshot (after dialog shows final state)
             progress_window.save_snapshot(
                 os.path.join(unique_output_dir, 'training_progress.png'))
+
+            if error:
+                print(f"\nERROR during training:\n{error}")
+                QMessageBox.critical(progress_window, "Training Error",
+                                   f"An error occurred:\n\n{error}")
+                return
 
             print(f"\n{'='*80}")
             print("Training Complete!" if not was_cancelled else "Training Cancelled!")
@@ -815,13 +816,13 @@ class TrainSegModelPlugin(ActionPlugin):
             print(f"{'='*80}")
 
             if was_cancelled:
-                QMessageBox.information(main_window, "Training Cancelled",
+                QMessageBox.information(progress_window, "Training Cancelled",
                     f"Training cancelled.\n\n"
                     f"Best val mIoU: {best_val_miou:.2%}\n"
                     f"Epochs: {epochs_completed}\n\n"
                     f"Saved to:\n{unique_output_dir}/")
             else:
-                QMessageBox.information(main_window, "Training Complete",
+                QMessageBox.information(progress_window, "Training Complete",
                     f"Segmentation training completed!\n\n"
                     f"Best val mIoU: {best_val_miou:.2%}\n"
                     f"Epochs: {epochs_completed}\n\n"
