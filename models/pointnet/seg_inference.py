@@ -8,7 +8,7 @@ inference on large point clouds.
 import os
 import json
 import numpy as np
-from typing import Dict, Tuple, Optional, Callable
+from typing import Dict, List, Tuple, Optional, Callable
 from pathlib import Path
 
 import torch
@@ -155,9 +155,11 @@ def segment_point_cloud_blockwise(
     if progress_callback:
         progress_callback(0, total_blocks, f"Processing {total_blocks} blocks...")
 
-    # Prepare all block data
-    block_batch = []
-    block_indices_batch = []
+    # --- Phase 1: Prepare chunks for all blocks ---
+    # Each entry: (chunk_array, block_id) for flat batching
+    all_chunks = []
+    # Per-block metadata: (block_indices, primary_mask, perm_indices, n_original, n_chunks)
+    block_meta = []
 
     for block_idx, (block_point_indices, block_primary_mask) in enumerate(blocks):
         if len(block_point_indices) == 0:
@@ -165,10 +167,8 @@ def segment_point_cloud_blockwise(
 
         block_xyz = points[block_point_indices]
 
-        # Compute features for this block
-        features = _compute_block_features(
+        features = _compute_full_block_features(
             block_xyz,
-            num_points=num_points,
             normalize=normalize_enabled,
             use_normals=use_normals,
             use_eigenvalues=use_eigenvalues,
@@ -180,20 +180,75 @@ def segment_point_cloud_blockwise(
         if features is None:
             continue
 
-        # Store original -> subsampled mapping
-        block_batch.append((features, block_point_indices, block_primary_mask))
+        chunks, perm_indices, n_original = _create_chunks(features, num_points)
 
-        # Process in GPU batches
-        if len(block_batch) >= batch_size or block_idx == total_blocks - 1:
-            _process_batch(
-                block_batch, model, device, num_points,
-                num_classes, prob_accum, count_accum
-            )
-            block_batch.clear()
+        bid = len(block_meta)
+        block_meta.append((block_point_indices, block_primary_mask,
+                           perm_indices, n_original, len(chunks)))
+
+        for chunk in chunks:
+            all_chunks.append((chunk, bid))
 
         if progress_callback:
             progress_callback(block_idx + 1, total_blocks,
-                            f"Block {block_idx + 1}/{total_blocks}")
+                              f"Preparing block {block_idx + 1}/{total_blocks}")
+
+    # --- Phase 2: Infer in GPU batches, map back to block positions ---
+    # Allocate per-block probability accumulators
+    block_probs_list = [
+        np.zeros((meta[3], num_classes), dtype=np.float64)  # (n_original, C)
+        for meta in block_meta
+    ]
+
+    total_chunks = len(all_chunks)
+
+    # Precompute: for each chunk, its index within its block
+    block_chunk_counters = {}  # bid -> next chunk index
+    chunk_within_block_map = []  # parallel to all_chunks
+    for chunk_array, bid in all_chunks:
+        idx = block_chunk_counters.get(bid, 0)
+        chunk_within_block_map.append(idx)
+        block_chunk_counters[bid] = idx + 1
+
+    for batch_start in range(0, total_chunks, batch_size):
+        batch_end = min(batch_start + batch_size, total_chunks)
+        chunk_arrays = [all_chunks[i][0] for i in range(batch_start, batch_end)]
+
+        batch_probs = _process_chunks(chunk_arrays, model, device)  # (B, num_points, C)
+
+        for j in range(len(chunk_arrays)):
+            chunk_idx_global = batch_start + j
+            _, bid = all_chunks[chunk_idx_global]
+            _, _, perm_indices, n_original, n_block_chunks = block_meta[bid]
+
+            chunk_probs = batch_probs[j]  # (num_points, C)
+            chunk_within_block = chunk_within_block_map[chunk_idx_global]
+
+            perm_start = chunk_within_block * num_points
+            perm_end = min(perm_start + num_points, n_original)
+            n_real = perm_end - perm_start  # real points in this chunk (rest is padding)
+
+            # Map predictions back: permuted positions -> original block positions
+            original_positions = perm_indices[perm_start:perm_end]
+            block_probs_list[bid][original_positions] += chunk_probs[:n_real]
+
+    # --- Phase 3: Accumulate into global arrays with overlap weighting ---
+    for bid, (block_indices, primary_mask, _, _, _) in enumerate(block_meta):
+        block_probs = block_probs_list[bid]
+
+        # Primary points get full weight
+        primary_indices = block_indices[primary_mask]
+        primary_probs = block_probs[primary_mask]
+        prob_accum[primary_indices] += primary_probs
+        count_accum[primary_indices] += 1.0
+
+        # Overlap points get partial weight for smooth blending
+        overlap_mask = ~primary_mask
+        overlap_indices = block_indices[overlap_mask]
+        if len(overlap_indices) > 0:
+            overlap_probs = block_probs[overlap_mask]
+            prob_accum[overlap_indices] += overlap_probs * 0.5
+            count_accum[overlap_indices] += 0.5
 
     # Assign labels from accumulated probabilities
     labels = np.zeros(N, dtype=np.int32)
@@ -270,9 +325,8 @@ def _create_spatial_blocks(
     return blocks
 
 
-def _compute_block_features(
+def _compute_full_block_features(
     block_xyz: np.ndarray,
-    num_points: int,
     normalize: bool,
     use_normals: bool,
     use_eigenvalues: bool,
@@ -281,9 +335,9 @@ def _compute_block_features(
     eigenvalues_smooth: bool
 ) -> Optional[np.ndarray]:
     """
-    Compute features for a single block of points.
+    Compute features for all points in a block (no subsampling).
 
-    Returns features array of shape (num_points, num_features) or None if failed.
+    Returns features array of shape (n_block_points, num_features) or None if failed.
     """
     if len(block_xyz) < 3:
         return None
@@ -314,85 +368,83 @@ def _compute_block_features(
             features.append(np.zeros((len(pc.points), 3), dtype=np.float32))
 
     combined = np.hstack(features).astype(np.float32)
-
-    # Subsample or pad to num_points
-    if len(combined) > num_points:
-        indices = np.random.choice(len(combined), num_points, replace=False)
-        combined = combined[indices]
-    elif len(combined) < num_points:
-        deficit = num_points - len(combined)
-        if len(combined) > 0:
-            pad_indices = np.random.choice(len(combined), deficit, replace=True)
-            combined = np.vstack([combined, combined[pad_indices]])
-        else:
-            num_feat = combined.shape[1] if combined.ndim == 2 else 9
-            combined = np.zeros((num_points, num_feat), dtype=np.float32)
-
     return combined
 
 
-def _process_batch(
-    block_batch: list,
-    model: PointNetSegmentation,
-    device: torch.device,
-    num_points: int,
-    num_classes: int,
-    prob_accum: np.ndarray,
-    count_accum: np.ndarray
-):
+def _create_chunks(
+    features: np.ndarray,
+    num_points: int
+) -> Tuple[List[np.ndarray], np.ndarray, int]:
     """
-    Process a batch of blocks through the model and accumulate probabilities.
+    Split a variable-size feature array into fixed-size chunks for model input.
+
+    Uses random permutation so each chunk has spatially diverse points,
+    matching the random subsampling used during training.
 
     Args:
-        block_batch: List of (features, block_indices, primary_mask) tuples
+        features: (n, F) feature array for a block
+        num_points: Fixed chunk size expected by the model
+
+    Returns:
+        (chunks, perm_indices, n_original) where:
+        - chunks: list of (num_points, F) arrays
+        - perm_indices: (n,) array mapping permuted positions back to original
+        - n_original: number of real points
+    """
+    n = len(features)
+
+    if n <= num_points:
+        # Single chunk, pad with duplicated points
+        perm_indices = np.arange(n)
+        if n < num_points:
+            pad_indices = np.random.choice(n, num_points - n, replace=True)
+            chunk = np.vstack([features, features[pad_indices]])
+        else:
+            chunk = features
+        return [chunk], perm_indices, n
+
+    # Multiple chunks: randomly permute all points, split into chunks
+    perm_indices = np.random.permutation(n)
+    permuted = features[perm_indices]
+
+    n_chunks = int(np.ceil(n / num_points))
+    chunks = []
+    for c in range(n_chunks):
+        start = c * num_points
+        end = min(start + num_points, n)
+        chunk_data = permuted[start:end]
+
+        # Pad last chunk if needed
+        if len(chunk_data) < num_points:
+            deficit = num_points - len(chunk_data)
+            pad_indices = np.random.choice(len(chunk_data), deficit, replace=True)
+            chunk_data = np.vstack([chunk_data, chunk_data[pad_indices]])
+
+        chunks.append(chunk_data)
+
+    return chunks, perm_indices, n
+
+
+def _process_chunks(
+    chunk_batch: List[np.ndarray],
+    model: PointNetSegmentation,
+    device: torch.device
+) -> np.ndarray:
+    """
+    Run a batch of fixed-size chunks through the model.
+
+    Args:
+        chunk_batch: List of (num_points, F) arrays
         model: Segmentation model
         device: Torch device
-        num_points: Points per block for model
-        num_classes: Number of classes
-        prob_accum: (N, C) accumulator for softmax probs
-        count_accum: (N,) count accumulator
+
+    Returns:
+        (B, num_points, C) softmax probability array
     """
-    # Stack features into batch tensor
-    batch_features = np.stack([item[0] for item in block_batch])
-    batch_tensor = torch.FloatTensor(batch_features).to(device)
+    batch_tensor = torch.FloatTensor(np.stack(chunk_batch)).to(device)
 
     with torch.no_grad():
-        logits = model(batch_tensor)  # (B, num_points, C)
-        probs = F.softmax(logits, dim=2).cpu().numpy()  # (B, num_points, C)
+        logits = model(batch_tensor)
+        probs = F.softmax(logits, dim=2).cpu().numpy()
 
-    for i, (features, block_indices, primary_mask) in enumerate(block_batch):
-        block_probs = probs[i]  # (num_points, C)
-
-        # We subsampled/padded the block to num_points.
-        # Map predictions back to original points.
-        n_original = len(block_indices)
-
-        if n_original <= num_points:
-            # We used all original points (possibly padded)
-            # Take only the first n_original predictions
-            original_probs = block_probs[:n_original]
-        else:
-            # We subsampled - we need to map back
-            # For subsampled blocks, we can only assign to the subsampled points
-            # Use uniform assignment to all block points as approximation
-            # Since subsampling was random, distribute model's average prediction
-            avg_prob = np.mean(block_probs, axis=0, keepdims=True)
-            original_probs = np.tile(avg_prob, (n_original, 1))
-
-        # Only accumulate for primary points (not in overlap zone)
-        primary_indices = block_indices[primary_mask]
-        primary_probs = original_probs[primary_mask]
-
-        # Also accumulate overlap points but with lower weight for smooth blending
-        overlap_mask = ~primary_mask
-        overlap_indices = block_indices[overlap_mask]
-        overlap_probs = original_probs[overlap_mask]
-
-        # Primary points get full weight
-        prob_accum[primary_indices] += primary_probs
-        count_accum[primary_indices] += 1.0
-
-        # Overlap points get partial weight for smooth blending
-        if len(overlap_indices) > 0:
-            prob_accum[overlap_indices] += overlap_probs * 0.5
-            count_accum[overlap_indices] += 0.5
+    return probs

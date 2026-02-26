@@ -47,7 +47,7 @@ Source: `plugins/plugin_manager.py`
 PluginManager.__init__()
   └─ load_plugins()
        └─ os.walk(plugin_root)          # Recursive directory scan
-            ├─ Skip: __pycache__, hidden dirs (.*), __init__.py
+            ├─ Skip dirs: __pycache__, hidden (.*); skip files: __-prefixed
             ├─ Compute menu_path from relative folder path
             │    root dir → menu_path = None (system plugin, not in menus)
             │    subdir   → menu_path = relative path with "/" separators
@@ -96,9 +96,9 @@ Folders and files use **3-digit + underscore** prefixes (`000_`, `010_`, `085_`)
 
 ### Display Name Formatting
 
-`MainWindow._format_plugin_name()` transforms snake_case plugin names:
+`MainWindow._format_plugin_name()` transforms plugin names for menu display:
 
-1. Strip numeric prefix (`000_save_project` → `save_project`)
+1. Strip numeric prefix if present (defensive — `get_name()` values typically don't have them)
 2. Replace underscores with spaces
 3. Title Case each word
 4. Keep known acronyms uppercase: **DBSCAN**, **HDBSCAN**, **SOR**, **MLS**, **PCA**, **ICP**
@@ -410,4 +410,4 @@ Typical workflow: user adds a new `.py` file to `plugins/SomeMenu/`, clicks "Sca
 |-----------|-------------|------|-------|
 | Plugins | manage_plugins | Action | `ManagePluginsPlugin` |
 
-**Totals:** ~56 plugins (38 Action, 18 Analysis) across 12 menu categories.
+**Totals:** 56 plugins (36 Action, 20 Analysis) across 12 menu categories.

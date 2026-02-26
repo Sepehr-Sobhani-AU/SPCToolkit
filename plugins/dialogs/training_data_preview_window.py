@@ -48,6 +48,9 @@ class DataPreviewWindow(QDialog):
         self.metadata = None
         self.feature_order = []
         self.current_sample_data = None
+        self.current_labels = None  # Per-point labels for segmentation data
+        self.class_mapping = None   # Label index -> class name mapping
+        self.flat_mode = False      # True when files are directly in directory (no class subdirs)
 
         # Setup UI
         self._setup_ui()
@@ -194,8 +197,16 @@ class DataPreviewWindow(QDialog):
                     # Extract feature order for color mode detection
                     if "data_format" in self.metadata and "feature_order" in self.metadata["data_format"]:
                         self.feature_order = self.metadata["data_format"]["feature_order"]
+                    elif "feature_order" in self.metadata:
+                        self.feature_order = self.metadata["feature_order"]
                     else:
                         self.feature_order = []
+
+                    # Extract class mapping if present (segmentation data)
+                    if "class_mapping" in self.metadata:
+                        self.class_mapping = self.metadata["class_mapping"]
+                    else:
+                        self.class_mapping = None
 
                     # Enable metadata button
                     self.metadata_button.setEnabled(True)
@@ -204,11 +215,13 @@ class DataPreviewWindow(QDialog):
                     # Metadata loading failed, but continue without it
                     self.metadata = None
                     self.feature_order = []
+                    self.class_mapping = None
                     self.metadata_button.setEnabled(False)
             else:
                 # No metadata file, continue without it
                 self.metadata = None
                 self.feature_order = []
+                self.class_mapping = None
                 self.metadata_button.setEnabled(False)
 
             # Scan for classes
@@ -225,7 +238,7 @@ class DataPreviewWindow(QDialog):
             )
 
     def _scan_classes(self):
-        """Scan directory for class subdirectories."""
+        """Scan directory for class subdirectories or flat file layout."""
         if not self.current_directory:
             return
 
@@ -235,29 +248,48 @@ class DataPreviewWindow(QDialog):
             for item in os.listdir(self.current_directory):
                 item_path = os.path.join(self.current_directory, item)
                 if os.path.isdir(item_path):
-                    # Check if directory contains .npy files
-                    npy_files = [f for f in os.listdir(item_path) if f.endswith('.npy')]
-                    if npy_files:
+                    # Check if directory contains .npy or .npz files
+                    data_files = [f for f in os.listdir(item_path) if f.endswith('.npy') or f.endswith('.npz')]
+                    if data_files:
                         classes.append(item)
         except Exception as e:
             return
 
-        # Sort alphabetically
-        classes.sort()
-
-        # Update combo box
-        self.class_combo.clear()
-        self.class_combo.addItems(classes)
-
         if classes:
+            # Standard class-subdirectory layout
+            self.flat_mode = False
+            classes.sort()
+            self.class_combo.clear()
+            self.class_combo.addItems(classes)
             self.class_combo.setEnabled(True)
         else:
-            self.class_combo.setEnabled(False)
-            QMessageBox.warning(
-                self,
-                "No Classes Found",
-                f"No class directories with .npy files found in:\n{self.current_directory}"
-            )
+            # Check for flat layout: data files directly in the directory
+            try:
+                root_files = [f for f in os.listdir(self.current_directory)
+                              if f.endswith('.npy') or f.endswith('.npz')]
+            except Exception:
+                root_files = []
+
+            if root_files:
+                self.flat_mode = True
+                self.class_combo.clear()
+                self.class_combo.addItem("(all files)")
+                self.class_combo.setEnabled(False)
+                # Directly populate the file list
+                root_files.sort()
+                self.file_list.clear()
+                self.file_list.addItems(root_files)
+                self.file_list.setEnabled(True)
+                self.color_combo.setEnabled(True)
+            else:
+                self.flat_mode = False
+                self.class_combo.clear()
+                self.class_combo.setEnabled(False)
+                QMessageBox.warning(
+                    self,
+                    "No Data Found",
+                    f"No .npy/.npz files found in:\n{self.current_directory}"
+                )
 
     def _update_color_modes(self):
         """Update color mode options based on available features."""
@@ -301,9 +333,9 @@ class DataPreviewWindow(QDialog):
         if not os.path.exists(class_dir):
             return
 
-        # Scan for .npy files
+        # Scan for .npy and .npz files
         try:
-            files = [f for f in os.listdir(class_dir) if f.endswith('.npy')]
+            files = [f for f in os.listdir(class_dir) if f.endswith('.npy') or f.endswith('.npz')]
             files.sort()  # Sort files
 
             # Update file list
@@ -332,12 +364,14 @@ class DataPreviewWindow(QDialog):
             return
 
         filename = current.text()
-        class_name = self.class_combo.currentText()
 
-        if not class_name:
-            return
-
-        filepath = os.path.join(self.current_directory, class_name, filename)
+        if self.flat_mode:
+            filepath = os.path.join(self.current_directory, filename)
+        else:
+            class_name = self.class_combo.currentText()
+            if not class_name:
+                return
+            filepath = os.path.join(self.current_directory, class_name, filename)
 
         # Load and visualize
         self._load_and_visualize(filepath)
@@ -350,12 +384,25 @@ class DataPreviewWindow(QDialog):
             filepath: Path to .npy file
         """
         try:
-            # Load data
-            self.current_sample_data = np.load(filepath)
+            # Load data (.npy returns array directly, .npz returns dict-like object)
+            loaded = np.load(filepath)
+            self.current_labels = None
+            if isinstance(loaded, np.ndarray):
+                self.current_sample_data = loaded
+            else:
+                # .npz file: check for features/labels keys (segmentation format)
+                keys = list(loaded.keys())
+                if 'features' in keys:
+                    self.current_sample_data = loaded['features']
+                    if 'labels' in keys:
+                        self.current_labels = loaded['labels']
+                else:
+                    self.current_sample_data = loaded[keys[0]]
+                loaded.close()
 
-            # Detect RGB columns if present (columns 3, 4, 5)
-            # Update color modes to include RGB option if available
+            # Detect optional color modes based on loaded data
             self._detect_and_update_rgb_option()
+            self._detect_and_update_labels_option()
 
             # Visualize with current color mode and zoom to fit new data
             self._update_visualization(zoom_to_extent=True)
@@ -404,6 +451,18 @@ class DataPreviewWindow(QDialog):
                 # Insert RGB option after "Uniform Gray" (at index 1)
                 self.color_combo.insertItem(1, "RGB Colors")
 
+    def _detect_and_update_labels_option(self):
+        """Add 'Semantic Labels' color option when per-point labels are available."""
+        if self.current_labels is None:
+            return
+
+        current_items = [self.color_combo.itemText(i) for i in range(self.color_combo.count())]
+        if "Semantic Labels" not in current_items:
+            # Insert right after "Uniform Gray"
+            self.color_combo.insertItem(1, "Semantic Labels")
+            # Auto-select it for segmentation data
+            self.color_combo.setCurrentIndex(1)
+
     def _update_visualization(self, zoom_to_extent: bool = False):
         """
         Update viewer with current sample and color mode.
@@ -447,6 +506,23 @@ class DataPreviewWindow(QDialog):
         n = len(points)
 
         if mode == "Uniform Gray":
+            return np.full((n, 3), 0.5, dtype=np.float32)
+
+        elif mode == "Semantic Labels":
+            if self.current_labels is not None:
+                # Distinct colors for up to 20 classes (tab20 style)
+                label_palette = np.array([
+                    [0.12, 0.47, 0.71], [1.00, 0.50, 0.05], [0.17, 0.63, 0.17],
+                    [0.84, 0.15, 0.16], [0.58, 0.40, 0.74], [0.55, 0.34, 0.29],
+                    [0.89, 0.47, 0.76], [0.50, 0.50, 0.50], [0.74, 0.74, 0.13],
+                    [0.09, 0.75, 0.81], [0.68, 0.78, 0.91], [1.00, 0.73, 0.47],
+                    [0.60, 0.87, 0.54], [1.00, 0.60, 0.59], [0.77, 0.69, 0.84],
+                    [0.77, 0.61, 0.58], [0.95, 0.71, 0.85], [0.78, 0.78, 0.78],
+                    [0.86, 0.86, 0.55], [0.62, 0.85, 0.90],
+                ], dtype=np.float32)
+                labels = self.current_labels.astype(int)
+                colors = label_palette[labels % len(label_palette)]
+                return colors
             return np.full((n, 3), 0.5, dtype=np.float32)
 
         elif mode == "Normals (RGB)":
