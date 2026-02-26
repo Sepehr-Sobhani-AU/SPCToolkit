@@ -62,7 +62,7 @@ class PointNetSegmentation(nn.Module):
         self.seg_conv1 = ConvBNReLU(1088, 512)
         self.seg_conv2 = ConvBNReLU(512, 256)
         self.seg_conv3 = ConvBNReLU(256, 128)
-        self.dropout = nn.Dropout(0.3)
+        self.dropout = nn.Dropout(0.5)
         self.seg_output = nn.Conv1d(128, num_classes, 1)
 
     def forward(self, x):

@@ -489,6 +489,10 @@ class TrainPointNetPlugin(ActionPlugin):
                         val_acc,
                         learning_rate=current_lr
                     )
+                    # Classification runs on the main thread — explicit event processing
+                    # keeps the UI responsive (segmentation doesn't need this since it
+                    # uses a background thread with QTimer polling).
+                    QtWidgets.QApplication.processEvents()
 
                     print(f"Epoch {epoch+1:3d}/{epochs} - "
                           f"loss: {train_loss:.4f} - acc: {train_acc:.4f} - "

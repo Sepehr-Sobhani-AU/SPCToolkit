@@ -88,6 +88,14 @@ def load_seg_model_with_metadata(
 
     metadata['_device'] = device
 
+    # Load per-feature standardization stats (backward compat: None if absent)
+    if 'feature_mean' in metadata:
+        metadata['_feature_mean'] = np.array(metadata['feature_mean'], dtype=np.float32)
+        metadata['_feature_std'] = np.array(metadata['feature_std'], dtype=np.float32)
+    else:
+        metadata['_feature_mean'] = None
+        metadata['_feature_std'] = None
+
     return model, class_mapping, metadata
 
 
@@ -125,6 +133,10 @@ def segment_point_cloud_blockwise(
     num_points = metadata['num_points']
     num_features = metadata['num_features']
     device = metadata.get('_device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+
+    # Per-feature standardization stats (None for old models without them)
+    feature_mean = metadata.get('_feature_mean', None)
+    feature_std = metadata.get('_feature_std', None)
 
     # Determine feature configuration
     use_normals = num_features >= 6
@@ -174,7 +186,9 @@ def segment_point_cloud_blockwise(
             use_eigenvalues=use_eigenvalues,
             normals_knn=normals_knn,
             eigenvalues_knn=eigenvalues_knn,
-            eigenvalues_smooth=eigenvalues_smooth
+            eigenvalues_smooth=eigenvalues_smooth,
+            feature_mean=feature_mean,
+            feature_std=feature_std
         )
 
         if features is None:
@@ -332,7 +346,9 @@ def _compute_full_block_features(
     use_eigenvalues: bool,
     normals_knn: int,
     eigenvalues_knn: int,
-    eigenvalues_smooth: bool
+    eigenvalues_smooth: bool,
+    feature_mean: Optional[np.ndarray] = None,
+    feature_std: Optional[np.ndarray] = None
 ) -> Optional[np.ndarray]:
     """
     Compute features for all points in a block (no subsampling).
@@ -368,6 +384,11 @@ def _compute_full_block_features(
             features.append(np.zeros((len(pc.points), 3), dtype=np.float32))
 
     combined = np.hstack(features).astype(np.float32)
+
+    # Apply per-feature standardization if stats are available (from training)
+    if feature_mean is not None and feature_std is not None:
+        combined = (combined - feature_mean) / feature_std
+
     return combined
 
 

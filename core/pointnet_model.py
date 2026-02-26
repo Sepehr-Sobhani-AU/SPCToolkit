@@ -66,11 +66,9 @@ class TNet(nn.Module):
         # Transform matrix prediction
         self.transform = nn.Linear(256, num_features * num_features)
 
-        # Initialize transform layer to predict identity matrix
+        # Initialize transform layer to zero so forward() produces 0 + I = I
         nn.init.zeros_(self.transform.weight)
-        nn.init.constant_(self.transform.bias, 0)
-        # Set bias to identity matrix
-        self.transform.bias.data = torch.eye(num_features).flatten()
+        nn.init.zeros_(self.transform.bias)
 
     def forward(self, x):
         # x: (batch, num_features, num_points)
