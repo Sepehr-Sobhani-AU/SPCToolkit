@@ -5,13 +5,16 @@ Computes surface normals for each point using local neighborhood analysis.
 Supports hybrid KNN + radius search and multiple orientation methods
 (viewpoint, custom point, MST-based consistent orientation).
 
-Also produces an eigenvalues branch (same as compute_eigenvalues plugin)
-since eigenvalues are always useful for downstream analysis.
+Also produces an eigenvalues branch since eigenvalues are always useful
+for downstream analysis. Both are extracted from a single KNN query and
+eigendecomposition pass — one call to torch.linalg.eigh() yields both
+eigenvectors (normals) and eigenvalues.
 """
 
 import threading
 from typing import Dict, Any
 import numpy as np
+import torch
 from PyQt5.QtCore import Qt
 from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QMessageBox
@@ -27,9 +30,10 @@ class NormalEstimationPlugin(ActionPlugin):
     """
     Plugin for estimating surface normals from local point neighborhoods.
 
-    Uses Open3D's normal estimation (GPU or CPU backend selected automatically).
-    The result is stored as a Normals branch with normal directions visualized
-    as RGB colors, plus an Eigenvalues branch for downstream analysis.
+    Performs a unified computation: one KNN query + one batched
+    eigendecomposition on GPU. torch.linalg.eigh() returns both eigenvalues
+    and eigenvectors — the smallest eigenvector is the surface normal,
+    and all three eigenvalues characterize local surface geometry.
     """
 
     def get_name(self) -> str:
@@ -152,44 +156,130 @@ class NormalEstimationPlugin(ActionPlugin):
             'done': False,
         }
 
-        backend = global_variables.global_backend_registry.get_normal_estimation()
-
         def _compute():
-            """Heavy computation in background thread."""
+            """Unified KNN + eigendecomposition in background thread."""
             try:
-                # Step 1: Estimate normals via backend
-                global_variables.global_progress = (
-                    None, f"Estimating normals (k={k}, {point_cloud.size:,} points)..."
-                )
-                normals_array = backend.estimate_normals(
-                    point_cloud.points, k, max_radius, batch_size=batch_size
-                )
+                n_points = len(point_cloud.points)
+                points = point_cloud.points.astype(np.float32)
 
-                # Step 2: Orient normals
-                global_variables.global_progress = (50, "Orienting normals...")
+                # Step 1: Single KNN query via backend registry
+                global_variables.global_progress = (
+                    None, f"Building KNN index ({n_points:,} points)..."
+                )
+                registry = global_variables.global_backend_registry
+                knn_backend = registry.get_knn()
+                distances, indices = knn_backend.query(points, k=k)
+
+                use_radius = max_radius != float('inf')
+
+                # Step 2: Unified eigendecomposition — normals + eigenvalues
+                normals_array = np.zeros((n_points, 3), dtype=np.float32)
+                eigenvalues_array = np.zeros((n_points, 3), dtype=np.float32)
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+                with torch.no_grad():
+                    points_torch = torch.from_numpy(points).to(device)
+
+                    for start in range(0, n_points, batch_size):
+                        end = min(start + batch_size, n_points)
+                        bs = end - start
+
+                        batch_indices = torch.from_numpy(
+                            indices[start:end].astype(np.int64)
+                        ).to(device)
+
+                        # Gather neighbor points: (batch, k, 3)
+                        neighbors = points_torch[batch_indices]
+
+                        if use_radius:
+                            batch_distances = torch.from_numpy(
+                                distances[start:end].astype(np.float32)
+                            ).to(device)
+                            radius_mask = batch_distances < max_radius
+                            valid_counts = radius_mask.sum(dim=1)
+                            fallback = valid_counts < 3
+                            radius_mask[fallback] = True
+                            valid_counts[fallback] = k
+                            valid_counts = valid_counts.float()
+                            weights = radius_mask.float().unsqueeze(-1)
+                        else:
+                            valid_counts = torch.full(
+                                (bs,), float(k), device=device
+                            )
+                            weights = torch.ones(
+                                (bs, k, 1), device=device
+                            )
+
+                        # Weighted centroid
+                        weighted_neighbors = neighbors * weights
+                        centroids = weighted_neighbors.sum(dim=1, keepdim=True) / \
+                            valid_counts.unsqueeze(-1).unsqueeze(-1)
+
+                        # Center and apply weights
+                        centered = (neighbors - centroids) * weights
+
+                        # Covariance: (batch, 3, 3)
+                        cov = torch.bmm(centered.transpose(1, 2), centered) / \
+                            valid_counts.unsqueeze(-1).unsqueeze(-1).clamp(min=1)
+
+                        # Single eigendecomposition — both eigenvalues AND eigenvectors
+                        evals, evecs = torch.linalg.eigh(cov)
+
+                        # Normals: eigenvector of smallest eigenvalue (column 0)
+                        batch_normals = evecs[:, :, 0]
+                        norms = torch.linalg.norm(
+                            batch_normals, dim=1, keepdim=True
+                        ).clamp(min=1e-8)
+                        batch_normals = batch_normals / norms
+                        normals_array[start:end] = batch_normals.cpu().numpy()
+
+                        # Eigenvalues: all 3 ascending
+                        eigenvalues_array[start:end] = evals.cpu().numpy()
+
+                        percent = int((end / n_points) * 50)
+                        global_variables.global_progress = (
+                            percent,
+                            f"Eigendecomposition: {end:,}/{n_points:,} points"
+                        )
+
+                del distances  # Free memory
+
+                # Step 3: Orient normals
+                global_variables.global_progress = (55, "Orienting normals...")
                 if orientation == "Towards Viewpoint (0,0,0)":
                     normals_array = _orient_towards_point(
-                        normals_array, point_cloud.points, np.array([0.0, 0.0, 0.0])
+                        normals_array, points, np.array([0.0, 0.0, 0.0])
                     )
                 elif orientation == "Towards Custom Point":
                     target = np.array([
                         params["orient_x"], params["orient_y"], params["orient_z"]
                     ], dtype=np.float32)
                     normals_array = _orient_towards_point(
-                        normals_array, point_cloud.points, target
+                        normals_array, points, target
                     )
                 elif orientation == "Consistent (MST)":
-                    normals_array = _orient_mst(point_cloud.points, normals_array, k)
+                    normals_array = _orient_mst(points, normals_array, k)
 
-                # Step 3: Compute eigenvalues
-                global_variables.global_progress = (
-                    70, f"Computing eigenvalues (k={k}, {point_cloud.size:,} points)..."
-                )
-                from core.entities.point_cloud import _get_eigenvalue_utils
-                analyser = _get_eigenvalue_utils()
-                eigenvalues_array = analyser.compute_eigenvalues(
-                    point_cloud.points, k=k
-                )
+                # Step 4: Smooth eigenvalues using pre-computed KNN indices
+                global_variables.global_progress = (70, "Smoothing eigenvalues...")
+                with torch.no_grad():
+                    original_eig = torch.from_numpy(eigenvalues_array).to(device)
+                    indices_torch = torch.from_numpy(
+                        indices.astype(np.int64)
+                    ).to(device)
+
+                    smooth_batch = 50000
+                    for start in range(0, n_points, smooth_batch):
+                        end = min(start + smooth_batch, n_points)
+                        batch_idx = indices_torch[start:end]
+                        neighbor_eig = original_eig[batch_idx]  # (batch, k, 3)
+                        eigenvalues_array[start:end] = (
+                            neighbor_eig.mean(dim=1).cpu().numpy()
+                        )
+
+                    del original_eig, indices_torch
+
+                torch.cuda.empty_cache()
 
                 state['normals'] = normals_array
                 state['eigenvalues'] = eigenvalues_array
