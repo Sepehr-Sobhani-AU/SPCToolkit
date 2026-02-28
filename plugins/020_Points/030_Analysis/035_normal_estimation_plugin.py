@@ -162,6 +162,14 @@ class NormalEstimationPlugin(ActionPlugin):
                 n_points = len(point_cloud.points)
                 points = point_cloud.points.astype(np.float32)
 
+                # Free cached VRAM before heavy GPU work
+                torch.cuda.empty_cache()
+                try:
+                    import cupy as cp
+                    cp.get_default_memory_pool().free_all_blocks()
+                except ImportError:
+                    pass
+
                 # Step 1: Single KNN query via backend registry
                 global_variables.global_progress = (
                     None, f"Building KNN index ({n_points:,} points)..."
@@ -171,6 +179,8 @@ class NormalEstimationPlugin(ActionPlugin):
                 distances, indices = knn_backend.query(points, k=k)
 
                 use_radius = max_radius != float('inf')
+                if not use_radius:
+                    del distances
 
                 # Step 2: Unified eigendecomposition — normals + eigenvalues
                 normals_array = np.zeros((n_points, 3), dtype=np.float32)
@@ -242,7 +252,11 @@ class NormalEstimationPlugin(ActionPlugin):
                             f"Eigendecomposition: {end:,}/{n_points:,} points"
                         )
 
-                del distances  # Free memory
+                    del points_torch
+
+                if use_radius:
+                    del distances
+                torch.cuda.empty_cache()
 
                 # Step 3: Orient normals
                 global_variables.global_progress = (55, "Orienting normals...")
@@ -261,24 +275,27 @@ class NormalEstimationPlugin(ActionPlugin):
                     normals_array = _orient_mst(points, normals_array, k)
 
                 # Step 4: Smooth eigenvalues using pre-computed KNN indices
+                # Batch indices to GPU to avoid loading entire array at once
                 global_variables.global_progress = (70, "Smoothing eigenvalues...")
                 with torch.no_grad():
-                    original_eig = torch.from_numpy(eigenvalues_array).to(device)
-                    indices_torch = torch.from_numpy(
-                        indices.astype(np.int64)
+                    original_eig = torch.from_numpy(
+                        eigenvalues_array
                     ).to(device)
 
                     smooth_batch = 50000
                     for start in range(0, n_points, smooth_batch):
                         end = min(start + smooth_batch, n_points)
-                        batch_idx = indices_torch[start:end]
+                        batch_idx = torch.from_numpy(
+                            indices[start:end].astype(np.int64)
+                        ).to(device)
                         neighbor_eig = original_eig[batch_idx]  # (batch, k, 3)
                         eigenvalues_array[start:end] = (
                             neighbor_eig.mean(dim=1).cpu().numpy()
                         )
 
-                    del original_eig, indices_torch
+                    del original_eig
 
+                del indices
                 torch.cuda.empty_cache()
 
                 state['normals'] = normals_array

@@ -59,6 +59,10 @@ class CuMLKNN(KNNBackend):
 
             cp.get_default_memory_pool().free_all_blocks()
 
+        # Free GPU resources before returning
+        del model, points_gpu
+        cp.get_default_memory_pool().free_all_blocks()
+
         elapsed_time = time.time() - start_time
         print(f"KNN completed in {elapsed_time:.2f} seconds (cuML GPU)")
 
