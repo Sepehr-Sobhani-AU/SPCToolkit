@@ -212,16 +212,22 @@ class EigenvalueUtils:
             # This avoids temporary memory duplication
             self.clear_cache()
 
-            print("Building KD-tree and finding neighbors...")
-            tree = KDTree(points_float32)
-            self._last_tree = tree
+            # Find k nearest neighbors using GPU backend (cuML) or CPU fallback (scipy)
+            from config.config import global_variables as gv
+            registry = gv.global_backend_registry
+            if registry is not None:
+                knn_backend = registry.get_knn()
+                distances, indices = knn_backend.query(points_float32, k=k + 1)
+            else:
+                print("Building KD-tree and finding neighbors...")
+                tree = KDTree(points_float32)
+                self._last_tree = tree
+                distances, indices = tree.query(points_float32, k=k + 1)
+                print("KD-tree built and neighbors found.")
 
-            # Find k nearest neighbors for each point (including the point itself)
-            distances, indices = tree.query(points_float32, k=k + 1)
             self._last_indices = indices
             self._last_point_count = len(points)
             self._last_k = k
-            print("KD-tree built and neighbors found.")
 
         # Create batches for processing
         batches = self._create_batches(len(points), batch_size)
