@@ -112,7 +112,7 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
             "normalize": {
                 "type": "bool",
                 "default": self.last_params["normalize"],
-                "label": "Normalize XYZ (center + unit sphere)"
+                "label": "Normalize XYZ (XY centered, Z ground-relative)"
             },
             "augmentation_multiplier": {
                 "type": "int",
@@ -137,6 +137,13 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
         stride = float(params['stride'])
         augmentation_multiplier = int(params['augmentation_multiplier'])
         normalize = params['normalize']
+
+        # Validate block_size is exact multiple of stride
+        remainder = block_size % stride
+        if not np.isclose(remainder, 0) and not np.isclose(remainder, stride):
+            QMessageBox.warning(main_window, "Invalid Parameters",
+                f"Block size ({block_size}m) must be an exact multiple of stride ({stride}m).")
+            return
 
         # Validate branch selection
         selected_branches = controller.selected_branches
@@ -252,10 +259,11 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
             main_window.tree_overlay.show_processing("Creating spatial blocks...")
             t_blocks = time.time()
 
-            block_indices_list = self._create_blocks(
+            shash, valid_positions, cells_per_block = self._create_blocks(
                 valid_points, block_size, points_per_block, stride)
 
-            if len(block_indices_list) == 0:
+            n_blocks = len(valid_positions)
+            if n_blocks == 0:
                 QMessageBox.warning(main_window, "No Blocks",
                     f"No blocks with >= {points_per_block} points were found.\n"
                     f"Try reducing block size or points per block.")
@@ -264,21 +272,22 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
             print(f"Block creation: {time.time() - t_blocks:.1f}s")
 
             # --- Phase 4: Assemble features and save ---
-            total_samples = len(block_indices_list) * augmentation_multiplier
+            total_samples = n_blocks * augmentation_multiplier
             saved_count = 0
 
             main_window.tree_overlay.show_processing("Assembling features and saving...")
-            print(f"\nAssembling {total_samples} samples ({len(block_indices_list)} blocks x {augmentation_multiplier} augmentations)...")
+            print(f"\nAssembling {total_samples} samples ({n_blocks} blocks x {augmentation_multiplier} augmentations)...")
             t_assemble = time.time()
 
-            for block_idx, indices in enumerate(block_indices_list):
+            for block_idx, (ix, iy) in enumerate(valid_positions):
+                indices = self._get_block_indices(ix, iy, shash, cells_per_block)
                 block_points = valid_points[indices]
                 block_labels = valid_labels[indices]
                 block_normals = valid_normals[indices] if use_normals else None
                 block_eigenvalues = valid_eigenvalues[indices] if use_eigenvalues else None
 
-                # Assemble base features (normalize XYZ, scale eigenvalues)
-                norm_xyz, base_normals, scaled_eigs = self._assemble_block_features(
+                # Assemble base features (normalize XYZ)
+                norm_xyz, base_normals, base_eigs = self._assemble_block_features(
                     block_points, block_normals, block_eigenvalues, normalize)
 
                 if norm_xyz is None:
@@ -288,12 +297,12 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
                     if aug_idx > 0:
                         # Rotate XYZ + normals, keep eigenvalues
                         aug_xyz, aug_normals, aug_eigs = self._apply_augmentation_to_features(
-                            norm_xyz, base_normals, scaled_eigs,
+                            norm_xyz, base_normals, base_eigs,
                             seed=aug_idx + block_idx * 1000)
                     else:
                         aug_xyz = norm_xyz
                         aug_normals = base_normals
-                        aug_eigs = scaled_eigs
+                        aug_eigs = base_eigs
 
                     # Stack features
                     feature_list = [aug_xyz]
@@ -325,16 +334,16 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
                     saved_count += 1
 
                 # Update progress
-                percent = int(((block_idx + 1) / len(block_indices_list)) * 100)
+                percent = int(((block_idx + 1) / n_blocks) * 100)
                 main_window.tree_overlay.show_processing(
-                    f"Block {block_idx+1}/{len(block_indices_list)} ({percent}%)")
-                global_variables.global_progress = (percent, f"Block {block_idx+1}/{len(block_indices_list)}")
+                    f"Block {block_idx+1}/{n_blocks} ({percent}%)")
+                global_variables.global_progress = (percent, f"Block {block_idx+1}/{n_blocks}")
                 QApplication.processEvents()
 
             print(f"Assembly + save: {time.time() - t_assemble:.1f}s")
 
             # Save metadata
-            feature_order = ["X_norm", "Y_norm", "Z_norm"] if normalize else ["X", "Y", "Z"]
+            feature_order = ["X_centered", "Y_centered", "Z_ground_relative"] if normalize else ["X", "Y", "Z"]
             num_features = 3
             if use_normals:
                 feature_order.extend(["Nx", "Ny", "Nz"])
@@ -358,7 +367,7 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
                 "block_size": block_size,
                 "stride": stride,
                 "points_per_block": points_per_block,
-                "total_blocks": len(block_indices_list),
+                "total_blocks": n_blocks,
                 "total_samples": saved_count,
                 "augmentation_multiplier": augmentation_multiplier,
                 "processing": {
@@ -390,7 +399,7 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
 
             QMessageBox.information(main_window, "Training Data Generated",
                 f"Successfully generated {saved_count} training samples\n"
-                f"from {len(block_indices_list)} spatial blocks.\n\n"
+                f"from {n_blocks} spatial blocks.\n\n"
                 f"Classes: {len(class_mapping)}\n"
                 f"Features: {num_features}\n"
                 f"Time: {t_total:.1f}s\n\n"
@@ -429,13 +438,17 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
 
     def _create_blocks(self, points, block_size, min_points, stride):
         """
-        Divide point cloud into spatial blocks on XY plane.
+        Build spatial hash and find valid block positions.
 
-        Args:
-            stride: Step size between block origins. Set < block_size for overlapping blocks.
+        Uses O(N log N) spatial hashing instead of brute-force O(N × nx × ny).
+        Each point is assigned to a stride-sized cell via integer division, then
+        sorted by cell ID for O(1) lookup via searchsorted splits.
 
-        Returns list of index arrays (np.ndarray of int indices into points).
-        Only includes blocks with >= min_points points.
+        Returns:
+            (shash, valid_positions, cells_per_block) where:
+            - shash: dict with 'order', 'splits', 'nx', 'ny' for index lookup
+            - valid_positions: list of (ix, iy) grid positions with enough points
+            - cells_per_block: number of stride cells per block dimension
         """
         min_xy = np.min(points[:, :2], axis=0)
         max_xy = np.max(points[:, :2], axis=0)
@@ -444,69 +457,100 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
         nx = max(1, int(np.ceil(extent[0] / stride)))
         ny = max(1, int(np.ceil(extent[1] / stride)))
 
-        blocks = []
+        # O(N): assign each point to its stride cell
+        cx = np.floor((points[:, 0] - min_xy[0]) / stride).astype(np.int64)
+        cy = np.floor((points[:, 1] - min_xy[1]) / stride).astype(np.int64)
+        np.clip(cx, 0, nx - 1, out=cx)
+        np.clip(cy, 0, ny - 1, out=cy)
+
+        # O(N log N): sort by cell for O(1) lookup
+        cell_id = cx * ny + cy
+        order = np.argsort(cell_id)
+        sorted_ids = cell_id[order]
+        splits = np.searchsorted(sorted_ids, np.arange(nx * ny + 1))
+
+        # Scan grid: count points per block from cell counts
+        cells_per_block = int(round(block_size / stride))
+        valid_positions = []
         non_empty = 0
         filtered = 0
 
         for ix in range(nx):
             for iy in range(ny):
-                x_min = min_xy[0] + ix * stride
-                x_max = x_min + block_size
-                y_min = min_xy[1] + iy * stride
-                y_max = y_min + block_size
-
-                mask = (
-                    (points[:, 0] >= x_min) & (points[:, 0] < x_max) &
-                    (points[:, 1] >= y_min) & (points[:, 1] < y_max)
-                )
-
-                block_indices = np.where(mask)[0]
-
-                if len(block_indices) > 0:
+                count = 0
+                for dx in range(cells_per_block):
+                    sx = ix + dx
+                    if sx >= nx:
+                        break
+                    for dy in range(cells_per_block):
+                        sy = iy + dy
+                        if sy >= ny:
+                            break
+                        linear = sx * ny + sy
+                        count += splits[linear + 1] - splits[linear]
+                if count > 0:
                     non_empty += 1
-                    if len(block_indices) >= min_points:
-                        blocks.append(block_indices)
+                    if count >= min_points:
+                        valid_positions.append((ix, iy))
                     else:
                         filtered += 1
 
         total_cells = nx * ny
         print(f"Grid: {nx} x {ny} = {total_cells:,} cells (stride={stride}m, block={block_size}m)")
-        print(f"  Non-empty cells: {non_empty:,}")
-        print(f"  Passed min_points (>={min_points}): {len(blocks):,}")
+        print(f"  Cells per block: {cells_per_block}")
+        print(f"  Non-empty blocks: {non_empty:,}")
+        print(f"  Passed min_points (>={min_points}): {len(valid_positions):,}")
         print(f"  Filtered (too sparse): {filtered:,}")
 
-        return blocks
+        shash = {'order': order, 'splits': splits, 'nx': nx, 'ny': ny}
+        return shash, valid_positions, cells_per_block
+
+    def _get_block_indices(self, ix, iy, shash, cells_per_block):
+        """
+        Generate point indices for one block on demand from spatial hash.
+
+        Gathers indices from all stride cells covered by the block at (ix, iy).
+        No bulk storage — indices are generated per block and discarded after use.
+        """
+        order, splits = shash['order'], shash['splits']
+        ny = shash['ny']
+        parts = []
+        for dx in range(cells_per_block):
+            sx = ix + dx
+            for dy in range(cells_per_block):
+                sy = iy + dy
+                linear = sx * ny + sy
+                start, end = splits[linear], splits[linear + 1]
+                if start < end:
+                    parts.append(order[start:end])
+        if not parts:
+            return np.array([], dtype=np.int64)
+        return np.concatenate(parts) if len(parts) > 1 else parts[0]
 
     def _assemble_block_features(self, block_points, block_normals, block_eigenvalues, normalize):
         """
         Assemble features for a single block from pre-computed data.
 
-        Applies per-block XYZ normalization and scales eigenvalues by s²
-        to match per-block normalized space.
+        When normalize=True: centers XY to block centroid, Z relative to
+        ground level (min Z). No unit-sphere scaling.
 
-        Returns (normalized_xyz, normals, scaled_eigenvalues) or (None, None, None).
+        Returns (normalized_xyz, normals, eigenvalues) or (None, None, None).
         """
         if len(block_points) < 3:
             return None, None, None
 
         if normalize:
-            centroid = np.mean(block_points, axis=0)
-            centered = block_points - centroid
-            max_distance = np.max(np.sqrt(np.sum(centered ** 2, axis=1)))
-            if max_distance > 0:
-                s = 1.0 / max_distance
-                norm_xyz = centered * s
-            else:
-                s = 1.0
-                norm_xyz = centered
+            centroid_xy = np.mean(block_points[:, :2], axis=0)
+            min_z = np.min(block_points[:, 2])
+
+            norm_xyz = block_points.copy()
+            norm_xyz[:, 0] -= centroid_xy[0]
+            norm_xyz[:, 1] -= centroid_xy[1]
+            norm_xyz[:, 2] -= min_z
         else:
             norm_xyz = block_points.copy()
-            s = 1.0
 
-        # Scale eigenvalues by s² to match per-block normalized space
-        scaled_eigs = block_eigenvalues * (s ** 2) if block_eigenvalues is not None else None
-
-        return norm_xyz, block_normals, scaled_eigs
+        return norm_xyz, block_normals, block_eigenvalues
 
     def _augment(self, xyz, seed):
         """Apply random Z-rotation and jitter. Returns (augmented_xyz, rotation_matrix)."""
