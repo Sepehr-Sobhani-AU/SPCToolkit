@@ -211,7 +211,8 @@ def segment_point_cloud_blockwise(
             block_normals=block_normals,
             block_eigenvalues=block_eigenvalues,
             feature_mean=feature_mean,
-            feature_std=feature_std
+            feature_std=feature_std,
+            primary_mask=block_primary_mask
         )
 
         if features is None:
@@ -376,13 +377,17 @@ def _compute_full_block_features(
     block_normals: Optional[np.ndarray] = None,
     block_eigenvalues: Optional[np.ndarray] = None,
     feature_mean: Optional[np.ndarray] = None,
-    feature_std: Optional[np.ndarray] = None
+    feature_std: Optional[np.ndarray] = None,
+    primary_mask: Optional[np.ndarray] = None
 ) -> Optional[np.ndarray]:
     """
     Assemble features for all points in a block from pre-computed data.
 
-    Normalization matches training: XY centered to block centroid,
-    Z ground-relative (Z - min_Z), no scaling.
+    Normalization matches training: XY centered to primary-zone centroid,
+    Z ground-relative (Z - primary-zone min_Z), no scaling. When
+    primary_mask is provided, normalization statistics are computed from
+    primary-zone points only (matching the block_size x block_size context
+    used during training), then applied to all points.
 
     Args:
         block_xyz: (n, 3) raw coordinates for this block
@@ -391,6 +396,7 @@ def _compute_full_block_features(
         block_eigenvalues: (n, 3) pre-computed eigenvalues (from full cloud), or None
         feature_mean: Per-feature means from training for z-score standardization
         feature_std: Per-feature stds from training for z-score standardization
+        primary_mask: (n,) bool mask identifying primary-zone points
 
     Returns:
         (n, F) feature array or None if block too small
@@ -409,10 +415,15 @@ def _compute_full_block_features(
     combined = np.empty((n, n_features), dtype=np.float32)
 
     # Fill XYZ with in-place normalization (matching training: XY centered, Z ground-relative)
+    # Compute stats from primary zone only to match training's block_size window
     combined[:, :3] = block_xyz
     if normalize:
-        centroid_xy = np.mean(combined[:, :2], axis=0)
-        min_z = np.min(combined[:, 2])
+        if primary_mask is not None and np.any(primary_mask):
+            ref_xyz = block_xyz[primary_mask]
+        else:
+            ref_xyz = block_xyz
+        centroid_xy = np.mean(ref_xyz[:, :2], axis=0)
+        min_z = np.min(ref_xyz[:, 2])
         combined[:, 0] -= centroid_xy[0]
         combined[:, 1] -= centroid_xy[1]
         combined[:, 2] -= min_z
