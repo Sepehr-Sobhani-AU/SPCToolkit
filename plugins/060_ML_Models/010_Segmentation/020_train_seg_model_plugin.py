@@ -58,6 +58,53 @@ class FocalLoss(nn.Module):
         return focal[valid_mask].mean()
 
 
+class DiceLoss(nn.Module):
+    """Dice loss for segmentation — optimizes region overlap directly.
+
+    Robust to class imbalance since it measures per-class overlap rather than
+    per-pixel correctness.
+    """
+
+    def __init__(self, ignore_index=-100, smooth=1.0):
+        super().__init__()
+        self.ignore_index = ignore_index
+        self.smooth = smooth
+
+    def forward(self, logits, targets):
+        valid_mask = targets != self.ignore_index
+        if valid_mask.sum() == 0:
+            return logits.sum() * 0.0
+
+        logits = logits[valid_mask]
+        targets = targets[valid_mask]
+
+        num_classes = logits.shape[1]
+        probs = F.softmax(logits, dim=1)
+        one_hot = F.one_hot(targets, num_classes).float()  # (N, C)
+
+        intersection = (probs * one_hot).sum(dim=0)
+        cardinality = probs.sum(dim=0) + one_hot.sum(dim=0)
+        dice_per_class = (2.0 * intersection + self.smooth) / (cardinality + self.smooth)
+        return 1.0 - dice_per_class.mean()
+
+
+class CombinedFocalDiceLoss(nn.Module):
+    """Combined Focal + Dice loss — balances pixel-level and region-level learning."""
+
+    def __init__(self, weight=None, gamma=2.0, ignore_index=-100, label_smoothing=0.1,
+                 focal_weight=0.5, dice_weight=0.5):
+        super().__init__()
+        self.focal = FocalLoss(weight=weight, gamma=gamma,
+                               ignore_index=ignore_index, label_smoothing=label_smoothing)
+        self.dice = DiceLoss(ignore_index=ignore_index)
+        self.focal_weight = focal_weight
+        self.dice_weight = dice_weight
+
+    def forward(self, logits, targets):
+        return self.focal_weight * self.focal(logits, targets) + \
+               self.dice_weight * self.dice(logits, targets)
+
+
 class SegPointCloudDataset(Dataset):
     """PyTorch Dataset for segmentation training data (.npz files with features + labels)."""
 
@@ -172,6 +219,9 @@ class TrainSegModelPlugin(ActionPlugin):
         "val_split": 0.2,
         "use_tnet": True,
         "early_stopping_patience": 20,
+        "loss_function": "Focal + Class Weights",
+        "use_scene_validation": True,
+        "val_data_dir": "training_data_seg_val",
     }
 
     def get_name(self) -> str:
@@ -246,7 +296,20 @@ class TrainSegModelPlugin(ActionPlugin):
                 "min": 0.1,
                 "max": 0.5,
                 "label": "Validation Split",
-                "description": "Fraction of data for validation"
+                "description": "Fraction of data for validation. When scene validation is on, selects this fraction from the validation folder."
+            },
+            "use_scene_validation": {
+                "type": "bool",
+                "default": self.last_params["use_scene_validation"],
+                "label": "Use Scene Validation",
+                "description": "Use a separate scene folder for validation instead of random split"
+            },
+            "val_data_dir": {
+                "type": "directory",
+                "default": self.last_params["val_data_dir"],
+                "label": "Validation Data Directory",
+                "description": "Directory containing .npz files from a different scene for validation",
+                "enabled_by": "use_scene_validation"
             },
             "use_tnet": {
                 "type": "bool",
@@ -262,6 +325,19 @@ class TrainSegModelPlugin(ActionPlugin):
                 "label": "Early Stopping Patience",
                 "description": "Epochs without improvement before stopping"
             },
+            "loss_function": {
+                "type": "dropdown",
+                "options": {
+                    "Cross Entropy": "Cross Entropy (class weighted)",
+                    "Focal Loss": "Focal Loss (gamma=2)",
+                    "Focal + Class Weights": "Focal Loss + Class Weights (gamma=2)",
+                    "Dice Loss": "Dice Loss",
+                    "Focal + Dice": "Focal + Dice (combined)",
+                },
+                "default": self.last_params["loss_function"],
+                "label": "Loss Function",
+                "description": "Loss function for training"
+            },
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
@@ -275,12 +351,20 @@ class TrainSegModelPlugin(ActionPlugin):
         val_split = float(params['val_split'])
         use_tnet = params['use_tnet']
         early_stopping_patience = int(params['early_stopping_patience'])
+        loss_function = params.get('loss_function', 'Focal + Class Weights')
+        use_scene_validation = params.get('use_scene_validation', True)
+        val_data_dir = params.get('val_data_dir', '').strip()
 
         TrainSegModelPlugin.last_params = params.copy()
 
         if not os.path.exists(data_dir):
             QMessageBox.critical(main_window, "Invalid Directory",
                                f"Training data directory does not exist:\n{data_dir}")
+            return
+
+        if use_scene_validation and (not val_data_dir or not os.path.exists(val_data_dir)):
+            QMessageBox.critical(main_window, "Invalid Directory",
+                               f"Validation data directory does not exist:\n{val_data_dir}")
             return
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -344,14 +428,50 @@ class TrainSegModelPlugin(ActionPlugin):
             # Split train/val
             main_window.tree_overlay.show_processing("Splitting data...")
 
-            train_files, val_files = train_test_split(
-                npz_files,
-                test_size=val_split,
-                random_state=random_seed
-            )
+            if use_scene_validation:
+                # Scene-based: all training .npz for train, sample from separate folder for val
+                train_files = npz_files
 
-            print(f"Training samples: {len(train_files)}")
-            print(f"Validation samples: {len(val_files)}")
+                val_npz_files, val_class_mapping, val_metadata, val_num_features = \
+                    self._load_training_data(val_data_dir)
+
+                if len(val_npz_files) == 0:
+                    QMessageBox.critical(main_window, "No Validation Data",
+                                       f"No .npz files found in:\n{val_data_dir}")
+                    main_window.tree_overlay.hide_processing()
+                    main_window.enable_menus()
+                    main_window.enable_tree()
+                    return
+
+                if val_num_features != num_features:
+                    QMessageBox.critical(main_window, "Feature Mismatch",
+                        f"Training data has {num_features} features but "
+                        f"validation data has {val_num_features} features.\n\n"
+                        f"Both must use the same feature configuration.")
+                    main_window.tree_overlay.hide_processing()
+                    main_window.enable_menus()
+                    main_window.enable_tree()
+                    return
+
+                # Randomly sample val_split fraction from validation folder
+                n_val = max(1, int(len(val_npz_files) * val_split))
+                np.random.shuffle(val_npz_files)
+                val_files = val_npz_files[:n_val]
+
+                print(f"Validation mode: Scene-based (separate folder)")
+                print(f"  Train dir: {data_dir} ({len(train_files)} samples)")
+                print(f"  Val dir:   {val_data_dir} ({len(val_npz_files)} total, "
+                      f"{len(val_files)} sampled at {val_split:.0%})")
+            else:
+                # Random split from single folder
+                train_files, val_files = train_test_split(
+                    npz_files,
+                    test_size=val_split,
+                    random_state=random_seed
+                )
+                print(f"Validation mode: Random split ({val_split:.0%})")
+                print(f"  Training samples: {len(train_files)}")
+                print(f"  Validation samples: {len(val_files)}")
 
             # Compute per-feature standardization stats from training set
             main_window.tree_overlay.show_processing("Computing feature statistics...")
@@ -428,7 +548,24 @@ class TrainSegModelPlugin(ActionPlugin):
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6
             )
-            criterion = FocalLoss(weight=class_weights_tensor, gamma=2.0)
+            # Build loss function based on user selection
+            if loss_function == "Cross Entropy":
+                criterion = nn.CrossEntropyLoss(
+                    weight=class_weights_tensor, ignore_index=-100, label_smoothing=0.1)
+            elif loss_function == "Focal Loss":
+                criterion = FocalLoss(
+                    weight=None, gamma=2.0, ignore_index=-100, label_smoothing=0.1)
+            elif loss_function == "Dice Loss":
+                criterion = DiceLoss(ignore_index=-100)
+            elif loss_function == "Focal + Dice":
+                criterion = CombinedFocalDiceLoss(
+                    weight=class_weights_tensor, gamma=2.0, ignore_index=-100,
+                    label_smoothing=0.1)
+            else:  # "Focal + Class Weights" (default)
+                criterion = FocalLoss(
+                    weight=class_weights_tensor, gamma=2.0, ignore_index=-100,
+                    label_smoothing=0.1)
+            print(f"Loss function: {loss_function}")
 
             # Create progress window
             progress_window = TrainingProgressWindow(parent=main_window, total_epochs=epochs)

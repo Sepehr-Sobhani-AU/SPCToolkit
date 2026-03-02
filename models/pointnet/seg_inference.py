@@ -106,7 +106,9 @@ def segment_point_cloud_blockwise(
     block_size: float = 10.0,
     overlap: float = 1.0,
     batch_size: int = 8,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    full_normals: Optional[np.ndarray] = None,
+    full_eigenvalues: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
     Segment a large point cloud by dividing it into spatial blocks.
@@ -126,6 +128,10 @@ def segment_point_cloud_blockwise(
         overlap: Overlap between blocks (meters)
         batch_size: Number of blocks to process in parallel on GPU
         progress_callback: Optional callback(current_block, total_blocks, status_msg)
+        full_normals: Optional pre-computed (N,3) normals for the full cloud.
+            If None and model needs normals, they are auto-computed.
+        full_eigenvalues: Optional pre-computed (N,3) eigenvalues for the full cloud.
+            If None and model needs eigenvalues, they are auto-computed.
 
     Returns:
         numpy array of shape (N,) with per-point class labels
@@ -156,9 +162,26 @@ def segment_point_cloud_blockwise(
     N = len(points)
     num_classes = metadata['num_classes']
 
-    # Accumulate softmax probabilities and counts for averaging
-    prob_accum = np.zeros((N, num_classes), dtype=np.float64)
-    count_accum = np.zeros(N, dtype=np.float64)
+    # Normals/eigenvalues should be pre-computed on the full cloud (matching
+    # training where they come from global branches). Auto-compute only if
+    # not provided and the model needs them.
+    if use_normals and full_normals is None:
+        if progress_callback:
+            progress_callback(0, 1, "Computing normals on full cloud...")
+        pc_full = PointCloud(points=points.copy())
+        pc_full.estimate_normals(k=normals_knn)
+        full_normals = pc_full.normals
+
+    if use_eigenvalues and full_eigenvalues is None:
+        if progress_callback:
+            progress_callback(0, 1, "Computing eigenvalues on full cloud...")
+        pc_full_eig = PointCloud(points=points.copy())
+        full_eigenvalues = pc_full_eig.get_eigenvalues(k=eigenvalues_knn, smooth=eigenvalues_smooth)
+
+    # Accumulate softmax probabilities and counts for overlap averaging.
+    # float32 halves memory vs float64: (55M, 29) goes from ~13 GB to ~6.4 GB.
+    prob_accum = np.zeros((N, num_classes), dtype=np.float32)
+    count_accum = np.zeros(N, dtype=np.float32)
 
     # Create spatial blocks (XY plane)
     blocks = _create_spatial_blocks(points, block_size, overlap)
@@ -167,26 +190,26 @@ def segment_point_cloud_blockwise(
     if progress_callback:
         progress_callback(0, total_blocks, f"Processing {total_blocks} blocks...")
 
-    # --- Phase 1: Prepare chunks for all blocks ---
-    # Each entry: (chunk_array, block_id) for flat batching
-    all_chunks = []
-    # Per-block metadata: (block_indices, primary_mask, perm_indices, n_original, n_chunks)
-    block_meta = []
-
+    # Stream: process each block → infer → accumulate → free.
+    # The old 3-phase approach (buffer all chunks, then infer, then accumulate)
+    # stored all_chunks + block_probs_list + prob_accum simultaneously,
+    # easily exceeding 30 GB for large clouds. Streaming keeps peak memory
+    # at prob_accum + one block's worth of temporaries.
     for block_idx, (block_point_indices, block_primary_mask) in enumerate(blocks):
         if len(block_point_indices) == 0:
             continue
 
         block_xyz = points[block_point_indices]
 
+        # Slice pre-computed features for this block
+        block_normals = full_normals[block_point_indices] if full_normals is not None else None
+        block_eigenvalues = full_eigenvalues[block_point_indices] if full_eigenvalues is not None else None
+
         features = _compute_full_block_features(
             block_xyz,
             normalize=normalize_enabled,
-            use_normals=use_normals,
-            use_eigenvalues=use_eigenvalues,
-            normals_knn=normals_knn,
-            eigenvalues_knn=eigenvalues_knn,
-            eigenvalues_smooth=eigenvalues_smooth,
+            block_normals=block_normals,
+            block_eigenvalues=block_eigenvalues,
             feature_mean=feature_mean,
             feature_std=feature_std
         )
@@ -195,84 +218,58 @@ def segment_point_cloud_blockwise(
             continue
 
         chunks, perm_indices, n_original = _create_chunks(features, num_points)
+        del features
 
-        bid = len(block_meta)
-        block_meta.append((block_point_indices, block_primary_mask,
-                           perm_indices, n_original, len(chunks)))
+        # Accumulate chunk predictions into block-level probabilities
+        block_probs = np.zeros((n_original, num_classes), dtype=np.float32)
 
-        for chunk in chunks:
-            all_chunks.append((chunk, bid))
+        for batch_start in range(0, len(chunks), batch_size):
+            batch_end = min(batch_start + batch_size, len(chunks))
+            batch_chunks = chunks[batch_start:batch_end]
+            batch_probs = _process_chunks(batch_chunks, model, device)
+
+            for j in range(batch_end - batch_start):
+                chunk_idx = batch_start + j
+                perm_start = chunk_idx * num_points
+                perm_end = min(perm_start + num_points, n_original)
+                n_real = perm_end - perm_start
+                original_positions = perm_indices[perm_start:perm_end]
+                block_probs[original_positions] += batch_probs[j][:n_real]
+
+            del batch_probs
+
+        del chunks
+
+        # Accumulate into global arrays with overlap weighting
+        primary_indices = block_point_indices[block_primary_mask]
+        prob_accum[primary_indices] += block_probs[block_primary_mask]
+        count_accum[primary_indices] += 1.0
+
+        overlap_mask = ~block_primary_mask
+        overlap_indices = block_point_indices[overlap_mask]
+        if len(overlap_indices) > 0:
+            prob_accum[overlap_indices] += block_probs[overlap_mask] * 0.5
+            count_accum[overlap_indices] += 0.5
+
+        del block_probs
 
         if progress_callback:
             progress_callback(block_idx + 1, total_blocks,
-                              f"Preparing block {block_idx + 1}/{total_blocks}")
+                              f"Block {block_idx + 1}/{total_blocks}")
 
-    # --- Phase 2: Infer in GPU batches, map back to block positions ---
-    # Allocate per-block probability accumulators
-    block_probs_list = [
-        np.zeros((meta[3], num_classes), dtype=np.float64)  # (n_original, C)
-        for meta in block_meta
-    ]
+    del blocks
 
-    total_chunks = len(all_chunks)
-
-    # Precompute: for each chunk, its index within its block
-    block_chunk_counters = {}  # bid -> next chunk index
-    chunk_within_block_map = []  # parallel to all_chunks
-    for chunk_array, bid in all_chunks:
-        idx = block_chunk_counters.get(bid, 0)
-        chunk_within_block_map.append(idx)
-        block_chunk_counters[bid] = idx + 1
-
-    for batch_start in range(0, total_chunks, batch_size):
-        batch_end = min(batch_start + batch_size, total_chunks)
-        chunk_arrays = [all_chunks[i][0] for i in range(batch_start, batch_end)]
-
-        batch_probs = _process_chunks(chunk_arrays, model, device)  # (B, num_points, C)
-
-        for j in range(len(chunk_arrays)):
-            chunk_idx_global = batch_start + j
-            _, bid = all_chunks[chunk_idx_global]
-            _, _, perm_indices, n_original, n_block_chunks = block_meta[bid]
-
-            chunk_probs = batch_probs[j]  # (num_points, C)
-            chunk_within_block = chunk_within_block_map[chunk_idx_global]
-
-            perm_start = chunk_within_block * num_points
-            perm_end = min(perm_start + num_points, n_original)
-            n_real = perm_end - perm_start  # real points in this chunk (rest is padding)
-
-            # Map predictions back: permuted positions -> original block positions
-            original_positions = perm_indices[perm_start:perm_end]
-            block_probs_list[bid][original_positions] += chunk_probs[:n_real]
-
-    # --- Phase 3: Accumulate into global arrays with overlap weighting ---
-    for bid, (block_indices, primary_mask, _, _, _) in enumerate(block_meta):
-        block_probs = block_probs_list[bid]
-
-        # Primary points get full weight
-        primary_indices = block_indices[primary_mask]
-        primary_probs = block_probs[primary_mask]
-        prob_accum[primary_indices] += primary_probs
-        count_accum[primary_indices] += 1.0
-
-        # Overlap points get partial weight for smooth blending
-        overlap_mask = ~primary_mask
-        overlap_indices = block_indices[overlap_mask]
-        if len(overlap_indices) > 0:
-            overlap_probs = block_probs[overlap_mask]
-            prob_accum[overlap_indices] += overlap_probs * 0.5
-            count_accum[overlap_indices] += 0.5
-
-    # Assign labels from accumulated probabilities
+    # Assign labels in chunks to avoid a temporary (N, C) allocation
     labels = np.zeros(N, dtype=np.int32)
-    valid_mask = count_accum > 0
-    if np.any(valid_mask):
-        avg_probs = prob_accum[valid_mask] / count_accum[valid_mask, np.newaxis]
-        labels[valid_mask] = np.argmax(avg_probs, axis=1).astype(np.int32)
+    valid_indices = np.where(count_accum > 0)[0]
+    LABEL_CHUNK = 1_000_000
+    for start in range(0, len(valid_indices), LABEL_CHUNK):
+        end = min(start + LABEL_CHUNK, len(valid_indices))
+        idx = valid_indices[start:end]
+        avg = prob_accum[idx] / count_accum[idx, np.newaxis]
+        labels[idx] = np.argmax(avg, axis=1).astype(np.int32)
 
-    # Points never seen by any block get label 0 (or could be -1)
-    # Label 0 is typically the most common class, which is reasonable
+    del prob_accum, count_accum
 
     return labels
 
@@ -283,7 +280,10 @@ def _create_spatial_blocks(
     overlap: float
 ) -> list:
     """
-    Divide point cloud into spatial grid blocks on XY plane.
+    Divide point cloud into spatial grid blocks on XY plane using spatial hashing.
+
+    Uses O(N log N) sort + O(1) per-cell lookup instead of O(N) per block,
+    matching the spatial hash pattern from training data generation.
 
     Args:
         points: (N, 3) point coordinates
@@ -296,42 +296,73 @@ def _create_spatial_blocks(
     min_xy = np.min(points[:, :2], axis=0)
     max_xy = np.max(points[:, :2], axis=0)
 
-    # Calculate grid dimensions
     extent = max_xy - min_xy
     nx = max(1, int(np.ceil(extent[0] / block_size)))
     ny = max(1, int(np.ceil(extent[1] / block_size)))
+
+    # O(N): assign each point to its block-sized cell (int32 saves ~880 MB vs int64)
+    cx = np.floor((points[:, 0] - min_xy[0]) / block_size).astype(np.int32)
+    cy = np.floor((points[:, 1] - min_xy[1]) / block_size).astype(np.int32)
+    np.clip(cx, 0, nx - 1, out=cx)
+    np.clip(cy, 0, ny - 1, out=cy)
+
+    # O(N log N): sort by cell for O(1) lookup via searchsorted splits
+    cell_id = (cx * ny + cy).astype(np.int32)
+    del cx, cy
+    order = np.argsort(cell_id)
+    sorted_ids = cell_id[order]
+    del cell_id
+    splits = np.searchsorted(sorted_ids, np.arange(nx * ny + 1))
+    del sorted_ids
+
+    # How many neighboring cells does the overlap reach?
+    overlap_cells = max(1, int(np.ceil(overlap / block_size)))
 
     blocks = []
 
     for ix in range(nx):
         for iy in range(ny):
-            # Primary block bounds
             x_min = min_xy[0] + ix * block_size
             x_max = min_xy[0] + (ix + 1) * block_size
             y_min = min_xy[1] + iy * block_size
             y_max = min_xy[1] + (iy + 1) * block_size
 
-            # Extended bounds with overlap
-            x_min_ext = x_min - overlap
-            x_max_ext = x_max + overlap
-            y_min_ext = y_min - overlap
-            y_max_ext = y_max + overlap
+            # Gather candidate indices from primary + neighboring cells
+            parts = []
+            for dx in range(-overlap_cells, overlap_cells + 1):
+                sx = ix + dx
+                if sx < 0 or sx >= nx:
+                    continue
+                for dy in range(-overlap_cells, overlap_cells + 1):
+                    sy = iy + dy
+                    if sy < 0 or sy >= ny:
+                        continue
+                    linear = sx * ny + sy
+                    start, end = splits[linear], splits[linear + 1]
+                    if start < end:
+                        parts.append(order[start:end])
 
-            # Find points in extended block
-            mask_ext = (
-                (points[:, 0] >= x_min_ext) & (points[:, 0] < x_max_ext) &
-                (points[:, 1] >= y_min_ext) & (points[:, 1] < y_max_ext)
+            if not parts:
+                continue
+
+            candidates = np.concatenate(parts) if len(parts) > 1 else parts[0]
+
+            # Filter candidates to exact extended bounds
+            cand_pts = points[candidates]
+            ext_mask = (
+                (cand_pts[:, 0] >= x_min - overlap) & (cand_pts[:, 0] < x_max + overlap) &
+                (cand_pts[:, 1] >= y_min - overlap) & (cand_pts[:, 1] < y_max + overlap)
             )
-            block_indices = np.where(mask_ext)[0]
+            block_indices = candidates[ext_mask]
 
             if len(block_indices) == 0:
                 continue
 
-            # Find primary points (within non-overlapping bounds)
-            block_points = points[block_indices]
+            # Primary mask on block subset only
+            block_pts = points[block_indices]
             primary_mask = (
-                (block_points[:, 0] >= x_min) & (block_points[:, 0] < x_max) &
-                (block_points[:, 1] >= y_min) & (block_points[:, 1] < y_max)
+                (block_pts[:, 0] >= x_min) & (block_pts[:, 0] < x_max) &
+                (block_pts[:, 1] >= y_min) & (block_pts[:, 1] < y_max)
             )
 
             blocks.append((block_indices, primary_mask))
@@ -342,52 +373,62 @@ def _create_spatial_blocks(
 def _compute_full_block_features(
     block_xyz: np.ndarray,
     normalize: bool,
-    use_normals: bool,
-    use_eigenvalues: bool,
-    normals_knn: int,
-    eigenvalues_knn: int,
-    eigenvalues_smooth: bool,
+    block_normals: Optional[np.ndarray] = None,
+    block_eigenvalues: Optional[np.ndarray] = None,
     feature_mean: Optional[np.ndarray] = None,
     feature_std: Optional[np.ndarray] = None
 ) -> Optional[np.ndarray]:
     """
-    Compute features for all points in a block (no subsampling).
+    Assemble features for all points in a block from pre-computed data.
 
-    Returns features array of shape (n_block_points, num_features) or None if failed.
+    Normalization matches training: XY centered to block centroid,
+    Z ground-relative (Z - min_Z), no scaling.
+
+    Args:
+        block_xyz: (n, 3) raw coordinates for this block
+        normalize: Whether to apply spatial normalization
+        block_normals: (n, 3) pre-computed normals (from full cloud), or None
+        block_eigenvalues: (n, 3) pre-computed eigenvalues (from full cloud), or None
+        feature_mean: Per-feature means from training for z-score standardization
+        feature_std: Per-feature stds from training for z-score standardization
+
+    Returns:
+        (n, F) feature array or None if block too small
     """
-    if len(block_xyz) < 3:
+    n = len(block_xyz)
+    if n < 3:
         return None
 
-    pc = PointCloud(points=block_xyz.copy())
+    # Pre-allocate single contiguous array
+    n_features = 3
+    if block_normals is not None:
+        n_features += 3
+    if block_eigenvalues is not None:
+        n_features += 3
 
+    combined = np.empty((n, n_features), dtype=np.float32)
+
+    # Fill XYZ with in-place normalization (matching training: XY centered, Z ground-relative)
+    combined[:, :3] = block_xyz
     if normalize:
-        pc.normalise(
-            apply_scaling=True,
-            apply_centering=True,
-            rotation_axes=(False, False, False)
-        )
+        centroid_xy = np.mean(combined[:, :2], axis=0)
+        min_z = np.min(combined[:, 2])
+        combined[:, 0] -= centroid_xy[0]
+        combined[:, 1] -= centroid_xy[1]
+        combined[:, 2] -= min_z
 
-    features = [pc.points]
+    # Fill normals and eigenvalues
+    col = 3
+    if block_normals is not None:
+        combined[:, col:col + 3] = block_normals
+        col += 3
+    if block_eigenvalues is not None:
+        combined[:, col:col + 3] = block_eigenvalues
 
-    if use_normals:
-        if len(pc.points) >= normals_knn:
-            pc.estimate_normals(k=normals_knn)
-            features.append(pc.normals)
-        else:
-            features.append(np.zeros((len(pc.points), 3), dtype=np.float32))
-
-    if use_eigenvalues:
-        if len(pc.points) >= eigenvalues_knn:
-            eigenvalues = pc.get_eigenvalues(k=eigenvalues_knn, smooth=eigenvalues_smooth)
-            features.append(eigenvalues)
-        else:
-            features.append(np.zeros((len(pc.points), 3), dtype=np.float32))
-
-    combined = np.hstack(features).astype(np.float32)
-
-    # Apply per-feature standardization if stats are available (from training)
+    # In-place standardization
     if feature_mean is not None and feature_std is not None:
-        combined = (combined - feature_mean) / feature_std
+        combined -= feature_mean
+        combined /= feature_std
 
     return combined
 
@@ -467,5 +508,8 @@ def _process_chunks(
     with torch.no_grad():
         logits = model(batch_tensor)
         probs = F.softmax(logits, dim=2).cpu().numpy()
+
+    del batch_tensor, logits
+    torch.cuda.empty_cache()
 
     return probs

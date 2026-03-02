@@ -26,6 +26,8 @@ class DynamicDialog(QDialog):
         self.setWindowTitle(title)
         self.parameter_schema = parameter_schema
         self.param_widgets = {}
+        self.param_labels = {}
+        self.param_containers = {}  # For directory type: the parent QWidget
         self.params = {}
         self.setup_ui()
 
@@ -127,12 +129,19 @@ class DynamicDialog(QDialog):
             if tooltip:
                 widget.setToolTip(tooltip)
 
-            # For directory type, widget is already added to param_widgets above
+            # Create label and add row
+            label_widget = QLabel(label_text)
+            self.param_labels[param_name] = label_widget
+
             if param_type == "directory":
-                form_layout.addRow(QLabel(label_text), widget)
+                form_layout.addRow(label_widget, widget)
+                self.param_containers[param_name] = widget  # The QWidget container
             else:
-                form_layout.addRow(QLabel(label_text), widget)
+                form_layout.addRow(label_widget, widget)
                 self.param_widgets[param_name] = widget
+
+        # Wire up enabled_by / disabled_by dependencies between widgets
+        self._setup_dependencies()
 
         layout.addLayout(form_layout)
 
@@ -143,6 +152,45 @@ class DynamicDialog(QDialog):
         layout.addWidget(button_box)
 
         self.setLayout(layout)
+
+    def _setup_dependencies(self):
+        """Wire up enabled_by / disabled_by dependencies between widgets.
+
+        Schema fields:
+            "enabled_by": "bool_param"  — widget enabled when checkbox is checked
+            "disabled_by": "bool_param" — widget disabled when checkbox is checked
+        """
+        for param_name, param_info in self.parameter_schema.items():
+            for dep_key, invert in [("enabled_by", False), ("disabled_by", True)]:
+                controller_name = param_info.get(dep_key)
+                if not controller_name:
+                    continue
+
+                controller_widget = self.param_widgets.get(controller_name)
+                if not isinstance(controller_widget, QCheckBox):
+                    continue
+
+                # Determine the target widget(s) to enable/disable
+                target_widget = self.param_containers.get(param_name) or \
+                                self.param_widgets.get(param_name)
+                target_label = self.param_labels.get(param_name)
+                if not target_widget:
+                    continue
+
+                # Connect toggled signal
+                def make_callback(w, lbl, inv):
+                    def callback(checked):
+                        enabled = not checked if inv else checked
+                        w.setEnabled(enabled)
+                        if lbl:
+                            lbl.setEnabled(enabled)
+                    return callback
+
+                cb = make_callback(target_widget, target_label, invert)
+                controller_widget.toggled.connect(cb)
+
+                # Set initial state
+                cb(controller_widget.isChecked())
 
     def get_parameters(self) -> Dict[str, Any]:
         """

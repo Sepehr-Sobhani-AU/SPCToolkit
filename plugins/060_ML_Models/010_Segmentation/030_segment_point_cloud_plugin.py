@@ -49,19 +49,56 @@ class SegmentPointCloudPlugin(ActionPlugin):
         "model_directory": "models",
         "block_size": 10.0,
         "block_overlap": 1.0,
+        "batch_size": 32,
         "confidence_threshold": 0.3,
+        "normals_branch": "Auto-compute (if needed)",
+        "eigenvalues_branch": "Auto-compute (if needed)",
     }
 
     def get_name(self) -> str:
         return "segment_point_cloud"
 
     def get_parameters(self) -> Dict[str, Any]:
+        # Discover available normals and eigenvalues branches
+        self._normals_map = {}
+        self._eigenvalues_map = {}
+        normals_options = ["Auto-compute (if needed)"]
+        eigenvalues_options = ["Auto-compute (if needed)"]
+
+        data_nodes = global_variables.global_data_nodes
+        if data_nodes:
+            for uid, node in data_nodes.data_nodes.items():
+                if node.data_type == "normals" and hasattr(node.data, 'normals'):
+                    n = len(node.data.normals)
+                    label = f"{node.params} ({n:,} pts)"
+                    normals_options.append(label)
+                    self._normals_map[label] = uid
+                elif node.data_type == "eigenvalues" and hasattr(node.data, 'eigenvalues'):
+                    n = len(node.data.eigenvalues)
+                    label = f"{node.params} ({n:,} pts)"
+                    eigenvalues_options.append(label)
+                    self._eigenvalues_map[label] = uid
+
         return {
             "model_directory": {
                 "type": "directory",
                 "default": self.last_params["model_directory"],
                 "label": "Model Directory",
                 "description": "Directory containing trained segmentation model (seg_model_best.pt, class_mapping.json, training_metadata.json)"
+            },
+            "normals_branch": {
+                "type": "choice",
+                "options": normals_options,
+                "default": self.last_params.get("normals_branch", "Auto-compute (if needed)"),
+                "label": "Normals Branch",
+                "description": "Pre-computed normals to use. 'Auto-compute' estimates them on the full cloud."
+            },
+            "eigenvalues_branch": {
+                "type": "choice",
+                "options": eigenvalues_options,
+                "default": self.last_params.get("eigenvalues_branch", "Auto-compute (if needed)"),
+                "label": "Eigenvalues Branch",
+                "description": "Pre-computed eigenvalues to use. 'Auto-compute' estimates them on the full cloud."
             },
             "block_size": {
                 "type": "float",
@@ -78,6 +115,14 @@ class SegmentPointCloudPlugin(ActionPlugin):
                 "max": 10.0,
                 "label": "Block Overlap (m)",
                 "description": "Overlap between adjacent blocks to reduce boundary artifacts"
+            },
+            "batch_size": {
+                "type": "int",
+                "default": self.last_params["batch_size"],
+                "min": 1,
+                "max": 128,
+                "label": "GPU Batch Size",
+                "description": "Number of chunks per GPU batch. Higher = faster but more VRAM."
             },
             "confidence_threshold": {
                 "type": "float",
@@ -101,6 +146,7 @@ class SegmentPointCloudPlugin(ActionPlugin):
         model_dir = params["model_directory"].strip()
         block_size = float(params["block_size"])
         block_overlap = float(params["block_overlap"])
+        batch_size = int(params["batch_size"])
         confidence_threshold = float(params["confidence_threshold"])
 
         # Validate branch selection
@@ -156,6 +202,34 @@ class SegmentPointCloudPlugin(ActionPlugin):
 
             print(f"Point cloud: {len(point_cloud.points)} points")
 
+            # Resolve pre-computed normals/eigenvalues branches
+            normals_name = params.get('normals_branch', 'Auto-compute (if needed)')
+            eigenvalues_name = params.get('eigenvalues_branch', 'Auto-compute (if needed)')
+            full_normals = None
+            full_eigenvalues = None
+
+            if normals_name not in ("Auto-compute (if needed)",) and normals_name in self._normals_map:
+                uid = self._normals_map[normals_name]
+                normals_node = data_nodes.data_nodes[uid]
+                full_normals = normals_node.data.normals
+                if len(full_normals) != len(point_cloud.points):
+                    QMessageBox.critical(main_window, "Normals Mismatch",
+                        f"Normals branch has {len(full_normals):,} points but "
+                        f"selected branch has {len(point_cloud.points):,} points.")
+                    return
+                print(f"Using pre-computed normals: {normals_name}")
+
+            if eigenvalues_name not in ("Auto-compute (if needed)",) and eigenvalues_name in self._eigenvalues_map:
+                uid = self._eigenvalues_map[eigenvalues_name]
+                eig_node = data_nodes.data_nodes[uid]
+                full_eigenvalues = eig_node.data.eigenvalues
+                if len(full_eigenvalues) != len(point_cloud.points):
+                    QMessageBox.critical(main_window, "Eigenvalues Mismatch",
+                        f"Eigenvalues branch has {len(full_eigenvalues):,} points but "
+                        f"selected branch has {len(point_cloud.points):,} points.")
+                    return
+                print(f"Using pre-computed eigenvalues: {eigenvalues_name}")
+
             # Progress callback
             def progress_callback(current, total, status):
                 percent = int((current / max(total, 1)) * 100)
@@ -173,8 +247,10 @@ class SegmentPointCloudPlugin(ActionPlugin):
                 metadata=metadata,
                 block_size=block_size,
                 overlap=block_overlap,
-                batch_size=8,
-                progress_callback=progress_callback
+                batch_size=batch_size,
+                progress_callback=progress_callback,
+                full_normals=full_normals,
+                full_eigenvalues=full_eigenvalues
             )
 
             # Apply confidence threshold if needed
