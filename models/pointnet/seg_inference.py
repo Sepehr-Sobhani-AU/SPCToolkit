@@ -107,6 +107,7 @@ def segment_point_cloud_blockwise(
     block_size: float = 10.0,
     overlap: float = 1.0,
     batch_size: int = 8,
+    confidence_threshold: float = 0.0,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     full_normals: Optional[np.ndarray] = None,
     full_eigenvalues: Optional[np.ndarray] = None
@@ -132,6 +133,9 @@ def segment_point_cloud_blockwise(
         overlap: Unused (kept for API compatibility). Overlap is determined
             by the training stride (stride < block_size → natural overlap).
         batch_size: Number of chunks to process in parallel on GPU
+        confidence_threshold: Points with max probability below this are
+            labeled num_classes (mapped to "Unclassified" by the plugin).
+            Set to 0.0 to disable.
         progress_callback: Optional callback(current_block, total_blocks, status_msg)
         full_normals: Optional pre-computed (N,3) normals for the full cloud.
             If None and model needs normals, they are auto-computed.
@@ -148,6 +152,15 @@ def segment_point_cloud_blockwise(
     # Per-feature standardization stats (None for old models without them)
     feature_mean = metadata.get('_feature_mean', None)
     feature_std = metadata.get('_feature_std', None)
+
+    # Classes ignored during training (e.g. "unlabeled", "outlier") — their
+    # output neurons were never trained, so mask them out during inference.
+    ignore_classes = metadata.get('ignore_classes', [])
+    if ignore_classes:
+        class_mapping = metadata.get('class_mapping', {})
+        ignored_names = [class_mapping.get(str(c), class_mapping.get(c, f"Class_{c}"))
+                         for c in ignore_classes]
+        print(f"Masking {len(ignore_classes)} ignored classes: {', '.join(ignored_names)}")
 
     # Determine feature configuration
     use_normals = num_features >= 6
@@ -242,7 +255,7 @@ def segment_point_cloud_blockwise(
         for batch_start in range(0, len(chunks), batch_size):
             batch_end = min(batch_start + batch_size, len(chunks))
             batch_chunks = chunks[batch_start:batch_end]
-            batch_probs = _process_chunks(batch_chunks, model, device)
+            batch_probs = _process_chunks(batch_chunks, model, device, ignore_classes)
 
             for j in range(batch_end - batch_start):
                 chunk_idx = batch_start + j
@@ -270,15 +283,27 @@ def segment_point_cloud_blockwise(
 
     del spatial_hash
 
-    # Assign labels in chunks to avoid a temporary (N, C) allocation
-    labels = np.zeros(N, dtype=np.int32)
+    # Assign labels in chunks to avoid a temporary (N, C) allocation.
+    # Points below confidence_threshold get label num_classes ("Unclassified").
+    unclassified_label = np.int32(num_classes)
+    labels = np.full(N, unclassified_label, dtype=np.int32)
     valid_indices = np.where(count_accum > 0)[0]
     LABEL_CHUNK = 1_000_000
+    n_low_conf = 0
     for start in range(0, len(valid_indices), LABEL_CHUNK):
         end = min(start + LABEL_CHUNK, len(valid_indices))
         idx = valid_indices[start:end]
         avg = prob_accum[idx] / count_accum[idx, np.newaxis]
         labels[idx] = np.argmax(avg, axis=1).astype(np.int32)
+        if confidence_threshold > 0:
+            max_prob = np.max(avg, axis=1)
+            low_conf = max_prob < confidence_threshold
+            labels[idx[low_conf]] = unclassified_label
+            n_low_conf += int(np.sum(low_conf))
+
+    if confidence_threshold > 0 and n_low_conf > 0:
+        print(f"Confidence threshold {confidence_threshold}: "
+              f"{n_low_conf:,} points ({n_low_conf/N*100:.1f}%) marked Unclassified")
 
     del prob_accum, count_accum
 
@@ -405,7 +430,8 @@ def _create_chunks(
 def _process_chunks(
     chunk_batch: List[np.ndarray],
     model: PointNetSegmentation,
-    device: torch.device
+    device: torch.device,
+    ignore_classes: Optional[List[int]] = None
 ) -> np.ndarray:
     """
     Run a batch of fixed-size chunks through the model.
@@ -414,6 +440,7 @@ def _process_chunks(
         chunk_batch: List of (num_points, F) arrays
         model: Segmentation model
         device: Torch device
+        ignore_classes: Class indices to mask out before softmax
 
     Returns:
         (B, num_points, C) softmax probability array
@@ -422,6 +449,8 @@ def _process_chunks(
 
     with torch.no_grad():
         logits = model(batch_tensor)
+        if ignore_classes:
+            logits[:, :, ignore_classes] = float('-inf')
         probs = F.softmax(logits, dim=2).cpu().numpy()
 
     del batch_tensor, logits

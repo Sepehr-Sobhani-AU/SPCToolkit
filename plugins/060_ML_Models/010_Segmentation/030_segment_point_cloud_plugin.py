@@ -241,6 +241,8 @@ class SegmentPointCloudPlugin(ActionPlugin):
             # Run segmentation
             main_window.tree_overlay.show_processing("Running segmentation...")
 
+            num_classes = metadata['num_classes']
+
             labels = segment_point_cloud_blockwise(
                 point_cloud=point_cloud,
                 model=model,
@@ -248,25 +250,29 @@ class SegmentPointCloudPlugin(ActionPlugin):
                 block_size=block_size,
                 overlap=block_overlap,
                 batch_size=batch_size,
+                confidence_threshold=confidence_threshold,
                 progress_callback=progress_callback,
                 full_normals=full_normals,
                 full_eigenvalues=full_eigenvalues
             )
 
-            # Apply confidence threshold if needed
-            # For now, labels come directly from argmax of averaged probabilities
-
-            # Build cluster_names: each unique label -> class name
+            # Build cluster_names: each unique label -> class name.
+            # Label == num_classes is the special "Unclassified" ID from
+            # confidence thresholding.
             unique_labels = np.unique(labels)
             cluster_names = {}
             cluster_colors = {}
+            color_lookup = {k.lower(): v for k, v in DEFAULT_SEG_COLORS.items()}
 
             for label_id in unique_labels:
-                class_name = class_mapping.get(int(label_id), f"Class_{label_id}")
+                if int(label_id) == num_classes:
+                    class_name = "Unclassified"
+                else:
+                    class_name = class_mapping.get(int(label_id), f"Class_{label_id}")
                 cluster_names[int(label_id)] = class_name
 
-                if class_name in DEFAULT_SEG_COLORS:
-                    cluster_colors[class_name] = DEFAULT_SEG_COLORS[class_name]
+                if class_name.lower() in color_lookup:
+                    cluster_colors[class_name] = color_lookup[class_name.lower()]
                 else:
                     np.random.seed(int(label_id) + 42)
                     cluster_colors[class_name] = np.random.rand(3).astype(np.float32)
