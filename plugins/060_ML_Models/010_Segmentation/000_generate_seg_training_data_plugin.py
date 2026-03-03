@@ -18,6 +18,7 @@ import numpy as np
 from typing import Dict, Any
 from datetime import datetime
 from PyQt5.QtWidgets import QMessageBox, QApplication
+from core.services.strided_spatial_hash import StridedSpatialHash
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
@@ -259,8 +260,8 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
             main_window.tree_overlay.show_processing("Creating spatial blocks...")
             t_blocks = time.time()
 
-            shash, valid_positions, cells_per_block = self._create_blocks(
-                valid_points, block_size, points_per_block, stride)
+            spatial_hash = StridedSpatialHash(valid_points, block_size, stride)
+            valid_positions = spatial_hash.enumerate_blocks(min_points=points_per_block)
 
             n_blocks = len(valid_positions)
             if n_blocks == 0:
@@ -280,7 +281,7 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
             t_assemble = time.time()
 
             for block_idx, (ix, iy) in enumerate(valid_positions):
-                indices = self._get_block_indices(ix, iy, shash, cells_per_block)
+                indices = spatial_hash.get_block_indices(ix, iy)
                 block_points = valid_points[indices]
                 block_labels = valid_labels[indices]
                 block_normals = valid_normals[indices] if use_normals else None
@@ -435,97 +436,6 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
                     return child_node.data
 
         return None
-
-    def _create_blocks(self, points, block_size, min_points, stride):
-        """
-        Build spatial hash and find valid block positions.
-
-        Uses O(N log N) spatial hashing instead of brute-force O(N × nx × ny).
-        Each point is assigned to a stride-sized cell via integer division, then
-        sorted by cell ID for O(1) lookup via searchsorted splits.
-
-        Returns:
-            (shash, valid_positions, cells_per_block) where:
-            - shash: dict with 'order', 'splits', 'nx', 'ny' for index lookup
-            - valid_positions: list of (ix, iy) grid positions with enough points
-            - cells_per_block: number of stride cells per block dimension
-        """
-        min_xy = np.min(points[:, :2], axis=0)
-        max_xy = np.max(points[:, :2], axis=0)
-
-        extent = max_xy - min_xy
-        nx = max(1, int(np.ceil(extent[0] / stride)))
-        ny = max(1, int(np.ceil(extent[1] / stride)))
-
-        # O(N): assign each point to its stride cell
-        cx = np.floor((points[:, 0] - min_xy[0]) / stride).astype(np.int64)
-        cy = np.floor((points[:, 1] - min_xy[1]) / stride).astype(np.int64)
-        np.clip(cx, 0, nx - 1, out=cx)
-        np.clip(cy, 0, ny - 1, out=cy)
-
-        # O(N log N): sort by cell for O(1) lookup
-        cell_id = cx * ny + cy
-        order = np.argsort(cell_id)
-        sorted_ids = cell_id[order]
-        splits = np.searchsorted(sorted_ids, np.arange(nx * ny + 1))
-
-        # Scan grid: count points per block from cell counts
-        cells_per_block = int(round(block_size / stride))
-        valid_positions = []
-        non_empty = 0
-        filtered = 0
-
-        for ix in range(nx):
-            for iy in range(ny):
-                count = 0
-                for dx in range(cells_per_block):
-                    sx = ix + dx
-                    if sx >= nx:
-                        break
-                    for dy in range(cells_per_block):
-                        sy = iy + dy
-                        if sy >= ny:
-                            break
-                        linear = sx * ny + sy
-                        count += splits[linear + 1] - splits[linear]
-                if count > 0:
-                    non_empty += 1
-                    if count >= min_points:
-                        valid_positions.append((ix, iy))
-                    else:
-                        filtered += 1
-
-        total_cells = nx * ny
-        print(f"Grid: {nx} x {ny} = {total_cells:,} cells (stride={stride}m, block={block_size}m)")
-        print(f"  Cells per block: {cells_per_block}")
-        print(f"  Non-empty blocks: {non_empty:,}")
-        print(f"  Passed min_points (>={min_points}): {len(valid_positions):,}")
-        print(f"  Filtered (too sparse): {filtered:,}")
-
-        shash = {'order': order, 'splits': splits, 'nx': nx, 'ny': ny}
-        return shash, valid_positions, cells_per_block
-
-    def _get_block_indices(self, ix, iy, shash, cells_per_block):
-        """
-        Generate point indices for one block on demand from spatial hash.
-
-        Gathers indices from all stride cells covered by the block at (ix, iy).
-        No bulk storage — indices are generated per block and discarded after use.
-        """
-        order, splits = shash['order'], shash['splits']
-        ny = shash['ny']
-        parts = []
-        for dx in range(cells_per_block):
-            sx = ix + dx
-            for dy in range(cells_per_block):
-                sy = iy + dy
-                linear = sx * ny + sy
-                start, end = splits[linear], splits[linear + 1]
-                if start < end:
-                    parts.append(order[start:end])
-        if not parts:
-            return np.array([], dtype=np.int64)
-        return np.concatenate(parts) if len(parts) > 1 else parts[0]
 
     def _assemble_block_features(self, block_points, block_normals, block_eigenvalues, normalize):
         """
