@@ -72,12 +72,25 @@ def load_seg_model_with_metadata(
 
     checkpoint = torch.load(model_path, map_location=device)
 
-    model = PointNetSegmentation(
-        num_points=metadata['num_points'],
-        num_features=metadata['num_features'],
-        num_classes=metadata['num_classes'],
-        use_tnet=metadata.get('use_tnet', True)
-    )
+    # Auto-detect model type (backward compatible: default to PointNet)
+    model_type = metadata.get('model_type', 'PointNet')
+    metadata['model_type'] = model_type
+
+    if model_type == 'PointNet++ SSG':
+        from models.pointnet2.pointnet2_seg_model import PointNet2SSGSegmentation
+        model = PointNet2SSGSegmentation(
+            num_points=metadata['num_points'],
+            num_features=metadata['num_features'],
+            num_classes=metadata['num_classes'],
+            block_size=metadata.get('block_size', 10.0)
+        )
+    else:
+        model = PointNetSegmentation(
+            num_points=metadata['num_points'],
+            num_features=metadata['num_features'],
+            num_classes=metadata['num_classes'],
+            use_tnet=metadata.get('use_tnet', True)
+        )
 
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
