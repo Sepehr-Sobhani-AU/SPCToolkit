@@ -151,6 +151,8 @@ def classify_clusters_batch(
     # Extract metadata
     num_points = metadata['num_points']
     num_features = metadata['num_features']
+    if not torch.cuda.is_available() and '_device' not in metadata:
+        print("WARNING: CUDA not available — inference will fall back to CPU and be significantly slower.")
     device = metadata.get('_device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # Determine which features are expected

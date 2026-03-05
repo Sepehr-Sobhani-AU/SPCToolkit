@@ -19,7 +19,6 @@ from datetime import datetime
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5 import QtWidgets, QtCore
 from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
 
 import torch
 import torch.nn as nn
@@ -367,6 +366,8 @@ class TrainSegModelPlugin(ActionPlugin):
                                f"Validation data directory does not exist:\n{val_data_dir}")
             return
 
+        if not torch.cuda.is_available():
+            print("WARNING: CUDA not available — training will fall back to CPU and be significantly slower.")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         run_number = self._get_next_run_number(output_dir)
@@ -516,15 +517,15 @@ class TrainSegModelPlugin(ActionPlugin):
                 feature_mean=feature_mean, feature_std=feature_std,
                 ignore_classes=ignore_classes)
 
-            # num_workers=0: data is pre-loaded in memory so there's no I/O benefit
-            # from multiprocessing, and forked workers cause segfaults with large datasets
             train_loader = DataLoader(
                 train_dataset, batch_size=batch_size, shuffle=True,
-                num_workers=0, pin_memory=True, drop_last=True
+                num_workers=2, pin_memory=True, drop_last=True,
+                persistent_workers=True
             )
             val_loader = DataLoader(
                 val_dataset, batch_size=batch_size, shuffle=False,
-                num_workers=0, pin_memory=True
+                num_workers=2, pin_memory=True,
+                persistent_workers=True
             )
 
             # Create model
@@ -608,6 +609,8 @@ class TrainSegModelPlugin(ActionPlugin):
 
         def _train_loop():
             """Training loop running in background thread."""
+            torch.backends.cudnn.benchmark = True
+            scaler = torch.amp.GradScaler()
             history = training_state['history']
             best_val_miou = 0.0
             epochs_without_improvement = 0
@@ -631,18 +634,20 @@ class TrainSegModelPlugin(ActionPlugin):
                             training_state['was_cancelled'] = True
                             break
 
-                        batch_features = batch_features.to(device)
-                        batch_labels = batch_labels.to(device)
+                        batch_features = batch_features.to(device, non_blocking=True)
+                        batch_labels = batch_labels.to(device, non_blocking=True)
 
-                        optimizer.zero_grad()
-                        logits = model(batch_features)  # (B, N, C)
+                        optimizer.zero_grad(set_to_none=True)
+                        with torch.amp.autocast('cuda'):
+                            logits = model(batch_features)  # (B, N, C)
+                            B, N, C = logits.shape
+                            loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
 
-                        B, N, C = logits.shape
-                        loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
-
-                        loss.backward()
+                        scaler.scale(loss).backward()
+                        scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                        optimizer.step()
+                        scaler.step(optimizer)
+                        scaler.update()
 
                         train_loss += loss.item() * B
                         train_batch_count += B
@@ -669,10 +674,10 @@ class TrainSegModelPlugin(ActionPlugin):
                     val_batch_count = 0
                     val_confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
 
-                    with torch.no_grad():
+                    with torch.no_grad(), torch.amp.autocast('cuda'):
                         for batch_features, batch_labels in val_loader:
-                            batch_features = batch_features.to(device)
-                            batch_labels = batch_labels.to(device)
+                            batch_features = batch_features.to(device, non_blocking=True)
+                            batch_labels = batch_labels.to(device, non_blocking=True)
 
                             logits = model(batch_features)
                             B, N, C = logits.shape
@@ -732,6 +737,7 @@ class TrainSegModelPlugin(ActionPlugin):
                     # Check improvement (track mIoU)
                     if val_miou > best_val_miou:
                         best_val_miou = val_miou
+                        training_state['best_val_miou'] = best_val_miou
                         training_state['best_val_per_class_iou'] = val_per_class_iou.copy()
                         epochs_without_improvement = 0
 
@@ -895,13 +901,16 @@ class TrainSegModelPlugin(ActionPlugin):
                 result = training_state['epoch_results'].pop(0)
                 epoch = result['epoch']
 
-                progress_window.update_epoch(
-                    epoch, result['train_loss'], result['train_acc'],
-                    result['val_loss'], result['val_acc'],
-                    learning_rate=result['learning_rate'],
-                    train_miou=result['train_miou'],
-                    val_miou=result['val_miou']
-                )
+                try:
+                    progress_window.update_epoch(
+                        epoch, result['train_loss'], result['train_acc'],
+                        result['val_loss'], result['val_acc'],
+                        learning_rate=result['learning_rate'],
+                        train_miou=result['train_miou'],
+                        val_miou=result['val_miou']
+                    )
+                except Exception as e:
+                    print(f"Warning: progress window update failed at epoch {epoch}: {e}")
 
                 is_new_best = result['val_miou'] >= training_state['best_val_miou']
                 best_marker = f"  -> New best model (val_mIoU: {result['val_miou']:.5f})" if is_new_best else ""
@@ -918,6 +927,27 @@ class TrainSegModelPlugin(ActionPlugin):
 
         def _on_training_finished():
             """Handle training thread completion on main thread."""
+            # Drain any remaining epoch results the poll timer missed
+            while training_state['epoch_results']:
+                result = training_state['epoch_results'].pop(0)
+                epoch = result['epoch']
+                try:
+                    progress_window.update_epoch(
+                        epoch, result['train_loss'], result['train_acc'],
+                        result['val_loss'], result['val_acc'],
+                        learning_rate=result['learning_rate'],
+                        train_miou=result['train_miou'],
+                        val_miou=result['val_miou']
+                    )
+                except Exception as e:
+                    print(f"Warning: progress window update failed at epoch {epoch}: {e}")
+                is_new_best = result['val_miou'] >= training_state['best_val_miou']
+                best_marker = f"  -> New best model (val_mIoU: {result['val_miou']:.5f})" if is_new_best else ""
+                print(f"Epoch {epoch:3d}/{epochs} - "
+                      f"loss: {result['train_loss']:.4f} - acc: {result['train_acc']:.4f} - mIoU: {result['train_miou']:.4f} - "
+                      f"val_loss: {result['val_loss']:.4f} - val_acc: {result['val_acc']:.4f} - val_mIoU: {result['val_miou']:.4f}"
+                      f"{best_marker}")
+
             main_window.tree_overlay.hide_processing()
             main_window.enable_menus()
             main_window.enable_tree()
@@ -1074,34 +1104,33 @@ class TrainSegModelPlugin(ActionPlugin):
         return sorted(ignore_classes)
 
     def _compute_class_weights(self, file_paths, num_classes):
-        """Compute class weights from subset of training files for balanced loss."""
-        # Sample a subset for efficiency
-        sample_files = file_paths[:min(100, len(file_paths))]
-        all_labels = []
-
-        for f in sample_files:
+        """Compute class weights from training files for balanced loss."""
+        # Count labels across ALL files (reading just labels is cheap)
+        class_counts = np.zeros(num_classes, dtype=np.int64)
+        for f in file_paths:
             data = np.load(f)
-            all_labels.append(data['labels'].flatten())
+            labels = data['labels'].flatten()
+            for c in range(num_classes):
+                class_counts[c] += np.sum(labels == c)
 
-        all_labels = np.concatenate(all_labels)
-        unique_classes = np.unique(all_labels)
+        total = class_counts.sum()
+        present_mask = class_counts > 0
+        n_present = present_mask.sum()
 
-        weights = compute_class_weight(
-            'balanced',
-            classes=unique_classes,
-            y=all_labels
-        )
-
-        # Create full weight array (some classes might be missing in sample)
+        # Balanced weights for classes that exist: n_samples / (n_classes * count)
         full_weights = np.ones(num_classes, dtype=np.float32)
-        for cls, weight in zip(unique_classes, weights):
-            if 0 <= cls < num_classes:
-                full_weights[cls] = weight
+        full_weights[present_mask] = total / (n_present * class_counts[present_mask])
 
         # Cap extreme weights — very rare classes get weights of 100+
         # which causes gradient instability. Use sqrt-dampened weights instead.
-        median_w = np.median(full_weights[full_weights > 0])
+        median_w = np.median(full_weights[present_mask])
         full_weights = np.sqrt(full_weights / median_w) * median_w
+
+        # Classes missing from the entire dataset get the max computed weight
+        if not np.all(present_mask):
+            max_w = full_weights[present_mask].max()
+            full_weights[~present_mask] = max_w
+
         full_weights = np.clip(full_weights, 0.1, 20.0).astype(np.float32)
 
         return full_weights

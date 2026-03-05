@@ -32,9 +32,6 @@ class TrainingProgressWindow(QtWidgets.QDialog):
     - Cancel button to stop training
     """
 
-    # Signal emitted when user clicks cancel
-    cancel_requested = QtCore.pyqtSignal()
-
     def __init__(self, parent=None, total_epochs=100):
         super().__init__(parent)
 
@@ -355,10 +352,12 @@ class TrainingProgressWindow(QtWidgets.QDialog):
                                label='Validation', linewidth=1)
             self.ax_acc.legend(loc='lower right', fontsize=9)
 
-        # Adjust layout and refresh canvas (draw_idle defers to the next event
-        # loop iteration — safer than synchronous draw() from timer callbacks)
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        # Adjust layout and refresh canvas
+        try:
+            self.figure.tight_layout()
+        except (ValueError, RuntimeError):
+            pass  # tight_layout can fail if axis bounding boxes aren't ready
+        self.canvas.draw()
 
     def update_epoch(self, epoch, train_loss, train_acc, val_loss, val_acc,
                      learning_rate=None, train_miou=None, val_miou=None):
@@ -471,7 +470,6 @@ class TrainingProgressWindow(QtWidgets.QDialog):
             self.training_cancelled = True
             self.status_label.setText("Cancelling training... Please wait.")
             self.cancel_button.setEnabled(False)
-            self.cancel_requested.emit()
             QtWidgets.QApplication.processEvents()
 
     def training_completed(self, best_val_metric, cancelled=False):

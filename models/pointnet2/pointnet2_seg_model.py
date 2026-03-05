@@ -17,6 +17,7 @@ from pathlib import Path
 from core.pointnet_model import ConvBNReLU
 from models.pointnet2.pointnet2_ops import (
     furthest_point_sample,
+    random_sample,
     ball_query,
     three_nn,
     three_interpolate,
@@ -50,7 +51,7 @@ class SetAbstraction(nn.Module):
     When npoint is None, applies global pooling (for the deepest SA layer).
     """
 
-    def __init__(self, npoint, radius, nsample, in_channels, mlp_channels):
+    def __init__(self, npoint, radius, nsample, in_channels, mlp_channels, use_fps=True):
         """
         Args:
             npoint: number of centroids (None = global aggregation)
@@ -58,11 +59,13 @@ class SetAbstraction(nn.Module):
             nsample: max neighbors per centroid
             in_channels: input feature channels (excluding XYZ)
             mlp_channels: list of output channels for the shared MLP
+            use_fps: if True use Farthest Point Sampling, else random sampling (faster)
         """
         super().__init__()
         self.npoint = npoint
         self.radius = radius
         self.nsample = nsample
+        self.use_fps = use_fps
 
         # MLP input: grouped XYZ (3) + features (in_channels)
         self.mlp = SharedMLP([in_channels + 3] + mlp_channels)
@@ -91,8 +94,11 @@ class SetAbstraction(nn.Module):
             else:
                 grouped = grouped_xyz.permute(0, 3, 1, 2)  # (B, 3, 1, N)
         else:
-            # FPS to select centroids
-            fps_idx = furthest_point_sample(xyz, self.npoint)  # (B, npoint)
+            # Select centroids via FPS or random sampling
+            if self.use_fps:
+                fps_idx = furthest_point_sample(xyz, self.npoint)  # (B, npoint)
+            else:
+                fps_idx = random_sample(xyz, self.npoint)  # (B, npoint)
 
             # Gather centroid coordinates
             fps_idx_expand = fps_idx.unsqueeze(-1).expand(-1, -1, 3)
@@ -212,12 +218,14 @@ class PointNet2SSGSegmentation(nn.Module):
         block_size: spatial block size in meters (scales ball query radii)
     """
 
-    def __init__(self, num_points=4096, num_features=9, num_classes=6, block_size=10.0):
+    def __init__(self, num_points=4096, num_features=9, num_classes=6,
+                 block_size=10.0, use_fps=True):
         super().__init__()
         self.num_points = num_points
         self.num_features = num_features
         self.num_classes = num_classes
         self.block_size = block_size
+        self.use_fps = use_fps
 
         # Extra features beyond XYZ (normals, eigenvalues, etc.)
         extra_feat = num_features - 3
@@ -231,21 +239,24 @@ class PointNet2SSGSegmentation(nn.Module):
             radius=0.5 * scale,
             nsample=32,
             in_channels=extra_feat,
-            mlp_channels=[64, 64, 128]
+            mlp_channels=[64, 64, 128],
+            use_fps=use_fps
         )
         self.sa2 = SetAbstraction(
             npoint=num_points // 16,
             radius=1.0 * scale,
             nsample=64,
             in_channels=128,
-            mlp_channels=[128, 128, 256]
+            mlp_channels=[128, 128, 256],
+            use_fps=use_fps
         )
         self.sa3 = SetAbstraction(
             npoint=num_points // 64,
             radius=2.0 * scale,
             nsample=128,
             in_channels=256,
-            mlp_channels=[256, 256, 512]
+            mlp_channels=[256, 256, 512],
+            use_fps=use_fps
         )
         self.sa4 = SetAbstraction(
             npoint=None,  # global aggregation
@@ -345,10 +356,11 @@ class PointNet2Segmenter:
     """
 
     def __init__(self, num_points=4096, num_features=9, num_classes=6,
-                 block_size=10.0, device=None):
+                 block_size=10.0, use_fps=True, device=None):
         self.num_points = num_points
         self.num_features = num_features
         self.num_classes = num_classes
+        self.use_fps = use_fps
         self.block_size = block_size
 
         if device is None:
@@ -360,7 +372,8 @@ class PointNet2Segmenter:
             num_points=num_points,
             num_features=num_features,
             num_classes=num_classes,
-            block_size=block_size
+            block_size=block_size,
+            use_fps=use_fps
         ).to(self.device)
 
         self.optimizer = None
@@ -560,6 +573,7 @@ class PointNet2Segmenter:
             'num_features': self.num_features,
             'num_classes': self.num_classes,
             'block_size': self.block_size,
+            'use_fps': self.use_fps,
             'model_type': 'PointNet++ SSG',
             'class_mapping': self.class_mapping,
             'history': self.history,
@@ -577,12 +591,14 @@ class PointNet2Segmenter:
         self.num_features = checkpoint.get('num_features', self.num_features)
         self.num_classes = checkpoint.get('num_classes', self.num_classes)
         self.block_size = checkpoint.get('block_size', self.block_size)
+        self.use_fps = checkpoint.get('use_fps', True)
 
         self.model = PointNet2SSGSegmentation(
             num_points=self.num_points,
             num_features=self.num_features,
             num_classes=self.num_classes,
-            block_size=self.block_size
+            block_size=self.block_size,
+            use_fps=self.use_fps
         ).to(self.device)
 
         if 'model_state_dict' in checkpoint:

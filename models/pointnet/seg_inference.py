@@ -82,7 +82,8 @@ def load_seg_model_with_metadata(
             num_points=metadata['num_points'],
             num_features=metadata['num_features'],
             num_classes=metadata['num_classes'],
-            block_size=metadata.get('block_size', 10.0)
+            block_size=metadata.get('block_size', 10.0),
+            use_fps=True  # Always use FPS for inference (better coverage)
         )
     else:
         model = PointNetSegmentation(
@@ -160,6 +161,8 @@ def segment_point_cloud_blockwise(
     """
     num_points = metadata['num_points']
     num_features = metadata['num_features']
+    if not torch.cuda.is_available() and '_device' not in metadata:
+        print("WARNING: CUDA not available — inference will fall back to CPU and be significantly slower.")
     device = metadata.get('_device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 
     # Per-feature standardization stats (None for old models without them)

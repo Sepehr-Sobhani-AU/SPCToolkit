@@ -61,6 +61,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
         "loss_function": "Focal + Class Weights",
         "use_scene_validation": True,
         "val_data_dir": "training_data_seg_val",
+        "use_random_sampling": True,
     }
 
     def get_name(self) -> str:
@@ -171,6 +172,14 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                 "label": "Loss Function",
                 "description": "Loss function for training"
             },
+            "use_random_sampling": {
+                "type": "bool",
+                "default": self.last_params.get("use_random_sampling", True),
+                "label": "Use Random Sampling (faster training)",
+                "description": "Use random point sampling instead of Farthest Point Sampling during training. "
+                               "Much faster with equivalent quality on spatially uniform blocks. "
+                               "Inference always uses FPS regardless."
+            },
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
@@ -186,6 +195,8 @@ class TrainPointNet2SegPlugin(ActionPlugin):
         loss_function = params.get('loss_function', 'Focal + Class Weights')
         use_scene_validation = params.get('use_scene_validation', True)
         val_data_dir = params.get('val_data_dir', '').strip()
+        use_random_sampling = params.get('use_random_sampling', True)
+        use_fps = not use_random_sampling  # Internal flag: FPS vs random
 
         TrainPointNet2SegPlugin.last_params = params.copy()
 
@@ -347,10 +358,12 @@ class TrainPointNet2SegPlugin(ActionPlugin):
 
             train_loader = DataLoader(
                 train_dataset, batch_size=batch_size, shuffle=True,
-                num_workers=0, pin_memory=True, drop_last=True)
+                num_workers=2, pin_memory=True, drop_last=True,
+                persistent_workers=True)
             val_loader = DataLoader(
                 val_dataset, batch_size=batch_size, shuffle=False,
-                num_workers=0, pin_memory=True)
+                num_workers=2, pin_memory=True,
+                persistent_workers=True)
 
             # Create PointNet++ SSG model
             main_window.tree_overlay.show_processing("Creating PointNet++ SSG model...")
@@ -362,12 +375,15 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                 num_points=num_points,
                 num_features=num_features,
                 num_classes=num_classes,
-                block_size=block_size
+                block_size=block_size,
+                use_fps=use_fps
             ).to(device)
 
+            sampling_mode = "FPS (Farthest Point Sampling)" if use_fps else "Random Sampling (fast)"
             total_params = sum(p.numel() for p in model.parameters())
             print(f"\nModel: PointNet++ SSG — {total_params:,} parameters")
             print(f"Block size: {block_size}m (radii scale accordingly)")
+            print(f"Point sampling: {sampling_mode}")
 
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-4)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -432,6 +448,8 @@ class TrainPointNet2SegPlugin(ActionPlugin):
 
         def _train_loop():
             """Training loop running in background thread."""
+            torch.backends.cudnn.benchmark = True
+            scaler = torch.amp.GradScaler()
             history = training_state['history']
             best_val_miou = 0.0
             epochs_without_improvement = 0
@@ -455,18 +473,20 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                             training_state['was_cancelled'] = True
                             break
 
-                        batch_features = batch_features.to(device)
-                        batch_labels = batch_labels.to(device)
+                        batch_features = batch_features.to(device, non_blocking=True)
+                        batch_labels = batch_labels.to(device, non_blocking=True)
 
-                        optimizer.zero_grad()
-                        logits = model(batch_features)  # (B, N, C)
+                        optimizer.zero_grad(set_to_none=True)
+                        with torch.amp.autocast('cuda'):
+                            logits = model(batch_features)  # (B, N, C)
+                            B, N, C = logits.shape
+                            loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
 
-                        B, N, C = logits.shape
-                        loss = criterion(logits.reshape(B * N, C), batch_labels.reshape(B * N))
-
-                        loss.backward()
+                        scaler.scale(loss).backward()
+                        scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                        optimizer.step()
+                        scaler.step(optimizer)
+                        scaler.update()
 
                         train_loss += loss.item() * B
                         train_batch_count += B
@@ -494,10 +514,10 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     val_batch_count = 0
                     val_confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
 
-                    with torch.no_grad():
+                    with torch.no_grad(), torch.amp.autocast('cuda'):
                         for batch_features, batch_labels in val_loader:
-                            batch_features = batch_features.to(device)
-                            batch_labels = batch_labels.to(device)
+                            batch_features = batch_features.to(device, non_blocking=True)
+                            batch_labels = batch_labels.to(device, non_blocking=True)
 
                             logits = model(batch_features)
                             B, N, C = logits.shape
@@ -555,6 +575,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
 
                     if val_miou > best_val_miou:
                         best_val_miou = val_miou
+                        training_state['best_val_miou'] = best_val_miou
                         training_state['best_val_per_class_iou'] = val_per_class_iou.copy()
                         epochs_without_improvement = 0
 
@@ -569,6 +590,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                             'num_features': num_features,
                             'num_classes': num_classes,
                             'block_size': block_size,
+                            'use_fps': use_fps,
                             'model_type': 'PointNet++ SSG',
                             'task_type': 'segmentation',
                             'feature_mean': feature_mean.tolist(),
@@ -598,6 +620,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     'num_features': num_features,
                     'num_classes': num_classes,
                     'block_size': block_size,
+                    'use_fps': use_fps,
                     'model_type': 'PointNet++ SSG',
                     'task_type': 'segmentation',
                     'history': history,
@@ -622,6 +645,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     'num_features': num_features,
                     'num_classes': num_classes,
                     'block_size': block_size,
+                    'use_fps': use_fps,
                     'class_mapping': class_mapping,
                     'training_samples': len(train_files),
                     'validation_samples': len(val_files),
@@ -720,13 +744,16 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                 result = training_state['epoch_results'].pop(0)
                 epoch = result['epoch']
 
-                progress_window.update_epoch(
-                    epoch, result['train_loss'], result['train_acc'],
-                    result['val_loss'], result['val_acc'],
-                    learning_rate=result['learning_rate'],
-                    train_miou=result['train_miou'],
-                    val_miou=result['val_miou']
-                )
+                try:
+                    progress_window.update_epoch(
+                        epoch, result['train_loss'], result['train_acc'],
+                        result['val_loss'], result['val_acc'],
+                        learning_rate=result['learning_rate'],
+                        train_miou=result['train_miou'],
+                        val_miou=result['val_miou']
+                    )
+                except Exception as e:
+                    print(f"Warning: progress window update failed at epoch {epoch}: {e}")
 
                 is_new_best = result['val_miou'] >= training_state['best_val_miou']
                 best_marker = f"  -> New best model (val_mIoU: {result['val_miou']:.5f})" if is_new_best else ""
@@ -742,6 +769,27 @@ class TrainPointNet2SegPlugin(ActionPlugin):
 
         def _on_training_finished():
             """Handle training thread completion on main thread."""
+            # Drain any remaining epoch results the poll timer missed
+            while training_state['epoch_results']:
+                result = training_state['epoch_results'].pop(0)
+                epoch = result['epoch']
+                try:
+                    progress_window.update_epoch(
+                        epoch, result['train_loss'], result['train_acc'],
+                        result['val_loss'], result['val_acc'],
+                        learning_rate=result['learning_rate'],
+                        train_miou=result['train_miou'],
+                        val_miou=result['val_miou']
+                    )
+                except Exception as e:
+                    print(f"Warning: progress window update failed at epoch {epoch}: {e}")
+                is_new_best = result['val_miou'] >= training_state['best_val_miou']
+                best_marker = f"  -> New best model (val_mIoU: {result['val_miou']:.5f})" if is_new_best else ""
+                print(f"Epoch {epoch:3d}/{epochs} - "
+                      f"loss: {result['train_loss']:.4f} - acc: {result['train_acc']:.4f} - mIoU: {result['train_miou']:.4f} - "
+                      f"val_loss: {result['val_loss']:.4f} - val_acc: {result['val_acc']:.4f} - val_mIoU: {result['val_miou']:.4f}"
+                      f"{best_marker}")
+
             main_window.tree_overlay.hide_processing()
             main_window.enable_menus()
             main_window.enable_tree()

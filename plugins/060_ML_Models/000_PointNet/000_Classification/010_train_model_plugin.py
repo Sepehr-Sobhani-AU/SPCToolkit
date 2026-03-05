@@ -247,6 +247,8 @@ class TrainPointNetPlugin(ActionPlugin):
             return
 
         # Setup device
+        if not torch.cuda.is_available():
+            print("WARNING: CUDA not available — training will fall back to CPU and be significantly slower.")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         # Track results from all repetitions

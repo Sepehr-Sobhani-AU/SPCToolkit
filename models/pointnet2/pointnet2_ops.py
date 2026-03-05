@@ -53,6 +53,7 @@ def _fps_pytorch(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
 
     centroids = torch.zeros(B, npoint, dtype=torch.long, device=device)
     distance = torch.full((B, N), 1e10, device=device)
+    batch_indices = torch.arange(B, device=device)
 
     # Start from a random point per batch element
     farthest = torch.randint(0, N, (B,), dtype=torch.long, device=device)
@@ -60,15 +61,37 @@ def _fps_pytorch(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
     for i in range(npoint):
         centroids[:, i] = farthest
         # Gather the selected point: (B, 1, 3)
-        centroid_xyz = xyz[torch.arange(B, device=device), farthest].unsqueeze(1)
-        # Distance from every point to selected centroid: (B, N)
+        centroid_xyz = xyz[batch_indices, farthest].unsqueeze(1)
+        # Squared distance from every point to selected centroid: (B, N)
         dist = torch.sum((xyz - centroid_xyz) ** 2, dim=-1)
-        # Update minimum distance to the selected set
-        distance = torch.min(distance, dist)
+        # Update minimum distance to the selected set (in-place)
+        torch.minimum(distance, dist, out=distance)
         # Next farthest point
         farthest = torch.argmax(distance, dim=-1)
 
     return centroids
+
+
+def _random_sample(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
+    """
+    Random point sampling — O(1) alternative to FPS.
+
+    For spatially uniform blocks (from StridedSpatialHash), random sampling
+    provides comparable coverage to FPS with negligible compute cost.
+
+    Args:
+        xyz: (B, N, 3) point coordinates
+        npoint: number of points to sample
+
+    Returns:
+        (B, npoint) indices of sampled points
+    """
+    B, N, _ = xyz.shape
+    device = xyz.device
+
+    # Random permutation per batch element, take first npoint
+    idx = torch.argsort(torch.rand(B, N, device=device), dim=-1)[:, :npoint]
+    return idx
 
 
 def _ball_query_pytorch(
@@ -78,6 +101,7 @@ def _ball_query_pytorch(
     Ball query — pure PyTorch.
 
     For each centroid in new_xyz, find up to nsample points in xyz within radius.
+    Uses topk instead of full sort for O(N log K) vs O(N log N).
 
     Args:
         radius: search radius
@@ -86,45 +110,41 @@ def _ball_query_pytorch(
         new_xyz: (B, M, 3) centroids
 
     Returns:
-        (B, M, nsample) indices into xyz. Pads with first-found index if < nsample.
+        (B, M, nsample) indices into xyz. Pads with nearest index if < nsample.
     """
     B, N, _ = xyz.shape
     M = new_xyz.shape[1]
-    device = xyz.device
 
     # Pairwise squared distances: (B, M, N)
-    dists = torch.cdist(new_xyz, xyz, p=2.0) ** 2
+    dists = torch.cdist(new_xyz, xyz, p=2.0).square()
     radius_sq = radius * radius
 
-    # Mask points outside radius
-    mask = dists > radius_sq  # True = outside
+    # Mask points outside radius with inf (avoids clone — modifies dists in-place
+    # which is fine since we computed it fresh above)
+    dists[dists > radius_sq] = float('inf')
 
-    # Sort distances to get nearest within radius first
-    dists_masked = dists.clone()
-    dists_masked[mask] = float('inf')
-    _, sort_idx = dists_masked.sort(dim=-1)  # (B, M, N) sorted indices
+    # Use topk to find K nearest within radius — O(N log K) vs O(N log N) for sort
+    # topk with largest=False finds the smallest K values
+    _, group_idx = dists.topk(nsample, dim=-1, largest=False)  # (B, M, nsample)
 
-    # Take top nsample
-    group_idx = sort_idx[:, :, :nsample]  # (B, M, nsample)
-
-    # For centroids with no neighbors in radius, use the nearest point
-    # Check if the first neighbor is inf (meaning no points in radius)
-    first_dist = torch.gather(dists_masked, 2, sort_idx[:, :, :1])  # (B, M, 1)
-    no_neighbors = first_dist.squeeze(-1).isinf()  # (B, M)
-
-    if no_neighbors.any():
-        # Fall back to nearest point regardless of radius
-        _, nearest_idx = dists.sort(dim=-1)
-        nearest = nearest_idx[:, :, :1].expand(-1, -1, nsample)  # (B, M, nsample)
-        group_idx[no_neighbors] = nearest[no_neighbors]
-
-    # Pad: if fewer than nsample neighbors found, repeat the first neighbor
-    # Check which entries are inf in the gathered distances
-    gathered_dists = torch.gather(dists_masked, 2, group_idx)  # (B, M, nsample)
+    # Check for centroids with no/insufficient neighbors in radius
+    # Gather distances of selected neighbors
+    gathered_dists = torch.gather(dists, 2, group_idx)  # (B, M, nsample)
     invalid = gathered_dists.isinf()  # (B, M, nsample)
-    # Replace invalid with the first valid index in each group
-    first_valid = group_idx[:, :, 0:1].expand_as(group_idx)  # (B, M, nsample)
-    group_idx[invalid] = first_valid[invalid]
+
+    if invalid.any():
+        # For fully empty centroids, use nearest point from original distances
+        # Recompute un-masked distances only for problematic centroids
+        dists_clean = torch.cdist(new_xyz, xyz, p=2.0).square()
+        nearest_idx = dists_clean.argmin(dim=-1, keepdim=True)  # (B, M, 1)
+        nearest_idx_expanded = nearest_idx.expand_as(group_idx)  # (B, M, nsample)
+
+        # Replace invalid entries with the first valid or nearest point
+        first_valid = group_idx[:, :, 0:1].expand_as(group_idx)
+        # Use first valid neighbor for padding, nearest for fully empty
+        any_valid = ~gathered_dists[:, :, 0:1].isinf()  # (B, M, 1)
+        fill = torch.where(any_valid.expand_as(group_idx), first_valid, nearest_idx_expanded)
+        group_idx = torch.where(invalid, fill, group_idx)
 
     return group_idx
 
@@ -144,7 +164,7 @@ def _three_nn_pytorch(
         idx: (B, N, 3) indices of 3 nearest neighbors in known
     """
     # (B, N, M)
-    dists = torch.cdist(unknown, known, p=2.0) ** 2
+    dists = torch.cdist(unknown, known, p=2.0).square()
     # Top 3 nearest
     dist, idx = dists.topk(3, dim=-1, largest=False)
     return dist, idx
@@ -198,6 +218,20 @@ def furthest_point_sample(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
     if _USE_CUDA_OPS and xyz.is_cuda:
         return _cuda_fps(xyz.contiguous(), npoint)
     return _fps_pytorch(xyz, npoint)
+
+
+def random_sample(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
+    """
+    Random point sampling — fast O(1) alternative to FPS for training.
+
+    Args:
+        xyz: (B, N, 3) input point coordinates
+        npoint: number of centroids to select
+
+    Returns:
+        (B, npoint) indices of selected centroids
+    """
+    return _random_sample(xyz, npoint)
 
 
 def ball_query(

@@ -174,6 +174,8 @@ class PointNetSegmenter:
         self.use_tnet = use_tnet
 
         if device is None:
+            if not torch.cuda.is_available():
+                print("WARNING: CUDA not available — model will run on CPU and be significantly slower.")
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = torch.device(device)
