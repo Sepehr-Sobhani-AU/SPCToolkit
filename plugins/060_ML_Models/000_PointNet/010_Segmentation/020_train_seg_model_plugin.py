@@ -219,6 +219,7 @@ class TrainSegModelPlugin(ActionPlugin):
         "use_tnet": True,
         "early_stopping_patience": 20,
         "loss_function": "Focal + Class Weights",
+        "scheduler": "OneCycleLR",
         "use_scene_validation": True,
         "val_data_dir": "training_data_seg_val",
     }
@@ -337,6 +338,18 @@ class TrainSegModelPlugin(ActionPlugin):
                 "label": "Loss Function",
                 "description": "Loss function for training"
             },
+            "scheduler": {
+                "type": "dropdown",
+                "options": {
+                    "OneCycleLR": "OneCycleLR (warmup + cosine decay, no restarts)",
+                    "CosineAnnealing": "Cosine Annealing (smooth decay to min LR)",
+                    "CosineWarmRestarts": "Cosine Annealing + Warm Restarts (periodic LR resets)",
+                    "ReduceLROnPlateau": "Reduce on Plateau (halve LR when val mIoU stalls)",
+                },
+                "default": self.last_params["scheduler"],
+                "label": "LR Scheduler",
+                "description": "Learning rate scheduling strategy"
+            },
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
@@ -351,6 +364,7 @@ class TrainSegModelPlugin(ActionPlugin):
         use_tnet = params['use_tnet']
         early_stopping_patience = int(params['early_stopping_patience'])
         loss_function = params.get('loss_function', 'Focal + Class Weights')
+        scheduler_name = params.get('scheduler', 'OneCycleLR')
         use_scene_validation = params.get('use_scene_validation', True)
         val_data_dir = params.get('val_data_dir', '').strip()
 
@@ -519,13 +533,11 @@ class TrainSegModelPlugin(ActionPlugin):
 
             train_loader = DataLoader(
                 train_dataset, batch_size=batch_size, shuffle=True,
-                num_workers=2, pin_memory=True, drop_last=True,
-                persistent_workers=True
+                num_workers=0, pin_memory=True, drop_last=True,
             )
             val_loader = DataLoader(
                 val_dataset, batch_size=batch_size, shuffle=False,
-                num_workers=2, pin_memory=True,
-                persistent_workers=True
+                num_workers=0, pin_memory=True,
             )
 
             # Create model
@@ -546,9 +558,24 @@ class TrainSegModelPlugin(ActionPlugin):
             print(f"T-Net: {use_tnet}")
 
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-4)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6
-            )
+            if scheduler_name == "OneCycleLR":
+                scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                    optimizer, max_lr=learning_rate, epochs=epochs,
+                    steps_per_epoch=len(train_loader), pct_start=0.05,
+                    anneal_strategy='cos', div_factor=10.0, final_div_factor=100.0)
+                step_scheduler_per_batch = True
+            elif scheduler_name == "CosineAnnealing":
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=epochs, eta_min=1e-6)
+                step_scheduler_per_batch = False
+            elif scheduler_name == "CosineWarmRestarts":
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer, T_0=20, T_mult=2, eta_min=1e-6)
+                step_scheduler_per_batch = False
+            else:  # ReduceLROnPlateau
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='max', factor=0.5, patience=10, min_lr=1e-5)
+                step_scheduler_per_batch = False
             # Build loss function based on user selection
             if loss_function == "Cross Entropy":
                 criterion = nn.CrossEntropyLoss(
@@ -567,6 +594,7 @@ class TrainSegModelPlugin(ActionPlugin):
                     weight=class_weights_tensor, gamma=2.0, ignore_index=-100,
                     label_smoothing=0.1)
             print(f"Loss function: {loss_function}")
+            print(f"LR Scheduler: {scheduler_name}")
 
             # Create progress window
             progress_window = TrainingProgressWindow(parent=main_window, total_epochs=epochs)
@@ -648,6 +676,9 @@ class TrainSegModelPlugin(ActionPlugin):
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                         scaler.step(optimizer)
                         scaler.update()
+
+                        if step_scheduler_per_batch:
+                            scheduler.step()
 
                         train_loss += loss.item() * B
                         train_batch_count += B
@@ -760,7 +791,11 @@ class TrainSegModelPlugin(ActionPlugin):
                     else:
                         epochs_without_improvement += 1
 
-                    scheduler.step(val_miou)
+                    if not step_scheduler_per_batch:
+                        if scheduler_name == "ReduceLROnPlateau":
+                            scheduler.step(val_miou)
+                        else:
+                            scheduler.step()
 
                     if epochs_without_improvement >= early_stopping_patience:
                         print(f"\nEarly stopping after {epoch+1} epochs")

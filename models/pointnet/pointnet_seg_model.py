@@ -60,7 +60,9 @@ class PointNetSegmentation(nn.Module):
 
         # Per-point segmentation MLP (1088 = 64 local + 1024 global)
         self.seg_conv1 = ConvBNReLU(1088, 512)
+        self.seg_drop1 = nn.Dropout(0.3)
         self.seg_conv2 = ConvBNReLU(512, 256)
+        self.seg_drop2 = nn.Dropout(0.3)
         self.seg_conv3 = ConvBNReLU(256, 128)
         self.dropout = nn.Dropout(0.5)
         self.seg_output = nn.Conv1d(128, num_classes, 1)
@@ -119,7 +121,9 @@ class PointNetSegmentation(nn.Module):
 
         # Per-point segmentation MLP
         x = self.seg_conv1(combined)
+        x = self.seg_drop1(x)
         x = self.seg_conv2(x)
+        x = self.seg_drop2(x)
         x = self.seg_conv3(x)
         x = self.dropout(x)
         x = self.seg_output(x)  # (B, C, N)
