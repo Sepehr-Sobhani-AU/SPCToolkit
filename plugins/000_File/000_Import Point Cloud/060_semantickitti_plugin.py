@@ -14,7 +14,7 @@ import logging
 import traceback
 import gc
 import numpy as np
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QDialog, QFileDialog, QMessageBox
 from PyQt5.QtCore import QSettings
 import pykitti
 
@@ -135,7 +135,15 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                 "min": 0.01,
                 "max": 1.0,
                 "label": "Subsample Ratio",
-                "description": "Keep this fraction of points (0.25 = 25%). Use < 1.0 for large imports."
+                "description": "Keep this fraction of points (0.25 = 25%). Use < 1.0 for large imports.",
+                "disabled_by": "per_class_downsample"
+            },
+            "per_class_downsample": {
+                "type": "bool",
+                "default": False,
+                "label": "Per-Class Downsample",
+                "description": "Set a separate subsample ratio for each semantic class",
+                "enabled_by": "load_labels"
             }
         }
 
@@ -166,6 +174,36 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         if not file_paths:
             logger.info("No files selected, aborting import")
             return
+
+        # Show per-class subsample dialog if requested (after file selection)
+        if params.get("per_class_downsample", False) and params.get("load_labels", True):
+            # Scan label files to get class point counts
+            main_window.show_progress("Scanning labels for class distribution...", 0)
+            class_counts: Dict[int, int] = {}
+            for i, fp in enumerate(sorted(file_paths)):
+                label_path = self._get_label_path(fp)
+                if label_path:
+                    semantic, _ = self._load_labels(label_path)
+                    unique, counts = np.unique(semantic, return_counts=True)
+                    for lbl, cnt in zip(unique, counts):
+                        class_counts[int(lbl)] = class_counts.get(int(lbl), 0) + cnt
+                main_window.show_progress(
+                    "Scanning labels for class distribution...",
+                    int((i + 1) / len(file_paths) * 100)
+                )
+            main_window.clear_progress()
+            logger.info(f"Class distribution from {len(file_paths)} files: {class_counts}")
+
+            from plugins.dialogs.class_subsample_dialog import ClassSubsampleDialog
+            dialog = ClassSubsampleDialog(
+                SEMANTICKITTI_CLASS_NAMES, SEMANTICKITTI_COLORS,
+                class_counts=class_counts, parent=main_window
+            )
+            if dialog.exec_() != QDialog.Accepted:
+                logger.info("Per-class downsample dialog cancelled, aborting import")
+                return
+            params["class_ratios"] = dialog.get_ratios()
+            logger.info(f"Per-class ratios: {params['class_ratios']}")
 
         # Save the directory for next time
         settings.setValue("last_directory", os.path.dirname(file_paths[0]))
@@ -316,6 +354,42 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
         """Extract frame number from filename (e.g., '000123.bin' -> 123)."""
         return int(os.path.splitext(filename)[0])
 
+    # Subsampling helpers
+
+    def _per_class_subsample(self, semantic_labels: np.ndarray,
+                              class_ratios: Dict[int, float]) -> np.ndarray:
+        """
+        Compute indices to keep based on per-class subsample ratios.
+
+        Args:
+            semantic_labels: (N,) array of semantic class IDs
+            class_ratios: {label_id: ratio} where 0.0=remove, 1.0=keep all
+
+        Returns:
+            Sorted array of indices to keep
+        """
+        kept_indices = []
+        for label_id in np.unique(semantic_labels):
+            ratio = class_ratios.get(int(label_id), 1.0)
+            class_indices = np.where(semantic_labels == label_id)[0]
+            if ratio <= 0.0:
+                logger.debug(f"    Class {label_id}: removed {len(class_indices)} points")
+                continue
+            if ratio >= 1.0:
+                kept_indices.append(class_indices)
+                logger.debug(f"    Class {label_id}: kept all {len(class_indices)} points")
+            else:
+                n_keep = max(1, int(len(class_indices) * ratio))
+                selected = np.random.choice(class_indices, n_keep, replace=False)
+                kept_indices.append(selected)
+                logger.debug(f"    Class {label_id}: kept {n_keep}/{len(class_indices)} points ({ratio:.0%})")
+
+        if not kept_indices:
+            return np.array([], dtype=np.int64)
+        indices = np.concatenate(kept_indices)
+        indices.sort()
+        return indices
+
     # Import methods
 
     def _import_separate(self, file_paths: List[str], params: Dict[str, Any], main_window) -> None:
@@ -424,12 +498,26 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                         semantic_labels, instance_ids = self._load_labels(label_path)
                         logger.debug(f"  Loaded {len(semantic_labels)} labels")
 
-                # Apply subsample if ratio < 1.0
-                if subsample_ratio < 1.0:
-                    pre_subsample_count = len(points)
+                # Apply subsampling
+                class_ratios = params.get("class_ratios", None)
+                pre_subsample_count = len(points)
+
+                if class_ratios is not None and semantic_labels is not None:
+                    # Per-class subsampling
+                    indices = self._per_class_subsample(semantic_labels, class_ratios)
+                    if subsample_ratio < 1.0 and len(indices) > 0:
+                        n_keep = max(1, int(len(indices) * subsample_ratio))
+                        sub_idx = np.sort(np.random.choice(len(indices), n_keep, replace=False))
+                        indices = indices[sub_idx]
+                    points = points[indices]
+                    intensity = intensity[indices]
+                    semantic_labels = semantic_labels[indices]
+                    instance_ids = instance_ids[indices]
+                    logger.debug(f"  Per-class subsample: {pre_subsample_count} -> {len(points)} points")
+                elif subsample_ratio < 1.0:
                     n_keep = max(1, int(len(points) * subsample_ratio))
                     indices = np.random.choice(len(points), n_keep, replace=False)
-                    indices.sort()  # Maintain spatial order
+                    indices.sort()
                     points = points[indices]
                     intensity = intensity[indices]
                     if semantic_labels is not None:
@@ -658,11 +746,22 @@ class ImportSemanticKITTIPlugin(ActionPlugin):
                     if label_path:
                         semantic_labels, _ = self._load_labels(label_path)
 
-                # Apply subsample if ratio < 1.0
-                if subsample_ratio < 1.0:
+                # Apply subsampling
+                class_ratios = params.get("class_ratios", None)
+
+                if class_ratios is not None and semantic_labels is not None:
+                    indices = self._per_class_subsample(semantic_labels, class_ratios)
+                    if subsample_ratio < 1.0 and len(indices) > 0:
+                        n_keep = max(1, int(len(indices) * subsample_ratio))
+                        sub_idx = np.sort(np.random.choice(len(indices), n_keep, replace=False))
+                        indices = indices[sub_idx]
+                    points = points[indices]
+                    intensity = intensity[indices]
+                    semantic_labels = semantic_labels[indices]
+                elif subsample_ratio < 1.0:
                     n_keep = max(1, int(len(points) * subsample_ratio))
                     indices = np.random.choice(len(points), n_keep, replace=False)
-                    indices.sort()  # Maintain spatial order
+                    indices.sort()
                     points = points[indices]
                     intensity = intensity[indices]
                     if semantic_labels is not None:
