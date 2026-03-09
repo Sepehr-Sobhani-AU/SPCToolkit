@@ -187,16 +187,16 @@ class GenerateSegTrainingDataPlugin(ActionPlugin):
                     "Please run classify_clusters first to assign names.")
                 return
 
-            # Build class mapping
-            unique_names = sorted(set(clusters_data.cluster_names.values()))
-            class_name_to_id = {name: idx for idx, name in enumerate(unique_names)}
-            class_mapping = {idx: name for name, idx in class_name_to_id.items()}
+            # Build class mapping using original cluster IDs (e.g. SemanticKITTI label IDs)
+            # This ensures train and val datasets use the same IDs for the same classes,
+            # even if they have different subsets of classes.
+            class_mapping = dict(clusters_data.cluster_names)  # {original_id: class_name}
 
-            # Build per-point labels
+            # Build per-point labels using original cluster IDs
             point_labels = np.full(len(point_cloud.points), -1, dtype=np.int32)
             for cluster_id, class_name in clusters_data.cluster_names.items():
                 mask = cluster_labels == cluster_id
-                point_labels[mask] = class_name_to_id[class_name]
+                point_labels[mask] = cluster_id
 
             # Filter to labeled points
             valid_mask = point_labels >= 0

@@ -108,16 +108,18 @@ class SegPointCloudDataset(Dataset):
     """PyTorch Dataset for segmentation training data (.npz files with features + labels)."""
 
     def __init__(self, file_paths, num_points, num_classes, augment=False,
-                 feature_mean=None, feature_std=None, ignore_classes=None):
+                 feature_mean=None, feature_std=None, ignore_classes=None,
+                 label_remap=None):
         """
         Args:
             file_paths: List of .npz file paths, each containing 'features' (N,F) and 'labels' (N,)
             num_points: Target number of points per sample (random subsample)
-            num_classes: Number of valid classes (labels clamped to [0, num_classes-1])
+            num_classes: Number of valid dense classes (after remap)
             augment: Whether to apply data augmentation
             feature_mean: Optional per-feature mean array (F,) for standardization
             feature_std: Optional per-feature std array (F,) for standardization
-            ignore_classes: Optional list of class IDs to remap to -100 (ignored by loss)
+            ignore_classes: Optional list of dense class IDs to remap to -100 (ignored by loss)
+            label_remap: Dict {original_id: dense_id} to remap sparse labels to dense 0..N-1
         """
         self.num_points = num_points
         self.num_classes = num_classes
@@ -125,6 +127,7 @@ class SegPointCloudDataset(Dataset):
         self.feature_mean = feature_mean
         self.feature_std = feature_std
         self.ignore_classes = set(ignore_classes) if ignore_classes else set()
+        self.label_remap = label_remap
         # Pre-load all data into memory to avoid per-access disk I/O
         # (concurrent np.load in forked workers causes segfaults with large datasets)
         self.all_features = []
@@ -132,7 +135,12 @@ class SegPointCloudDataset(Dataset):
         for fp in file_paths:
             data = np.load(fp)
             self.all_features.append(data['features'].astype(np.float32))
-            self.all_labels.append(data['labels'].astype(np.int64))
+            labels = data['labels'].astype(np.int64)
+            # Remap sparse original IDs to dense 0..N-1 during pre-load
+            remapped = np.full_like(labels, -100)  # unmapped → ignored
+            for src, dst in self.label_remap.items():
+                remapped[labels == src] = dst
+            self.all_labels.append(remapped)
 
     def __len__(self):
         return len(self.all_features)
@@ -140,9 +148,6 @@ class SegPointCloudDataset(Dataset):
     def __getitem__(self, idx):
         features = self.all_features[idx].copy()
         labels = self.all_labels[idx].copy()
-
-        # Clamp labels to valid range for CrossEntropyLoss
-        np.clip(labels, 0, self.num_classes - 1, out=labels)
 
         # Remap ignored classes to -100 (PyTorch ignore_index)
         if self.ignore_classes:
@@ -422,24 +427,6 @@ class TrainSegModelPlugin(ActionPlugin):
                 main_window.enable_tree()
                 return
 
-            num_classes = len(class_mapping)
-
-            # Validate label ranges in a sample of files
-            label_min, label_max = 0, 0
-            for f in npz_files[:min(20, len(npz_files))]:
-                sample_labels = np.load(f)['labels']
-                label_min = min(label_min, sample_labels.min())
-                label_max = max(label_max, sample_labels.max())
-            if label_min < 0 or label_max >= num_classes:
-                print(f"WARNING: Labels out of range! Found [{label_min}, {label_max}] "
-                      f"but num_classes={num_classes}. Labels will be clamped to [0, {num_classes-1}].")
-
-            print(f"\nDataset: {len(npz_files)} samples")
-            print(f"Classes: {num_classes} - {class_mapping}")
-            print(f"Features per point: {num_features}")
-            print(f"Points per block: {num_points}")
-            print(f"Label range in data: [{label_min}, {label_max}]")
-
             # Split train/val
             main_window.tree_overlay.show_processing("Splitting data...")
 
@@ -468,6 +455,13 @@ class TrainSegModelPlugin(ActionPlugin):
                     main_window.enable_tree()
                     return
 
+                # Merge train + val class mappings (union of classes)
+                merged_mapping = dict(class_mapping)
+                for vid, vname in val_class_mapping.items():
+                    if vid not in merged_mapping:
+                        merged_mapping[vid] = vname
+                class_mapping = merged_mapping
+
                 # Randomly sample val_split fraction from validation folder
                 n_val = max(1, int(len(val_npz_files) * val_split))
                 np.random.shuffle(val_npz_files)
@@ -487,6 +481,21 @@ class TrainSegModelPlugin(ActionPlugin):
                 print(f"Validation mode: Random split ({val_split:.0%})")
                 print(f"  Training samples: {len(train_files)}")
                 print(f"  Validation samples: {len(val_files)}")
+
+            # Build dense remap: original (possibly sparse) IDs -> sequential [0, N-1]
+            sorted_class_ids = sorted(class_mapping.keys())
+            original_to_dense = {orig_id: dense_id for dense_id, orig_id in enumerate(sorted_class_ids)}
+            dense_class_mapping = {dense_id: class_mapping[orig_id] for orig_id, dense_id in original_to_dense.items()}
+            num_classes = len(dense_class_mapping)
+            # Replace class_mapping with dense version for all downstream use
+            class_mapping = dense_class_mapping
+
+            print(f"\nDataset: {len(npz_files)} samples")
+            print(f"Classes: {num_classes} - {class_mapping}")
+            print(f"Features per point: {num_features}")
+            print(f"Points per block: {num_points}")
+            if sorted_class_ids != list(range(num_classes)):
+                print(f"Label remap: {original_to_dense}")
 
             # Compute per-feature standardization stats from training set
             main_window.tree_overlay.show_processing("Computing feature statistics...")
@@ -508,7 +517,7 @@ class TrainSegModelPlugin(ActionPlugin):
 
             # Compute class weights from training set
             main_window.tree_overlay.show_processing("Computing class weights...")
-            class_weights = self._compute_class_weights(train_files, num_classes)
+            class_weights = self._compute_class_weights(train_files, num_classes, label_remap=original_to_dense)
             # Zero out weights for ignored classes
             for cls_id in ignore_classes:
                 if 0 <= cls_id < num_classes:
@@ -525,11 +534,11 @@ class TrainSegModelPlugin(ActionPlugin):
             train_dataset = SegPointCloudDataset(
                 train_files, num_points, num_classes, augment=True,
                 feature_mean=feature_mean, feature_std=feature_std,
-                ignore_classes=ignore_classes)
+                ignore_classes=ignore_classes, label_remap=original_to_dense)
             val_dataset = SegPointCloudDataset(
                 val_files, num_points, num_classes, augment=False,
                 feature_mean=feature_mean, feature_std=feature_std,
-                ignore_classes=ignore_classes)
+                ignore_classes=ignore_classes, label_remap=original_to_dense)
 
             train_loader = DataLoader(
                 train_dataset, batch_size=batch_size, shuffle=True,
@@ -682,13 +691,15 @@ class TrainSegModelPlugin(ActionPlugin):
 
                         train_loss += loss.item() * B
                         train_batch_count += B
-                        preds = torch.argmax(logits, dim=2)
+                        preds = torch.argmax(logits.detach(), dim=2)
                         valid = batch_labels != -100
                         train_correct += (preds[valid] == batch_labels[valid]).sum().item()
                         train_total += valid.sum().item()
 
                         TrainSegModelPlugin._update_confusion_matrix(
                             train_confusion, preds, batch_labels, num_classes)
+
+                        del logits, loss, preds, valid
 
                     if training_state['was_cancelled']:
                         break
@@ -724,9 +735,14 @@ class TrainSegModelPlugin(ActionPlugin):
                             TrainSegModelPlugin._update_confusion_matrix(
                                 val_confusion, preds, batch_labels, num_classes)
 
+                            del logits, loss, preds, valid
+
                     val_loss /= max(val_batch_count, 1)
                     val_acc = val_correct / max(val_total, 1)
                     val_miou, val_per_class_iou = TrainSegModelPlugin._miou_from_confusion(val_confusion, ignore_classes)
+
+                    # Free GPU cache between epochs
+                    torch.cuda.empty_cache()
 
                     # Update history
                     history['loss'].append(train_loss)
@@ -787,6 +803,7 @@ class TrainSegModelPlugin(ActionPlugin):
                             'feature_mean': feature_mean.tolist(),
                             'feature_std': feature_std.tolist(),
                             'ignore_classes': ignore_classes,
+                            'original_to_dense': original_to_dense,
                         }, os.path.join(unique_output_dir, 'seg_model_best.pt'))
                     else:
                         epochs_without_improvement += 1
@@ -820,6 +837,7 @@ class TrainSegModelPlugin(ActionPlugin):
                     'feature_mean': feature_mean.tolist(),
                     'feature_std': feature_std.tolist(),
                     'ignore_classes': ignore_classes,
+                    'original_to_dense': original_to_dense,
                 }, os.path.join(unique_output_dir, 'seg_model_final.pt'))
 
                 # Save class mapping
@@ -854,6 +872,7 @@ class TrainSegModelPlugin(ActionPlugin):
                     'feature_mean': feature_mean.tolist(),
                     'feature_std': feature_std.tolist(),
                     'ignore_classes': ignore_classes,
+                    'original_to_dense': {str(k): v for k, v in original_to_dense.items()},
                     'best_per_class_iou': {
                         class_mapping.get(cid, f"Class_{cid}"): float(iou)
                         for cid, iou in training_state['best_val_per_class_iou'].items()
@@ -1138,13 +1157,23 @@ class TrainSegModelPlugin(ActionPlugin):
                 ignore_classes.append(cls_id)
         return sorted(ignore_classes)
 
-    def _compute_class_weights(self, file_paths, num_classes):
-        """Compute class weights from training files for balanced loss."""
+    def _compute_class_weights(self, file_paths, num_classes, label_remap=None):
+        """Compute class weights from training files for balanced loss.
+
+        Args:
+            file_paths: List of .npz file paths
+            num_classes: Number of dense classes
+            label_remap: Dict {original_id: dense_id} to remap labels before counting
+        """
         # Count labels across ALL files (reading just labels is cheap)
         class_counts = np.zeros(num_classes, dtype=np.int64)
         for f in file_paths:
             data = np.load(f)
             labels = data['labels'].flatten()
+            remapped = np.full_like(labels, -1)
+            for src, dst in label_remap.items():
+                remapped[labels == src] = dst
+            labels = remapped
             for c in range(num_classes):
                 class_counts[c] += np.sum(labels == c)
 

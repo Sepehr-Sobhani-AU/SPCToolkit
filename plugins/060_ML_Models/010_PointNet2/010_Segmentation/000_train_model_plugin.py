@@ -252,24 +252,6 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                 main_window.enable_tree()
                 return
 
-            num_classes = len(class_mapping)
-
-            # Validate label ranges
-            label_min, label_max = 0, 0
-            for f in npz_files[:min(20, len(npz_files))]:
-                sample_labels = np.load(f)['labels']
-                label_min = min(label_min, sample_labels.min())
-                label_max = max(label_max, sample_labels.max())
-            if label_min < 0 or label_max >= num_classes:
-                print(f"WARNING: Labels out of range! Found [{label_min}, {label_max}] "
-                      f"but num_classes={num_classes}. Labels will be clamped to [0, {num_classes-1}].")
-
-            print(f"\nDataset: {len(npz_files)} samples")
-            print(f"Classes: {num_classes} - {class_mapping}")
-            print(f"Features per point: {num_features}")
-            print(f"Points per block: {num_points}")
-            print(f"Label range in data: [{label_min}, {label_max}]")
-
             # Get block_size from training data metadata
             block_size = metadata.get('block_size', 10.0)
             print(f"Block size: {block_size}m (from training data metadata)")
@@ -300,6 +282,13 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     main_window.enable_tree()
                     return
 
+                # Merge train + val class mappings (union of classes)
+                merged_mapping = dict(class_mapping)
+                for vid, vname in val_class_mapping.items():
+                    if vid not in merged_mapping:
+                        merged_mapping[vid] = vname
+                class_mapping = merged_mapping
+
                 n_val = max(1, int(len(val_npz_files) * val_split))
                 np.random.shuffle(val_npz_files)
                 val_files = val_npz_files[:n_val]
@@ -314,6 +303,21 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                 print(f"Validation mode: Random split ({val_split:.0%})")
                 print(f"  Training samples: {len(train_files)}")
                 print(f"  Validation samples: {len(val_files)}")
+
+            # Build dense remap: original (possibly sparse) IDs -> sequential [0, N-1]
+            sorted_class_ids = sorted(class_mapping.keys())
+            original_to_dense = {orig_id: dense_id for dense_id, orig_id in enumerate(sorted_class_ids)}
+            dense_class_mapping = {dense_id: class_mapping[orig_id] for orig_id, dense_id in original_to_dense.items()}
+            num_classes = len(dense_class_mapping)
+            # Replace class_mapping with dense version for all downstream use
+            class_mapping = dense_class_mapping
+
+            print(f"\nDataset: {len(npz_files)} samples")
+            print(f"Classes: {num_classes} - {class_mapping}")
+            print(f"Features per point: {num_features}")
+            print(f"Points per block: {num_points}")
+            if sorted_class_ids != list(range(num_classes)):
+                print(f"Label remap: {original_to_dense}")
 
             # Compute per-feature standardization stats
             main_window.tree_overlay.show_processing("Computing feature statistics...")
@@ -334,7 +338,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
 
             # Compute class weights
             main_window.tree_overlay.show_processing("Computing class weights...")
-            class_weights = _helpers._compute_class_weights(train_files, num_classes)
+            class_weights = _helpers._compute_class_weights(train_files, num_classes, label_remap=original_to_dense)
             for cls_id in ignore_classes:
                 if 0 <= cls_id < num_classes:
                     class_weights[cls_id] = 0.0
@@ -350,11 +354,11 @@ class TrainPointNet2SegPlugin(ActionPlugin):
             train_dataset = SegPointCloudDataset(
                 train_files, num_points, num_classes, augment=True,
                 feature_mean=feature_mean, feature_std=feature_std,
-                ignore_classes=ignore_classes)
+                ignore_classes=ignore_classes, label_remap=original_to_dense)
             val_dataset = SegPointCloudDataset(
                 val_files, num_points, num_classes, augment=False,
                 feature_mean=feature_mean, feature_std=feature_std,
-                ignore_classes=ignore_classes)
+                ignore_classes=ignore_classes, label_remap=original_to_dense)
 
             train_loader = DataLoader(
                 train_dataset, batch_size=batch_size, shuffle=True,
@@ -596,6 +600,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                             'feature_mean': feature_mean.tolist(),
                             'feature_std': feature_std.tolist(),
                             'ignore_classes': ignore_classes,
+                            'original_to_dense': original_to_dense,
                         }, os.path.join(unique_output_dir, 'seg_model_best.pt'))
                     else:
                         epochs_without_improvement += 1
@@ -627,6 +632,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     'feature_mean': feature_mean.tolist(),
                     'feature_std': feature_std.tolist(),
                     'ignore_classes': ignore_classes,
+                    'original_to_dense': original_to_dense,
                 }, os.path.join(unique_output_dir, 'seg_model_final.pt'))
 
                 # Save class mapping
@@ -663,6 +669,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     'feature_mean': feature_mean.tolist(),
                     'feature_std': feature_std.tolist(),
                     'ignore_classes': ignore_classes,
+                    'original_to_dense': {str(k): v for k, v in original_to_dense.items()},
                     'best_per_class_iou': {
                         class_mapping.get(cid, f"Class_{cid}"): float(iou)
                         for cid, iou in training_state['best_val_per_class_iou'].items()
