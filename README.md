@@ -4,8 +4,24 @@
 
 **Smart Point Cloud Toolkit** — An interactive desktop application for 3D point cloud processing, analysis, and machine learning.
 
-<!-- TODO: Add screenshot of the application here -->
-<!-- ![SPCToolkit Screenshot](docs/screenshot.png) -->
+## Semantic Segmentation Results
+
+PointNet segmentation trained on [SemanticKITTI](http://www.semantic-kitti.org/) with 14 classes, 9 features (XYZ, normals, eigenvalues), and 2,577 training blocks — all within SPCToolkit's built-in training pipeline.
+
+<p align="center">
+  <img src="docs/images/training_progress.png" alt="PointNet Training Progress" width="700">
+</p>
+
+| Class | IoU | | Class | IoU |
+|-------|-----|-|-------|-----|
+| Parking | **80.0%** | | Building | **76.4%** |
+| Vegetation | **71.2%** | | Pole | **61.6%** |
+| Trunk | **60.9%** | | Road | **59.8%** |
+| Car | **53.0%** | | Terrain | **44.7%** |
+| Sidewalk | **46.2%** | | Other-object | **41.5%** |
+| Traffic-sign | **35.2%** | | Fence | **23.6%** |
+
+> **Best validation mIoU: 47.1%** across 14 classes including challenging categories like other-ground and other-structure.
 
 ## Features
 
