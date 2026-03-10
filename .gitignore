@@ -16,10 +16,10 @@ __pycache__/
 *.e57
 *.bin
 
-# IDE settings
+# IDE and tool settings
 .vscode/
 .idea/
-.claude/settings.local.json
+.claude/
 
 # Virtual environment
 venv/
@@ -57,6 +57,12 @@ training_data/
 *.drawio
 *.puml
 *.pdf
+
+# Sample data and test files
+Clusters/
+test/
+*.npy
+verify_*.py
 
 # Internal/legacy files
 _ul*

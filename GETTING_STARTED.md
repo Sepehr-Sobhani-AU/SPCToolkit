@@ -38,6 +38,7 @@ After loading, the point cloud appears in the **3D viewer** (right panel) and as
 | Ctrl + Left Click + Drag | Rotate around Z axis |
 | Right Click + Drag | Pan |
 | Ctrl + Right Click + Drag | Pan along Z axis |
+| Double Left Click | Set rotation center on clicked point |
 | Scroll Wheel | Zoom in/out |
 
 ### Keyboard Shortcuts

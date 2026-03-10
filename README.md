@@ -80,6 +80,7 @@ For a detailed walkthrough, see the [Getting Started Guide](GETTING_STARTED.md).
 | Left Click + Drag | Rotate |
 | Ctrl + Left Click | Rotate around Z axis |
 | Right/Middle Click + Drag | Pan |
+| Double Left Click | Set rotation center on clicked point |
 | Scroll Wheel | Zoom |
 | **F** | Zoom to extent |
 | **Ctrl + R** | Reset camera |

@@ -23,6 +23,8 @@ This document describes the core framework architecture of SPCToolkit. It covers
 
 The system is organized into layers: GUI, Application, Core, Infrastructure, and Plugins.
 
+![Architecture Concept](docs/architecture_concept.jpg)
+
 ```mermaid
 flowchart TD
     subgraph GUI["GUI Layer"]
@@ -198,6 +200,8 @@ sequenceDiagram
 ## 4. Data Flow: Running an Analysis
 
 Analysis plugins run in a background thread to keep the UI responsive.
+
+![Sequence: Analysis Execution](docs/sequence_run_analysis.jpg)
 
 ```mermaid
 sequenceDiagram
