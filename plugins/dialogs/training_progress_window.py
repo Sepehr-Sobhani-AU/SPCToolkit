@@ -3,13 +3,21 @@
 Training Progress Window - Shows real-time PointNet training progress with GPU monitoring.
 """
 
-import subprocess
 import time
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5 import QtWidgets, QtCore, QtGui
+
+# Use pynvml for fork-free GPU monitoring (subprocess.run forks, which is unsafe
+# when another thread has an active CUDA context — causes segfaults).
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    _nvml_available = True
+except Exception:
+    _nvml_available = False
 
 
 class TrainingProgressWindow(QtWidgets.QDialog):
@@ -23,9 +31,6 @@ class TrainingProgressWindow(QtWidgets.QDialog):
     - Time tracking
     - Cancel button to stop training
     """
-
-    # Signal emitted when user clicks cancel
-    cancel_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent=None, total_epochs=100):
         super().__init__(parent)
@@ -42,12 +47,19 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         self.val_loss_history = []
         self.train_acc_history = []
         self.val_acc_history = []
+        self.train_miou_history = []
+        self.val_miou_history = []
 
         # Best values tracking
         self.best_train_loss = float('inf')
         self.best_val_loss = float('inf')
         self.best_train_acc = 0.0
         self.best_val_acc = 0.0
+        self.best_train_miou = 0.0
+        self.best_val_miou = 0.0
+
+        # Whether to show mIoU instead of accuracy (set on first call with mIoU data)
+        self.show_miou = False
 
         self._setup_ui()
         self._setup_window_flags()
@@ -140,6 +152,16 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         # Validation accuracy
         self.val_acc_label = QtWidgets.QLabel("Validation Accuracy: --.-% (Best: --.-%)")
         metrics_layout.addWidget(self.val_acc_label)
+
+        # Training mIoU (hidden initially, shown for segmentation)
+        self.train_miou_label = QtWidgets.QLabel("Training mIoU:      --.-%  (Best: --.-%)")
+        self.train_miou_label.setVisible(False)
+        metrics_layout.addWidget(self.train_miou_label)
+
+        # Validation mIoU (hidden initially, shown for segmentation)
+        self.val_miou_label = QtWidgets.QLabel("Validation mIoU:    --.-%  (Best: --.-%)")
+        self.val_miou_label.setVisible(False)
+        metrics_layout.addWidget(self.val_miou_label)
 
         metrics_layout.addSpacing(5)
 
@@ -257,33 +279,25 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         self.gpu_timer.start(2000)  # Update every 2 seconds
 
     def _update_gpu_stats(self):
-        """Update GPU statistics using nvidia-smi."""
-        try:
-            # Query GPU stats using nvidia-smi
-            result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu',
-                 '--format=csv,noheader,nounits'],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
+        """Update GPU statistics using pynvml (no fork — safe with concurrent CUDA)."""
+        if _nvml_available:
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
 
-            if result.returncode == 0:
-                # Parse output: "85, 3072, 8192, 72"
-                stats = result.stdout.strip().split(',')
-                if len(stats) >= 4:
-                    gpu_util = stats[0].strip()
-                    mem_used = float(stats[1].strip()) / 1024  # Convert MB to GB
-                    mem_total = float(stats[2].strip()) / 1024
-                    temp = stats[3].strip()
+                mem_used_gb = mem.used / (1024 ** 3)
+                mem_total_gb = mem.total / (1024 ** 3)
 
-                    self.gpu_usage_label.setText(f"GPU Usage:       {gpu_util}%")
-                    self.gpu_memory_label.setText(f"GPU Memory:      {mem_used:.2f} / {mem_total:.2f} GB ({mem_used/mem_total*100:.0f}%)")
-                    self.gpu_temp_label.setText(f"GPU Temperature: {temp}°C")
-            else:
+                self.gpu_usage_label.setText(f"GPU Usage:       {util.gpu}%")
+                self.gpu_memory_label.setText(
+                    f"GPU Memory:      {mem_used_gb:.2f} / {mem_total_gb:.2f} GB "
+                    f"({mem.used / mem.total * 100:.0f}%)")
+                self.gpu_temp_label.setText(f"GPU Temperature: {temp}°C")
+            except Exception:
                 self._set_gpu_unavailable()
-
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        else:
             self._set_gpu_unavailable()
 
     def _set_gpu_unavailable(self):
@@ -304,10 +318,15 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         self.ax_loss.set_ylabel('Loss', fontsize=9)
         self.ax_loss.grid(True, alpha=0.3)
 
-        # Reconfigure accuracy plot (bottom)
-        self.ax_acc.set_title('Training & Validation Accuracy', fontsize=10, fontweight='bold')
-        self.ax_acc.set_xlabel('Epoch', fontsize=9)
-        self.ax_acc.set_ylabel('Accuracy', fontsize=9)
+        # Reconfigure second plot (bottom) — mIoU for segmentation, accuracy otherwise
+        if self.show_miou:
+            self.ax_acc.set_title('Training & Validation mIoU', fontsize=10, fontweight='bold')
+            self.ax_acc.set_xlabel('Epoch', fontsize=9)
+            self.ax_acc.set_ylabel('mIoU', fontsize=9)
+        else:
+            self.ax_acc.set_title('Training & Validation Accuracy', fontsize=10, fontweight='bold')
+            self.ax_acc.set_xlabel('Epoch', fontsize=9)
+            self.ax_acc.set_ylabel('Accuracy', fontsize=9)
         self.ax_acc.grid(True, alpha=0.3)
         self.ax_acc.set_ylim([0, 1])
 
@@ -319,19 +338,29 @@ class TrainingProgressWindow(QtWidgets.QDialog):
                             label='Validation', linewidth=1)
             self.ax_loss.legend(loc='upper right', fontsize=9)
 
-        # Plot accuracy curves (bottom)
+        # Plot second metric curves (bottom)
         if len(self.epochs_history) > 0:
-            self.ax_acc.plot(self.epochs_history, self.train_acc_history, 'b-',
-                           label='Training', linewidth=1)
-            self.ax_acc.plot(self.epochs_history, self.val_acc_history, 'r-',
-                           label='Validation', linewidth=1)
+            if self.show_miou:
+                self.ax_acc.plot(self.epochs_history, self.train_miou_history, 'b-',
+                               label='Training', linewidth=1)
+                self.ax_acc.plot(self.epochs_history, self.val_miou_history, 'r-',
+                               label='Validation', linewidth=1)
+            else:
+                self.ax_acc.plot(self.epochs_history, self.train_acc_history, 'b-',
+                               label='Training', linewidth=1)
+                self.ax_acc.plot(self.epochs_history, self.val_acc_history, 'r-',
+                               label='Validation', linewidth=1)
             self.ax_acc.legend(loc='lower right', fontsize=9)
 
         # Adjust layout and refresh canvas
-        self.figure.tight_layout()
+        try:
+            self.figure.tight_layout()
+        except (ValueError, RuntimeError):
+            pass  # tight_layout can fail if axis bounding boxes aren't ready
         self.canvas.draw()
 
-    def update_epoch(self, epoch, train_loss, train_acc, val_loss, val_acc, learning_rate=None):
+    def update_epoch(self, epoch, train_loss, train_acc, val_loss, val_acc,
+                     learning_rate=None, train_miou=None, val_miou=None):
         """
         Update the window with new epoch information.
 
@@ -342,8 +371,18 @@ class TrainingProgressWindow(QtWidgets.QDialog):
             val_loss: Validation loss value
             val_acc: Validation accuracy (0-1)
             learning_rate: Current learning rate (optional)
+            train_miou: Training mIoU (optional, enables mIoU mode for segmentation)
+            val_miou: Validation mIoU (optional, enables mIoU mode for segmentation)
         """
         self.current_epoch = epoch
+
+        # Switch to mIoU mode on first call with mIoU data
+        if train_miou is not None and val_miou is not None and not self.show_miou:
+            self.show_miou = True
+            self.train_acc_label.setVisible(False)
+            self.val_acc_label.setVisible(False)
+            self.train_miou_label.setVisible(True)
+            self.val_miou_label.setVisible(True)
 
         # Update epoch label and progress bar
         self.epoch_label.setText(f"Epoch: {epoch} / {self.total_epochs}")
@@ -360,11 +399,23 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         if val_acc > self.best_val_acc:
             self.best_val_acc = val_acc
 
-        # Update metrics with current and best values
+        # Update loss labels
         self.train_loss_label.setText(f"Training Loss:      {train_loss:.4f} (Best: {self.best_train_loss:.4f})")
         self.val_loss_label.setText(f"Validation Loss:    {val_loss:.4f} (Best: {self.best_val_loss:.4f})")
-        self.train_acc_label.setText(f"Training Accuracy:  {train_acc*100:.1f}% (Best: {self.best_train_acc*100:.1f}%)")
-        self.val_acc_label.setText(f"Validation Accuracy: {val_acc*100:.1f}% (Best: {self.best_val_acc*100:.1f}%)")
+
+        # Update mIoU or accuracy labels
+        if self.show_miou and train_miou is not None and val_miou is not None:
+            if train_miou > self.best_train_miou:
+                self.best_train_miou = train_miou
+            if val_miou > self.best_val_miou:
+                self.best_val_miou = val_miou
+            self.train_miou_label.setText(f"Training mIoU:      {train_miou*100:.1f}%  (Best: {self.best_train_miou*100:.1f}%)")
+            self.val_miou_label.setText(f"Validation mIoU:    {val_miou*100:.1f}%  (Best: {self.best_val_miou*100:.1f}%)")
+            self.train_miou_history.append(train_miou)
+            self.val_miou_history.append(val_miou)
+        else:
+            self.train_acc_label.setText(f"Training Accuracy:  {train_acc*100:.1f}% (Best: {self.best_train_acc*100:.1f}%)")
+            self.val_acc_label.setText(f"Validation Accuracy: {val_acc*100:.1f}% (Best: {self.best_val_acc*100:.1f}%)")
 
         # Update learning rate if provided
         if learning_rate is not None:
@@ -398,14 +449,10 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         # Update learning curve plots
         self._update_plots()
 
-        # Force update
-        QtWidgets.QApplication.processEvents()
-
     def training_started(self):
         """Mark training as started."""
         self.start_time = time.time()
         self.status_label.setText("Training started...")
-        QtWidgets.QApplication.processEvents()
 
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
@@ -423,30 +470,49 @@ class TrainingProgressWindow(QtWidgets.QDialog):
             self.training_cancelled = True
             self.status_label.setText("Cancelling training... Please wait.")
             self.cancel_button.setEnabled(False)
-            self.cancel_requested.emit()
             QtWidgets.QApplication.processEvents()
 
-    def training_completed(self, best_val_acc, cancelled=False):
+    def training_completed(self, best_val_metric, cancelled=False):
         """
         Mark training as completed.
 
         Args:
-            best_val_acc: Best validation accuracy achieved
+            best_val_metric: Best validation metric achieved (accuracy or mIoU)
             cancelled: Whether training was cancelled by user
         """
         self.training_complete = True
         self.gpu_timer.stop()
 
+        metric_name = "mIoU" if self.show_miou else "accuracy"
         if cancelled:
-            self.status_label.setText(f"Training cancelled. Best accuracy: {best_val_acc*100:.1f}%")
+            self.status_label.setText(f"Training cancelled. Best {metric_name}: {best_val_metric*100:.1f}%")
         else:
-            self.status_label.setText(f"Training completed! Best accuracy: {best_val_acc*100:.1f}%")
+            self.status_label.setText(f"Training completed! Best {metric_name}: {best_val_metric*100:.1f}%")
 
         # Hide cancel button, show close button
         self.cancel_button.setVisible(False)
         self.close_button.setVisible(True)
 
+        # Restore close button on title bar so user can close via X or Close button
+        self.setWindowFlags(
+            QtCore.Qt.Window |
+            QtCore.Qt.WindowMinimizeButtonHint |
+            QtCore.Qt.WindowCloseButtonHint |
+            QtCore.Qt.WindowTitleHint
+        )
+        self.show()
+
         QtWidgets.QApplication.processEvents()
+
+    def save_snapshot(self, file_path):
+        """Save a screenshot of the entire dialog to an image file.
+
+        Args:
+            file_path: Output file path (e.g. '/path/to/training_progress.png')
+        """
+        pixmap = self.grab()
+        pixmap.save(file_path, 'PNG')
+        print(f"Training progress snapshot saved to: {file_path}")
 
     def closeEvent(self, event):
         """Override close event to prevent closing during training."""

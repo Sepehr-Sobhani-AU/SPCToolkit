@@ -58,6 +58,8 @@ class AverageDistancePlugin(Plugin):
                 - Result type identifier "attribute"
                 - List containing the data_node's UID as a dependency
         """
+        from config.config import global_variables
+
         # Extract the point cloud from the data node
         point_cloud: PointCloud = data_node.data
 
@@ -65,10 +67,12 @@ class AverageDistancePlugin(Plugin):
         k = params["k_neighbors"] + 1  # Add 1 to account for the point itself
 
         # Use PointCloud's KNN method to get distances and indices
+        global_variables.global_progress = (None, f"Computing {k-1}-nearest neighbors ({point_cloud.size:,} points)...")
         distances, indices = point_cloud.KNN(k=k)
 
         # Calculate average distance, excluding the first distance (which is to the point itself)
         # The first element (distances[:,0]) is the distance to the point itself (always 0)
+        global_variables.global_progress = (80, "Computing average distances...")
         average_distances = np.mean(distances[:, 1:], axis=1).astype(np.float32)
 
         # Create a Values object with the calculated values

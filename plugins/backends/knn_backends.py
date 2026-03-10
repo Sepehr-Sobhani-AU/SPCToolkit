@@ -21,8 +21,12 @@ class CuMLKNN(KNNBackend):
     def is_gpu(self) -> bool:
         return True
 
-    def query(self, points: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Find k nearest neighbors using cuML on GPU."""
+    def query(self, points: np.ndarray, k: int, batch_size: int = 500_000) -> Tuple[np.ndarray, np.ndarray]:
+        """Find k nearest neighbors using cuML on GPU.
+
+        Fits the index on all points, then queries in batches to avoid OOM
+        on large point clouds.
+        """
         self.log_execution("KNN")
 
         from cuml.neighbors import NearestNeighbors
@@ -30,22 +34,34 @@ class CuMLKNN(KNNBackend):
         import cuml
 
         start_time = time.time()
+        n_points = len(points)
         print(f"Using GPU-accelerated cuML KNN (version {cuml.__version__})")
-        print(f"Processing {len(points):,} points with k={k}")
+        print(f"Processing {n_points:,} points with k={k}")
 
-        # Transfer data to GPU
+        # Transfer reference data to GPU and build index once
         points_gpu = cp.asarray(points, dtype=cp.float32)
-
-        # Create and fit the model
         model = NearestNeighbors(n_neighbors=k)
         model.fit(points_gpu)
 
-        # Query neighbors
-        distances_gpu, indices_gpu = model.kneighbors(points_gpu)
+        # Allocate output on CPU
+        distances = np.empty((n_points, k), dtype=np.float32)
+        indices = np.empty((n_points, k), dtype=np.int64)
 
-        # Transfer results back to CPU
-        distances = cp.asnumpy(distances_gpu)
-        indices = cp.asnumpy(indices_gpu)
+        # Query in batches to keep GPU memory bounded
+        for start in range(0, n_points, batch_size):
+            end = min(start + batch_size, n_points)
+            query_batch = points_gpu[start:end]
+
+            dist_gpu, idx_gpu = model.kneighbors(query_batch)
+
+            distances[start:end] = cp.asnumpy(dist_gpu)
+            indices[start:end] = cp.asnumpy(idx_gpu)
+
+            cp.get_default_memory_pool().free_all_blocks()
+
+        # Free GPU resources before returning
+        del model, points_gpu
+        cp.get_default_memory_pool().free_all_blocks()
 
         elapsed_time = time.time() - start_time
         print(f"KNN completed in {elapsed_time:.2f} seconds (cuML GPU)")

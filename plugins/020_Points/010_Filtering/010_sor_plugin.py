@@ -66,6 +66,8 @@ class SORPlugin(Plugin):
                 - Result type identifier "point_cloud"
                 - List containing the data_node's UID as a dependency
         """
+        from config.config import global_variables
+
         # Extract the point cloud from the data node
         point_cloud: PointCloud = data_node.data
 
@@ -74,6 +76,7 @@ class SORPlugin(Plugin):
         std_ratio = params["std_ratio"]
 
         # Apply SOR filter to get the inlier mask
+        global_variables.global_progress = (None, f"SOR filtering ({point_cloud.size:,} points, k={nb_neighbors})...")
         sor_mask = point_cloud.SOR(nb_neighbors=nb_neighbors, std_ratio=std_ratio)
 
         # Create a Masks object with the result

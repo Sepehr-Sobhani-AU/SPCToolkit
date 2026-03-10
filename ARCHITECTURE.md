@@ -23,6 +23,8 @@ This document describes the core framework architecture of SPCToolkit. It covers
 
 The system is organized into layers: GUI, Application, Core, Infrastructure, and Plugins.
 
+![Architecture Concept](docs/architecture_concept.jpg)
+
 ```mermaid
 flowchart TD
     subgraph GUI["GUI Layer"]
@@ -199,6 +201,8 @@ sequenceDiagram
 
 Analysis plugins run in a background thread to keep the UI responsive.
 
+![Sequence: Analysis Execution](docs/sequence_run_analysis.jpg)
+
 ```mermaid
 sequenceDiagram
     participant User
@@ -251,7 +255,7 @@ sequenceDiagram
 ### Threading Model
 
 - **Thread Type:** Python `threading.Thread` (NOT QThread)
-- **Communication:** Flag polling via QTimer (100ms), NOT callbacks
+- **Communication:** Flag polling via QTimer (100ms) + callbacks for progress/completion/error
 - **Thread Safety:** Plugins only READ data, return NEW objects
 - **No Deep Copy:** Memory efficient - relies on read-only access
 

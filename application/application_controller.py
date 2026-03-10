@@ -43,6 +43,9 @@ class ApplicationController:
         # Selection state
         self.selected_branches = []
 
+        # Single-level undo for cluster operations: {str(node_uid): previous Clusters}
+        self._cluster_undo = {}
+
     @classmethod
     def create(cls, plugin_manager: PluginManager, file_manager=None):
         """
@@ -122,7 +125,7 @@ class ApplicationController:
             UID of the new node as string.
         """
         data_node_result = DataNode(
-            f"{analysis_type},{params}",
+            analysis_type,
             data=result,
             data_type=result_type,
             parent_uid=parent_node.uid,

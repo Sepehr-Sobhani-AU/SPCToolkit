@@ -62,6 +62,8 @@ class DensitySubsamplingPlugin(Plugin):
         # Extract the point cloud from the data node
         point_cloud: PointCloud = data_node.data
 
+        from config.config import global_variables
+
         # Get the voxel size parameter
         voxel_size = params["voxel_size"]
 
@@ -75,18 +77,17 @@ class DensitySubsamplingPlugin(Plugin):
         o3d_point_cloud.points = o3d.utility.Vector3dVector(point_cloud.points)
 
         # Perform voxel downsampling
-        print(f"[DensitySubsampling] Starting voxel downsampling with voxel size: {voxel_size}")
-        print(f"[DensitySubsampling] Original point count: {len(point_cloud.points)}")
+        global_variables.global_progress = (None, f"Voxel downsampling ({len(point_cloud.points):,} points, voxel={voxel_size})...")
 
         downsampled_point_cloud = o3d_point_cloud.voxel_down_sample(voxel_size=voxel_size)
         downsampled_points = np.asarray(downsampled_point_cloud.points)
-
-        print(f"[DensitySubsampling] Downsampled point count: {len(downsampled_points)}")
 
         # Now we need to create a mask that identifies which original points are kept
         # Since voxel downsampling creates new points (centroids), we need to find the closest
         # original point to each centroid
         from scipy.spatial import cKDTree
+
+        global_variables.global_progress = (60, f"Mapping {len(downsampled_points):,} downsampled points to originals...")
 
         # Build a KD-tree from the original points
         tree = cKDTree(point_cloud.points)

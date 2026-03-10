@@ -2,8 +2,8 @@
 Base Backend Classes
 
 Abstract base classes for all backend implementations.
-Each backend type (DBSCAN, KNN, Masking, Eigenvalue) has its own abstract class
-that defines the interface all implementations must follow.
+Each backend type (DBSCAN, KNN, Masking, Eigenvalue, Normal Estimation) has its own
+abstract class that defines the interface all implementations must follow.
 """
 
 from abc import ABC, abstractmethod
@@ -123,5 +123,27 @@ class EigenvalueBackend(BaseBackend):
             Tuple of:
                 - eigenvalues: (N, 3) array of eigenvalues (sorted descending)
                 - eigenvectors: (N, 3, 3) array of eigenvectors
+        """
+        pass
+
+
+class NormalEstimationBackend(BaseBackend):
+    """Abstract base class for normal estimation backends."""
+
+    @abstractmethod
+    def estimate_normals(
+        self, points: np.ndarray, k: int, max_radius: float, batch_size: int = 50000
+    ) -> np.ndarray:
+        """
+        Estimate normals for each point using hybrid KNN + radius search.
+
+        Args:
+            points: (N, 3) array of XYZ coordinates
+            k: Maximum number of neighbors for KNN
+            max_radius: Maximum search radius (inf for pure KNN)
+            batch_size: Points per processing batch
+
+        Returns:
+            np.ndarray: (N, 3) array of unit normal vectors
         """
         pass

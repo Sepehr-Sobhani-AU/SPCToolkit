@@ -1,0 +1,22 @@
+# SPCToolkit - Core Dependencies
+PyQt5
+PyOpenGL
+numpy
+open3d
+torch
+scipy
+pandas
+matplotlib
+scikit-learn
+laspy
+pye57
+psutil
+tqdm
+pykitti
+
+# Optional: GPU acceleration (NVIDIA only)
+# cupy-cuda12x
+# pynvml
+
+# Optional: RAPIDS GPU algorithms (Linux + NVIDIA only)
+# cuml

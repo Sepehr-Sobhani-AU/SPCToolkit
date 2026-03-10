@@ -13,22 +13,18 @@ __pycache__/
 *.xyz
 *.pts
 *.csv
+*.e57
+*.bin
 
-# IDE settings (local)
-.claude/settings.local.json
+# IDE and tool settings
+.vscode/
+.idea/
+.claude/
 
 # Virtual environment
 venv/
 env/
 ENV/
-
-# IDE specific files
-.vscode/
-.idea/workspace.xml
-.idea/tasks.xml
-.idea/usage.statistics.xml
-.idea/dictionaries
-.idea/shelf
 
 # OS specific
 .DS_Store
@@ -51,6 +47,29 @@ _Tree_Group/
 base_dataset/
 clusters/
 models/
+!models/pointnet/
+!models/pointnet2/
 Trained Models/
 Trained_Models/
 training_data/
+
+# Diagram and document sources
+*.drawio
+*.puml
+*.pdf
+
+# Sample data and test files
+Clusters/
+test/
+*.npy
+verify_*.py
+
+# Internal/legacy files
+_ul*
+redundant/
+
+# Standalone scripts (not part of the application)
+debug_*.py
+diagnose_*.py
+convert_*.py
+train_*.py

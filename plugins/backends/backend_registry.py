@@ -15,6 +15,7 @@ from plugins.backends import (
     KNNBackend,
     MaskingBackend,
     EigenvalueBackend,
+    NormalEstimationBackend,
     CuMLDBSCAN,
     SklearnDBSCAN,
     CuMLKNN,
@@ -23,6 +24,9 @@ from plugins.backends import (
     NumpyMasking,
     PyTorchCUDAEigen,
     PyTorchCPUEigen,
+    PyTorchCUDANormals,
+    Open3DCUDANormals,
+    Open3DNormals,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +104,17 @@ class BackendRegistry:
             self._backends['eigenvalue'] = PyTorchCPUEigen()
             logger.info("Eigenvalue backend: PyTorch CPU")
 
+        # Normal Estimation: PyTorch CUDA > Open3D CUDA tensor > Open3D CPU
+        if self.scenario in ["FULL GPU", "PARTIAL GPU"] and self.hardware.pytorch_cuda:
+            self._backends['normal_estimation'] = PyTorchCUDANormals()
+            logger.info("Normal Estimation backend: PyTorch CUDA (GPU)")
+        elif self.scenario in ["FULL GPU", "PARTIAL GPU"] and self._has_open3d_cuda():
+            self._backends['normal_estimation'] = Open3DCUDANormals()
+            logger.info("Normal Estimation backend: Open3D CUDA (GPU)")
+        else:
+            self._backends['normal_estimation'] = Open3DNormals()
+            logger.info("Normal Estimation backend: Open3D (CPU)")
+
     def get_dbscan(self) -> DBSCANBackend:
         """Get the DBSCAN clustering backend."""
         return self._backends['dbscan']
@@ -116,6 +131,19 @@ class BackendRegistry:
         """Get the eigenvalue computation backend."""
         return self._backends['eigenvalue']
 
+    def get_normal_estimation(self) -> NormalEstimationBackend:
+        """Get the normal estimation backend."""
+        return self._backends['normal_estimation']
+
+    @staticmethod
+    def _has_open3d_cuda() -> bool:
+        """Check if Open3D has CUDA tensor pipeline support."""
+        try:
+            import open3d.core as o3c
+            return o3c.Device.is_available("CUDA:0")
+        except Exception:
+            return False
+
     def get_status_report(self) -> Dict[str, str]:
         """
         Get a dictionary of algorithm -> backend name for display.
@@ -128,6 +156,7 @@ class BackendRegistry:
             'KNN': self._backends['knn'].name,
             'Masking': self._backends['masking'].name,
             'Eigenvalues': self._backends['eigenvalue'].name,
+            'Normal Estimation': self._backends['normal_estimation'].name,
         }
 
     def get_scenario(self) -> str:
@@ -139,9 +168,10 @@ class BackendRegistry:
         report = self.get_status_report()
         lines = [
             f"Backend Configuration ({self.scenario}):",
-            f"  DBSCAN:      {report['DBSCAN']}",
-            f"  KNN:         {report['KNN']}",
-            f"  Masking:     {report['Masking']}",
-            f"  Eigenvalues: {report['Eigenvalues']}",
+            f"  DBSCAN:             {report['DBSCAN']}",
+            f"  KNN:                {report['KNN']}",
+            f"  Masking:            {report['Masking']}",
+            f"  Eigenvalues:        {report['Eigenvalues']}",
+            f"  Normal Estimation:  {report['Normal Estimation']}",
         ]
         return "\n".join(lines)

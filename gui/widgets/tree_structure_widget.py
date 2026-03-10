@@ -1,5 +1,5 @@
 import logging
-from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QApplication
+from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QApplication, QHeaderView
 from PyQt5.QtCore import pyqtSignal, Qt
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,11 @@ class TreeStructureWidget(QTreeWidget):
         # Configure tree widget properties
         self.setColumnCount(2)  # Column 0: Branch name/visibility, Column 1: Cache
         self.setHeaderLabels(["Branch", "Cache"])
+        # Column 0 (Branch) stretches to fill available space
+        # Column 1 (Cache) sizes to fit its content
+        self.header().setStretchLastSection(False)
+        self.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.setSelectionMode(QTreeWidget.MultiSelection)
 
         # Connect signals
@@ -55,7 +60,7 @@ class TreeStructureWidget(QTreeWidget):
         # Always call parent event handler
         super().mousePressEvent(event)
 
-    def add_branch(self, uuid: str, parent_uuid: str, name: str, is_root: bool = False):
+    def add_branch(self, uuid: str, parent_uuid: str, name: str, is_root: bool = False, tooltip: str = None):
         """
         Adds a new branch to the tree.
 
@@ -64,6 +69,7 @@ class TreeStructureWidget(QTreeWidget):
             parent_uuid (str): Unique identifier of the parent branch. None for top-level branches.
             name (str): Name of the branch.
             is_root (bool): Whether this is a root PointCloud node (always cached).
+            tooltip (str): Optional tooltip text for the branch name column.
         """
         logger.debug(f"TreeStructureWidget.add_branch() called")
         logger.debug(f"  uuid: {uuid[:8] if uuid else 'None'}...")
@@ -76,6 +82,9 @@ class TreeStructureWidget(QTreeWidget):
             # Create a new tree item for the branch
             item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
             item.setData(0, Qt.UserRole, uuid)
+            item.setData(0, Qt.UserRole + 1, name)  # Store name for rename detection
+            if tooltip:
+                item.setToolTip(0, tooltip)
 
             # Column 0: Visibility checkbox
             item.setCheckState(0, Qt.Checked)
@@ -224,9 +233,21 @@ class TreeStructureWidget(QTreeWidget):
         uid = item.data(0, Qt.UserRole)
         if uid:
             if column == 0:
-                # Visibility checkbox changed
-                self.visibility_status[uid] = item.checkState(0) == Qt.Checked
-                self.branch_visibility_changed.emit(self.visibility_status)
+                # Detect text rename vs visibility toggle
+                stored_name = item.data(0, Qt.UserRole + 1)
+                current_text = item.text(0)
+                if stored_name is not None and current_text != stored_name:
+                    # Text was edited — persist rename to DataNode.alias
+                    item.setData(0, Qt.UserRole + 1, current_text)
+                    controller = global_variables.global_application_controller
+                    if controller:
+                        node = controller.get_node(uid)
+                        if node:
+                            node.alias = current_text
+                else:
+                    # Visibility checkbox changed
+                    self.visibility_status[uid] = item.checkState(0) == Qt.Checked
+                    self.branch_visibility_changed.emit(self.visibility_status)
             elif column == 1:
                 # Cache checkbox changed - use singleton pattern (NO signal!)
 

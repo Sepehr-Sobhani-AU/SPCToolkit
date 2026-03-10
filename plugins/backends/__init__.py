@@ -15,6 +15,7 @@ from .base import (
     KNNBackend,
     MaskingBackend,
     EigenvalueBackend,
+    NormalEstimationBackend,
 )
 
 # DBSCAN backends
@@ -42,6 +43,13 @@ from .eigenvalue_backends import (
     PyTorchCPUEigen,
 )
 
+# Normal estimation backends
+from .normal_estimation_backends import (
+    PyTorchCUDANormals,
+    Open3DCUDANormals,
+    Open3DNormals,
+)
+
 __all__ = [
     # Base classes
     'BaseBackend',
@@ -62,4 +70,9 @@ __all__ = [
     # Eigenvalue
     'PyTorchCUDAEigen',
     'PyTorchCPUEigen',
+    # Normal Estimation
+    'NormalEstimationBackend',
+    'PyTorchCUDANormals',
+    'Open3DCUDANormals',
+    'Open3DNormals',
 ]

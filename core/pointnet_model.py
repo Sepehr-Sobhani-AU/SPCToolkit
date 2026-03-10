@@ -66,11 +66,9 @@ class TNet(nn.Module):
         # Transform matrix prediction
         self.transform = nn.Linear(256, num_features * num_features)
 
-        # Initialize transform layer to predict identity matrix
+        # Initialize transform layer to zero so forward() produces 0 + I = I
         nn.init.zeros_(self.transform.weight)
-        nn.init.constant_(self.transform.bias, 0)
-        # Set bias to identity matrix
-        self.transform.bias.data = torch.eye(num_features).flatten()
+        nn.init.zeros_(self.transform.bias)
 
     def forward(self, x):
         # x: (batch, num_features, num_points)
@@ -232,7 +230,7 @@ class PointNetClassifier:
     """
     Wrapper class for PointNet model with training and inference capabilities.
 
-    Provides a similar interface to the TensorFlow version for easy migration.
+    Wrapper around the PyTorch PointNet model for training and inference.
     """
 
     def __init__(self, num_points=1024, num_features=9, num_classes=3, use_tnet=True, device=None):

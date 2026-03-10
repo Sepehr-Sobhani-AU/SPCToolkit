@@ -40,6 +40,10 @@ class AnalysisExecutor:
         self._result_data: Optional[Dict[str, Any]] = None
         self._error_data: Optional[Dict[str, Any]] = None
 
+        # Cancellation
+        self._cancel_event = threading.Event()
+        self._was_cancelled = False
+
     def execute(self,
                 plugin_class: Type,
                 data_node: DataNode,
@@ -71,6 +75,11 @@ class AnalysisExecutor:
         self._is_completed = False
         self._result_data = None
         self._error_data = None
+        self._was_cancelled = False
+        self._cancel_event.clear()
+
+        from config.config import global_variables
+        global_variables.global_cancel_event.clear()
 
         thread = threading.Thread(
             target=self._run_in_thread,
@@ -121,13 +130,28 @@ class AnalysisExecutor:
             return self._error_data.get('error', 'Unknown error')
         return None
 
+    def request_cancel(self):
+        """Request cancellation of the running analysis."""
+        self._cancel_event.set()
+        from config.config import global_variables
+        global_variables.global_cancel_event.set()
+        logger.info("Cancel requested for running analysis")
+
+    def was_cancelled(self) -> bool:
+        """Check if the last completed analysis was cancelled."""
+        return self._was_cancelled
+
     def cleanup(self):
         """Clean up state after processing completion. Call from main thread."""
         self._is_completed = False
         self._result_data = None
         self._error_data = None
         self._is_running = False
+        self._was_cancelled = False
         self._thread = None
+        self._cancel_event.clear()
+        from config.config import global_variables
+        global_variables.global_cancel_event.clear()
 
     def _run_in_thread(self, plugin_class: Type, data_node: DataNode,
                        params: Dict[str, Any], analysis_type: str):
@@ -143,6 +167,10 @@ class AnalysisExecutor:
 
             # Reconstruct if data is not a point_cloud
             if data_node_to_process.data_type != "point_cloud":
+                if self._cancel_event.is_set():
+                    self._handle_cancelled(analysis_type)
+                    return
+
                 global_variables.global_progress = (None, "Reconstructing branch...")
                 logger.info("Reconstructing branch in background thread...")
                 point_cloud = self._reconstruction_service.reconstruct(
@@ -165,6 +193,11 @@ class AnalysisExecutor:
                 reconstructed_data_node.uid = data_node_to_process.uid
                 data_node_to_process = reconstructed_data_node
 
+            # Check cancel before plugin execution
+            if self._cancel_event.is_set():
+                self._handle_cancelled(analysis_type)
+                return
+
             # Execute analysis via AnalysisService
             global_variables.global_progress = (None, f"Running {analysis_type}...")
             logger.info(f"Executing plugin '{analysis_type}' in background thread...")
@@ -172,6 +205,11 @@ class AnalysisExecutor:
             result, result_type, dependencies = self._analysis_service.execute(
                 plugin_class, data_node_to_process, params
             )
+
+            # Check cancel after plugin execution
+            if self._cancel_event.is_set():
+                self._handle_cancelled(analysis_type)
+                return
 
             global_variables.global_progress = (100, f"Completed {analysis_type}")
 
@@ -186,10 +224,25 @@ class AnalysisExecutor:
             }
             self._is_completed = True
 
+        except InterruptedError:
+            self._handle_cancelled(analysis_type)
         except Exception as e:
-            self._error_data = {
-                'error': str(e),
-                'analysis_type': analysis_type
-            }
-            self._is_completed = True
-            logger.error(f"Exception in analysis thread: {e}")
+            if self._cancel_event.is_set():
+                self._handle_cancelled(analysis_type)
+            else:
+                self._error_data = {
+                    'error': str(e),
+                    'analysis_type': analysis_type
+                }
+                self._is_completed = True
+                logger.error(f"Exception in analysis thread: {e}")
+
+    def _handle_cancelled(self, analysis_type: str):
+        """Store cancellation state and mark as completed."""
+        self._was_cancelled = True
+        self._error_data = {
+            'error': 'Cancelled by user',
+            'analysis_type': analysis_type
+        }
+        self._is_completed = True
+        logger.info(f"Analysis '{analysis_type}' was cancelled")

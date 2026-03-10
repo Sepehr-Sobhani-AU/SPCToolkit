@@ -26,6 +26,8 @@ class DynamicDialog(QDialog):
         self.setWindowTitle(title)
         self.parameter_schema = parameter_schema
         self.param_widgets = {}
+        self.param_labels = {}
+        self.param_containers = {}  # For directory type: the parent QWidget
         self.params = {}
         self.setup_ui()
 
@@ -56,9 +58,10 @@ class DynamicDialog(QDialog):
                     widget.setMinimum(param_info["min"])
                 if "max" in param_info:
                     widget.setMaximum(param_info["max"])
-                # Set decimal precision (default 4, but allow custom)
-                decimals = param_info.get("decimals", 4)
+                # Set decimal precision (default 3, but allow custom)
+                decimals = param_info.get("decimals", 3)
                 widget.setDecimals(decimals)
+                widget.setSingleStep(10 ** -decimals)
                 widget.setValue(default_value)
             elif param_type == "dropdown":
                 widget = QComboBox()
@@ -89,6 +92,10 @@ class DynamicDialog(QDialog):
                     else:
                         # If default not in options, set it as custom text
                         widget.setCurrentText(str(default_value))
+            elif param_type == "info":
+                # Read-only text label (for formulas, notes, etc.)
+                widget = QLabel(str(default_value))
+                widget.setWordWrap(True)
             elif param_type == "bool":
                 # Handle boolean type
                 widget = QCheckBox()
@@ -122,12 +129,19 @@ class DynamicDialog(QDialog):
             if tooltip:
                 widget.setToolTip(tooltip)
 
-            # For directory type, widget is already added to param_widgets above
+            # Create label and add row
+            label_widget = QLabel(label_text)
+            self.param_labels[param_name] = label_widget
+
             if param_type == "directory":
-                form_layout.addRow(QLabel(label_text), widget)
+                form_layout.addRow(label_widget, widget)
+                self.param_containers[param_name] = widget  # The QWidget container
             else:
-                form_layout.addRow(QLabel(label_text), widget)
+                form_layout.addRow(label_widget, widget)
                 self.param_widgets[param_name] = widget
+
+        # Wire up enabled_by / disabled_by dependencies between widgets
+        self._setup_dependencies()
 
         layout.addLayout(form_layout)
 
@@ -139,6 +153,45 @@ class DynamicDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _setup_dependencies(self):
+        """Wire up enabled_by / disabled_by dependencies between widgets.
+
+        Schema fields:
+            "enabled_by": "bool_param"  — widget enabled when checkbox is checked
+            "disabled_by": "bool_param" — widget disabled when checkbox is checked
+        """
+        for param_name, param_info in self.parameter_schema.items():
+            for dep_key, invert in [("enabled_by", False), ("disabled_by", True)]:
+                controller_name = param_info.get(dep_key)
+                if not controller_name:
+                    continue
+
+                controller_widget = self.param_widgets.get(controller_name)
+                if not isinstance(controller_widget, QCheckBox):
+                    continue
+
+                # Determine the target widget(s) to enable/disable
+                target_widget = self.param_containers.get(param_name) or \
+                                self.param_widgets.get(param_name)
+                target_label = self.param_labels.get(param_name)
+                if not target_widget:
+                    continue
+
+                # Connect toggled signal
+                def make_callback(w, lbl, inv):
+                    def callback(checked):
+                        enabled = not checked if inv else checked
+                        w.setEnabled(enabled)
+                        if lbl:
+                            lbl.setEnabled(enabled)
+                    return callback
+
+                cb = make_callback(target_widget, target_label, invert)
+                controller_widget.toggled.connect(cb)
+
+                # Set initial state
+                cb(controller_widget.isChecked())
+
     def get_parameters(self) -> Dict[str, Any]:
         """
         Get the parameter values from the dialog widgets.
@@ -149,7 +202,9 @@ class DynamicDialog(QDialog):
         for param_name, widget in self.param_widgets.items():
             param_type = self.parameter_schema[param_name].get("type", "string")
 
-            if param_type == "int":
+            if param_type == "info":
+                continue  # Display-only, no value to collect
+            elif param_type == "int":
                 self.params[param_name] = widget.value()
             elif param_type == "float":
                 self.params[param_name] = widget.value()

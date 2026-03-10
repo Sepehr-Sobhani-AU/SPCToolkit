@@ -91,7 +91,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.addWidget(self.pcd_viewer_widget)
 
         # Initial sizes for the left and right panes
-        self.splitter.setSizes([200, 600])
+        self.splitter.setSizes([350, 600])
 
         # Create basic menu structure
         self.setup_base_menus()
@@ -115,6 +115,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._progress_label = QtWidgets.QLabel()
         self._progress_label.hide()
         self.statusbar.addWidget(self._progress_label)
+
+        # Cancel button for running analysis (hidden by default)
+        self._cancel_button = QtWidgets.QPushButton("Cancel")
+        self._cancel_button.setMaximumWidth(60)
+        self._cancel_button.setMaximumHeight(18)
+        self._cancel_button.hide()
+        self._cancel_button.clicked.connect(self._on_cancel_clicked)
+        self.statusbar.addWidget(self._cancel_button)
 
         # Create permanent hardware info label in status bar (right-aligned)
         self._hardware_status_label = QtWidgets.QLabel()
@@ -409,6 +417,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return ' '.join(formatted_words)
 
+    def rebuild_plugin_menus(self):
+        """Clear all menus and rebuild them from current PluginManager state."""
+        self.menubar.clear()
+        self.menus.clear()
+        self.actions.clear()
+        self.populate_menus_from_plugins()
+
     def open_file_dialog(self):
         """Handler for 'Open' action to open and display a point cloud file."""
         self.file_manager.open_point_cloud_file(self)
@@ -452,11 +467,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 # Import DynamicDialog here to avoid circular imports
                 from gui.dialog_boxes.dynamic_dialog import DynamicDialog
 
+                # Apply last-used values as defaults
+                parameter_schema = self.dialog_boxes_manager._apply_last_params(
+                    plugin_name, parameter_schema
+                )
+
                 # Create and open a dynamic dialog for parameter input
                 dialog = DynamicDialog(f"{plugin_name.title()} Parameters", parameter_schema)
                 if dialog.exec_():
                     # If the user clicked OK, get the parameters and execute
                     params = dialog.get_parameters()
+                    self.dialog_boxes_manager.store_params(plugin_name, params)
                     plugin_instance.execute(self, params)
 
         except Exception as e:
@@ -542,7 +563,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.disable_menus()
         self.disable_tree()
         try:
-            self._render_visible_data(visibility_status, zoom_extent=True)
+            self._render_visible_data(visibility_status, zoom_extent=False)
         except Exception as e:
             logger.error(f"_on_branch_added() FAILED: {e}")
             logger.error(traceback.format_exc())
@@ -587,9 +608,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Send to viewer
         if vertices is not None:
+            self.pcd_viewer_widget.set_branch_offsets(
+                self.controller.rendering_coordinator.branch_offsets
+            )
             self.pcd_viewer_widget.set_point_vertices(vertices)
             self.pcd_viewer_widget.update()
         else:
+            self.pcd_viewer_widget.set_branch_offsets({})
             self.pcd_viewer_widget.set_points(None)
             self.pcd_viewer_widget.update()
 
@@ -628,6 +653,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_progress(f"Running {analysis_type}...")
         self.disable_menus()
         self.disable_tree()
+        self._cancel_button.setText("Cancel")
+        self._cancel_button.setEnabled(True)
+        self._cancel_button.show()
 
         self.controller.run_analysis(
             plugin_name=analysis_type,
@@ -662,8 +690,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Re-enable UI
         self.clear_progress()
+        self._cancel_button.hide()
         self.enable_menus()
         self.enable_tree()
+
+        # Check for cancellation
+        if self.controller.analysis_executor.was_cancelled():
+            logger.info("Analysis was cancelled by user")
+            self.controller.analysis_executor.cleanup()
+            return
 
         # Check for error
         error = self.controller.analysis_executor.get_error()
@@ -695,7 +730,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Update tree widget
         parent_uid_str = str(parent_node.uid)
         result_node = self.controller.get_node(uid)
-        self.tree_widget.add_branch(uid, parent_uid_str, result_node.params if result_node else f"{analysis_type},{params}")
+        display_name = analysis_type
+        tooltip = f"{analysis_type},{params}"
+        self.tree_widget.add_branch(uid, parent_uid_str, display_name, tooltip=tooltip)
 
         # Show memory usage for new node
         if result_node and hasattr(result_node, 'memory_size') and result_node.memory_size:
@@ -727,11 +764,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # Trigger visibility update to render the child
         self.tree_widget.branch_visibility_changed.emit(self.tree_widget.visibility_status)
 
+    def _on_cancel_clicked(self):
+        """Handle cancel button click."""
+        self.controller.analysis_executor.request_cancel()
+        self._cancel_button.setEnabled(False)
+        self._cancel_button.setText("Cancelling...")
+        self.show_progress("Cancelling...")
+
     def _on_analysis_error(self, error_msg: str):
         """Handle analysis error callback."""
         logger.error(f"Analysis error: {error_msg}")
         global_variables.global_progress = (None, "")
         self.clear_progress()
+        self._cancel_button.hide()
         self.enable_menus()
         self.enable_tree()
 

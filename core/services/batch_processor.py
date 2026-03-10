@@ -54,6 +54,7 @@ class BatchProcessor:
         self.grid_dimensions = None
         self.cell_size = None
         self.grid_bounds = None
+        self.cell_bounds = {}  # Maps cell_id → (min_bounds, max_bounds) for subdivided cells
 
         # Initialize the spatial grid
         self.create_spatial_grid()
@@ -70,22 +71,33 @@ class BatchProcessor:
         # Calculate bounding box
         min_bounds = np.min(self.points, axis=0)
         max_bounds = np.max(self.points, axis=0)
-
-        # Calculate overall volume and estimate grid dimensions
-        total_volume = np.prod(max_bounds - min_bounds)
-        point_density = len(self.points) / total_volume
-
-        # Estimate cell size to achieve target batch size
-        cell_volume = self.batch_size / point_density
-        cell_length = np.cbrt(cell_volume)
-
-        # Calculate grid dimensions
         extents = max_bounds - min_bounds
-        grid_dims = np.ceil(extents / cell_length).astype(int)
+
+        # Calculate desired number of cells directly from batch_size
+        n_desired_cells = max(1, round(len(self.points) / self.batch_size))
+
+        # Handle zero-extent dimensions (coplanar or collinear points)
+        non_zero = extents > 1e-10
+        n_active_dims = int(non_zero.sum())
+
+        if n_active_dims == 0:
+            # All points at same location
+            grid_dims = np.array([1, 1, 1])
+        else:
+            # Distribute cells proportionally to extents in active dimensions
+            active_extents = extents[non_zero]
+            active_volume = np.prod(active_extents)
+            k = (n_desired_cells / active_volume) ** (1.0 / n_active_dims)
+
+            grid_dims = np.ones(3, dtype=int)
+            for i in range(3):
+                if non_zero[i]:
+                    grid_dims[i] = max(1, round(k * extents[i]))
+
         self.grid_dimensions = tuple(grid_dims)
 
-        # Calculate actual cell size
-        self.cell_size = extents / grid_dims
+        # Calculate actual cell size (use 1.0 for zero-extent dimensions to avoid division by zero)
+        self.cell_size = np.where(extents > 1e-10, extents / grid_dims, 1.0)
 
         # Store grid bounds
         self.grid_bounds = {
@@ -108,7 +120,91 @@ class BatchProcessor:
                 grid_indices[:, 2]
         )
 
-        # TODO: Add validation and error handling for edge cases (empty point clouds, etc.)
+        # Refine oversized cells via BSP subdivision
+        self._refine_oversized_cells()
+
+    def _refine_oversized_cells(self):
+        """
+        Subdivide grid cells that contain more than batch_size points.
+
+        Uses binary space partitioning (BSP) along the longest axis to recursively
+        split oversized cells until all cells have <= batch_size primary points.
+        Stores explicit bounds for subdivided cells so overlap computation still works.
+        """
+        unique_cells, counts = np.unique(self.grid_indices, return_counts=True)
+        oversized = unique_cells[counts > self.batch_size]
+
+        if len(oversized) == 0:
+            return
+
+        next_cell_id = int(self.grid_indices.max()) + 1
+
+        for cell_id in oversized:
+            point_mask = self.grid_indices == cell_id
+            point_indices = np.where(point_mask)[0]
+            cell_points = self.points[point_indices]
+
+            cell_min = cell_points.min(axis=0)
+            cell_max = cell_points.max(axis=0)
+
+            sub_cells = self._subdivide(cell_points, point_indices, cell_min, cell_max)
+
+            if len(sub_cells) <= 1:
+                # Could not subdivide (e.g. all points at same location)
+                continue
+
+            for sub_indices, sub_min, sub_max in sub_cells:
+                self.grid_indices[sub_indices] = next_cell_id
+                self.cell_bounds[next_cell_id] = (sub_min, sub_max)
+                next_cell_id += 1
+
+    def _subdivide(self, points, point_indices, cell_min, cell_max):
+        """
+        Recursively split a cell along its longest axis until all sub-cells
+        have <= batch_size points.
+
+        Args:
+            points: (n, 3) array of point coordinates in this cell.
+            point_indices: Original indices into self.points for these points.
+            cell_min: (3,) array of minimum bounds.
+            cell_max: (3,) array of maximum bounds.
+
+        Returns:
+            List of (point_indices, sub_min, sub_max) tuples.
+        """
+        if len(point_indices) <= self.batch_size:
+            return [(point_indices, cell_min, cell_max)]
+
+        extents = cell_max - cell_min
+        axis = int(np.argmax(extents))
+
+        if extents[axis] < 1e-10:
+            # All points at same location along every axis — can't split further
+            return [(point_indices, cell_min, cell_max)]
+
+        mid = (cell_min[axis] + cell_max[axis]) / 2.0
+
+        left_mask = points[:, axis] < mid
+        right_mask = ~left_mask
+
+        # Guard against degenerate splits where all points end up on one side
+        if not np.any(left_mask) or not np.any(right_mask):
+            return [(point_indices, cell_min, cell_max)]
+
+        left_points = points[left_mask]
+        left_indices = point_indices[left_mask]
+        left_max = cell_max.copy()
+        left_max[axis] = mid
+
+        right_points = points[right_mask]
+        right_indices = point_indices[right_mask]
+        right_min = cell_min.copy()
+        right_min[axis] = mid
+
+        result = []
+        result.extend(self._subdivide(left_points, left_indices, cell_min, left_max))
+        result.extend(self._subdivide(right_points, right_indices, right_min, cell_max))
+        return result
 
     def get_batch_for_grid_cell(self, cell_idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -122,12 +218,6 @@ class BatchProcessor:
                 - Indices of points in the batch
                 - Boolean mask identifying primary (non-overlap) points
         """
-        # Convert 1D cell index to 3D coordinates
-        nx, ny, nz = self.grid_dimensions
-        cell_z = cell_idx % nz
-        cell_y = (cell_idx // nz) % ny
-        cell_x = cell_idx // (ny * nz)
-
         # Find primary points (those belonging directly to this cell)
         primary_mask = self.grid_indices == cell_idx
         primary_indices = np.where(primary_mask)[0]
@@ -135,11 +225,19 @@ class BatchProcessor:
         if len(primary_indices) == 0:
             return np.array([], dtype=int), np.array([], dtype=bool)
 
-        # Calculate extended bounds with overlap
-        min_bounds = self.grid_bounds['min'] + np.array([cell_x, cell_y, cell_z]) * self.cell_size
-        max_bounds = min_bounds + self.cell_size
-
-        overlap_size = self.cell_size * self.overlap_percent
+        if cell_idx in self.cell_bounds:
+            # Subdivided cell — use stored bounds
+            min_bounds, max_bounds = self.cell_bounds[cell_idx]
+            overlap_size = (max_bounds - min_bounds) * self.overlap_percent
+        else:
+            # Original grid cell — compute bounds from 3D grid coordinates
+            nx, ny, nz = self.grid_dimensions
+            cell_z = cell_idx % nz
+            cell_y = (cell_idx // nz) % ny
+            cell_x = cell_idx // (ny * nz)
+            min_bounds = self.grid_bounds['min'] + np.array([cell_x, cell_y, cell_z]) * self.cell_size
+            max_bounds = min_bounds + self.cell_size
+            overlap_size = self.cell_size * self.overlap_percent
         extended_min = min_bounds - overlap_size
         extended_max = max_bounds + overlap_size
 
@@ -184,6 +282,9 @@ class BatchProcessor:
 
         # Process each grid cell
         for i, cell_idx in enumerate(unique_cells):
+            if global_variables.global_cancel_event.is_set():
+                raise InterruptedError("Cancelled by user")
+
             # Get batch points and primary mask
             batch_indices, is_primary = self.get_batch_for_grid_cell(cell_idx)
 
@@ -272,6 +373,9 @@ class BatchProcessor:
 
         # Process each cell
         for batch_idx, cell_idx in enumerate(unique_cells):
+            if global_variables.global_cancel_event.is_set():
+                raise InterruptedError("Cancelled by user")
+
             # Get batch points and primary mask
             batch_indices, is_primary = self.get_batch_for_grid_cell(cell_idx)
 

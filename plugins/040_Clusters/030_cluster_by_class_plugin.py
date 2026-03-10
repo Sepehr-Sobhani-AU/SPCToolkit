@@ -8,6 +8,7 @@ with cluster_names mapping each cluster ID to its original class name.
 """
 
 from typing import Dict, Any
+import time
 import numpy as np
 import uuid
 
@@ -17,7 +18,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
 from core.services.batch_processor import BatchProcessor
 from config.config import global_variables
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QMessageBox, QApplication
 
 
 def run_clustering_direct(points: np.ndarray, algorithm: str, eps: float, min_samples: int,
@@ -249,7 +250,6 @@ class ClusterByClassPlugin(ActionPlugin):
         min_cluster_size = params.get("min_cluster_size", 50)
         target_batch_size = params.get("target_batch_size", 250000)
 
-        import time
         start_time = time.time()
 
         print(f"\n{'='*60}")
@@ -268,6 +268,32 @@ class ClusterByClassPlugin(ActionPlugin):
         unique_class_ids = np.unique(cluster_labels)
         print(f"Found {len(unique_class_ids)} unique classes")
 
+        # Show processing overlay
+        main_window.tree_overlay.position_over(tree_widget)
+        main_window.tree_overlay.show_processing(
+            f"Cluster by Class ({algorithm}) — {len(unique_class_ids)} classes, {len(points):,} points..."
+        )
+        main_window.disable_menus()
+        main_window.disable_tree()
+        QApplication.processEvents()
+
+        try:
+            self._do_clustering(
+                main_window, tree_widget, data_nodes,
+                points, cluster_labels, unique_class_ids, cluster_names, cluster_colors,
+                algorithm, eps, min_samples, min_cluster_size, target_batch_size,
+                selected_uid_uuid, start_time
+            )
+        finally:
+            main_window.tree_overlay.hide_processing()
+            main_window.enable_menus()
+            main_window.enable_tree()
+
+    def _do_clustering(self, main_window, tree_widget, data_nodes,
+                       points, cluster_labels, unique_class_ids, cluster_names, cluster_colors,
+                       algorithm, eps, min_samples, min_cluster_size, target_batch_size,
+                       selected_uid_uuid, start_time):
+        """Run the actual clustering loop (separated for try/finally cleanup)."""
         # Initialize output arrays
         output_cluster_labels = np.full(len(points), -1, dtype=np.int32)
         output_class_labels = np.full(len(points), -1, dtype=np.int32)
@@ -276,9 +302,11 @@ class ClusterByClassPlugin(ActionPlugin):
         # Fixed batch overlap at 10%
         BATCH_OVERLAP = 0.1
 
+        n_classes = len(unique_class_ids)
+
         # Process each class with clustering
         print(f"\nClustering each class:")
-        for class_id in unique_class_ids:
+        for class_idx, class_id in enumerate(unique_class_ids):
             # Get class name from mapping
             class_name = cluster_names.get(
                 int(class_id),
@@ -296,6 +324,10 @@ class ClusterByClassPlugin(ActionPlugin):
                 continue
 
             print(f"  - {class_name}: {len(class_points):,} points...", end=" ", flush=True)
+            main_window.tree_overlay.show_processing(
+                f"Clustering class {class_idx + 1}/{n_classes}: {class_name} ({len(class_points):,} pts)..."
+            )
+            QApplication.processEvents()
 
             # Run clustering on this class
             if len(class_points) > target_batch_size:

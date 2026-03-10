@@ -19,9 +19,6 @@ class DataGenerationProgressDialog(QtWidgets.QDialog):
     - Status messages
     """
 
-    # Signal emitted when user clicks cancel
-    cancel_requested = QtCore.pyqtSignal()
-
     def __init__(self, parent=None, total_steps=100):
         super().__init__(parent)
 
@@ -239,7 +236,6 @@ class DataGenerationProgressDialog(QtWidgets.QDialog):
             self.cancelled = True
             self.status_label.setText("Cancelling... Please wait.")
             self.cancel_button.setEnabled(False)
-            self.cancel_requested.emit()
             QtWidgets.QApplication.processEvents()
 
     def mark_complete(self, success: bool = True, message: str = None):

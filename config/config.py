@@ -1,6 +1,8 @@
 # TODO: Docstrings
 # TODO: Define types
 
+import threading
+
 
 # Global variables
 class GlobalVariables:
@@ -31,6 +33,9 @@ class GlobalVariables:
         # Progress state (written by background thread, read by UI polling timer)
         # (None, "msg") = indeterminate bar, (50, "msg") = 50% determinate bar
         self.global_progress = (None, "")
+
+        # Cancellation event (set by UI cancel button, checked by background threads)
+        self.global_cancel_event = threading.Event()
 
         # Configuration
         self.training_data_folder = "training_data"  # Default training data directory
