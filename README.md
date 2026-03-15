@@ -2,7 +2,44 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Smart Point Cloud Toolkit** — An interactive desktop application for 3D point cloud processing, analysis, and machine learning.
+**An open-source, plugin-based research and development platform for point cloud processing.**
+
+> **Beta Release** — SPCToolkit is under active development. Expect breaking changes, rough edges, and plenty of room to grow.
+
+---
+
+## What Is SPCToolkit?
+
+SPCToolkit is a **research and development platform** for working with point cloud data. It is not a finished, feature-complete application — it is a foundation designed to give you a ready-made environment where you can build, test, and iterate on your own point cloud tools and workflows.
+
+The toolkit ships with a set of basic built-in functionalities — loading, viewing, filtering, clustering — enough to get you working with data immediately. But these are not the point. They are there to demonstrate the platform and get you started. The real purpose of SPCToolkit is to provide you with a platform where you can develop and plug in your own research and development functionality, without having to build the surrounding infrastructure from scratch.
+
+If you are developing a new segmentation algorithm, experimenting with classification models, prototyping a custom filter, or building a processing pipeline for a specific use case — SPCToolkit gives you the platform to do it.
+
+## Why SPCToolkit?
+
+Real-world point clouds are massive. Terrestrial LiDAR scans routinely produce hundreds of millions of points — volumes that push even high-end workstations to their limits. Most existing tools either choke on datasets of this scale or lock critical functionality behind expensive licences.
+
+SPCToolkit takes a different approach. Rather than loading an entire dataset into memory, it provides intelligent access to point cloud data — letting you navigate, query, and process real-scale scans without requiring hardware that can hold it all at once. It adapts to your system and operating system, so you can work with production-size data on the machine you already have.
+
+This means your R&D work happens on real data at real scale, not on downsampled toy datasets.
+
+## Build Exactly What You Need
+
+This is SPCToolkit's core strength: **you can create and add the functionality you need, with minimal effort.**
+
+The toolkit is built on a plugin architecture. Every feature you see — loading a project, importing points, running DBSCAN — is a plugin. Plugins follow a simple abstract class structure, meaning there's a clear, consistent pattern for building your own. Implement the plugin base class in a `.py` file, drop it into the plugin directory, and it becomes part of the toolkit. No complex build steps, no framework lock-in — just Python and a well-defined interface.
+
+Whether you need a custom segmentation algorithm, a specialised filter, a new visualisation mode, or an export pipeline for your specific workflow, you can build it as a plugin and have it running inside SPCToolkit in minutes.
+
+## Key Features
+
+- **R&D-first design** — Built as a platform for developing your own tools, not just running pre-built ones. Basic features are included to get you started; the rest is yours to build.
+- **Plugin-first architecture** — Every feature is a plugin built on a shared abstract class. Creating custom functionality is straightforward and self-contained.
+- **Built for real-scale data** — Works with point clouds of hundreds of millions of points without requiring all data in memory at once.
+- **Hardware-adaptive** — Adjusts to available system resources, making real-world scan data accessible on any machine.
+- **Cross-platform** — Runs on Windows, Linux, and macOS.
+- **Open and extensible** — Write custom plugins tailored to your specific research or production needs with minimal boilerplate.
 
 ## Semantic Segmentation Results
 
@@ -22,18 +59,6 @@ PointNet segmentation trained on [SemanticKITTI](http://www.semantic-kitti.org/)
 | Traffic-sign | **35.2%** | | Fence | **23.6%** |
 
 > **Best validation mIoU: 47.1%** across 14 classes including challenging categories like other-ground and other-structure.
-
-## Features
-
-- **3D Visualization** — OpenGL-based viewer with real-time rendering, point picking, polygon selection, and dynamic level-of-detail
-- **Plugin Architecture** — 40+ plugins organized into automatic menu hierarchies; create new plugins by dropping a Python file into a folder
-- **GPU Acceleration** — Automatic hardware detection with CUDA/CuPy/RAPIDS backends; falls back gracefully when GPU is unavailable
-- **Machine Learning** — PointNet and PointNet++ models for point cloud classification and semantic segmentation with built-in training pipelines
-- **Multi-Format I/O** — Import/export PLY, LAS/LAZ, E57, NumPy, and SemanticKITTI formats
-- **Clustering & Analysis** — DBSCAN/HDBSCAN clustering, eigenvalue computation, geometric classification, normal estimation, and more
-- **Interactive Editing** — Cut, merge, remove, and classify clusters in real-time with full undo support
-- **Hierarchical Data Tree** — Track data derivation relationships with parent/child branches, visibility toggling, and per-branch memory tracking
-- **Hardware Monitoring** — Live status bar showing RAM, VRAM, GPU utilization, and temperature
 
 ## Installation
 
