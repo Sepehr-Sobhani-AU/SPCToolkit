@@ -14,7 +14,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QLabel, QSpinBox, QDoubleSpinBox, QGroupBox,
-    QMessageBox, QSizePolicy,
+    QInputDialog, QMessageBox, QSizePolicy,
 )
 from PyQt5.QtCore import QTimer
 
@@ -78,6 +78,7 @@ class FlythroughDialog(QDialog):
         self._frames_per_segment = 0
 
         self._build_ui()
+        self._load_waypoints()
 
     # ------------------------------------------------------------------
     # UI
@@ -134,9 +135,11 @@ class FlythroughDialog(QDialog):
         pb_row = QHBoxLayout()
         self._btn_play = QPushButton("Play")
         self._btn_stop = QPushButton("Stop")
+        self._btn_save = QPushButton("Save Waypoints")
         self._btn_stop.setEnabled(False)
         pb_row.addWidget(self._btn_play)
         pb_row.addWidget(self._btn_stop)
+        pb_row.addWidget(self._btn_save)
         layout.addLayout(pb_row)
 
         # Wire up
@@ -146,6 +149,8 @@ class FlythroughDialog(QDialog):
         self._btn_down.clicked.connect(self._move_down)
         self._btn_play.clicked.connect(self._start_play)
         self._btn_stop.clicked.connect(self._stop_animation)
+        self._btn_save.clicked.connect(self._save_waypoints)
+        self._wp_list.itemDoubleClicked.connect(self._rename_waypoint)
 
     # ------------------------------------------------------------------
     # Waypoint management
@@ -153,7 +158,9 @@ class FlythroughDialog(QDialog):
 
     def _capture_camera(self) -> dict:
         v = global_variables.global_pcd_viewer_widget
+        n = len(self._waypoints) + 1
         return {
+            "name": f"Waypoint {n}",
             "rot_x": v.rot_x,
             "rot_y": v.rot_y,
             "rot_z": v.rot_z,
@@ -166,9 +173,9 @@ class FlythroughDialog(QDialog):
         }
 
     @staticmethod
-    def _make_label(idx: int, wp: dict) -> QListWidgetItem:
+    def _make_label(wp: dict) -> QListWidgetItem:
         text = (
-            f"Waypoint {idx}  —  "
+            f"{wp['name']}  —  "
             f"rot({wp['rot_x']:.1f}, {wp['rot_y']:.1f}, {wp['rot_z']:.1f})  "
             f"dist={wp['camera_distance']:.1f}"
         )
@@ -176,17 +183,51 @@ class FlythroughDialog(QDialog):
 
     def _refresh_labels(self):
         self._wp_list.clear()
-        for i, wp in enumerate(self._waypoints):
-            self._wp_list.addItem(self._make_label(i + 1, wp))
+        for wp in self._waypoints:
+            self._wp_list.addItem(self._make_label(wp))
+
+    def _load_waypoints(self):
+        fm = global_variables.global_file_manager
+        if fm is None:
+            return
+        import copy
+        for wp in fm.camera_waypoints:
+            self._waypoints.append(copy.deepcopy(wp))
+            self._wp_list.addItem(self._make_label(wp))
+        if self._waypoints:
+            self._status_label.setText(
+                f"{len(self._waypoints)} waypoint(s) loaded — ready to Play."
+            )
+
+    def _save_waypoints(self):
+        fm = global_variables.global_file_manager
+        if fm is None:
+            return
+        import copy
+        fm.camera_waypoints = [copy.deepcopy(wp) for wp in self._waypoints]
+        self._status_label.setText(
+            f"{len(self._waypoints)} waypoint(s) saved — use File > Save Project to persist."
+        )
+
+    def _rename_waypoint(self, item: QListWidgetItem):
+        row = self._wp_list.row(item)
+        if row < 0:
+            return
+        current_name = self._waypoints[row]["name"]
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Waypoint", "Name:", text=current_name
+        )
+        if ok and new_name.strip():
+            self._waypoints[row]["name"] = new_name.strip()
+            self._refresh_labels()
 
     def _add_waypoint(self):
         wp = self._capture_camera()
         self._waypoints.append(wp)
-        self._wp_list.addItem(self._make_label(len(self._waypoints), wp))
+        self._wp_list.addItem(self._make_label(wp))
+        n = len(self._waypoints)
         self._status_label.setText(
-            f"{len(self._waypoints)} waypoint(s) added."
-            if len(self._waypoints) < 2
-            else f"{len(self._waypoints)} waypoints — ready to Play."
+            f"{n} waypoint(s) added." if n < 2 else f"{n} waypoints — ready to Play."
         )
 
     def _remove_waypoint(self):
