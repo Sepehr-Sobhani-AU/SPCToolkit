@@ -38,6 +38,7 @@ Whether you need a custom segmentation algorithm, a specialised filter, a new vi
 - **Plugin-first architecture** — Every feature is a plugin built on a shared abstract class. Creating custom functionality is straightforward and self-contained.
 - **Built for real-scale data** — Works with point clouds of hundreds of millions of points without requiring all data in memory at once.
 - **Hardware-adaptive** — Adjusts to available system resources, making real-world scan data accessible on any machine.
+- **Camera flythrough** — Animate the camera along a smooth Catmull-Rom spline path through named waypoints. Multiple flythroughs can be saved per project. Ideal for screen-recorded demos and presentations.
 - **Cross-platform** — Runs on Windows, Linux, and macOS.
 - **Open and extensible** — Write custom plugins tailored to your specific research or production needs with minimal boilerplate.
 
@@ -110,7 +111,8 @@ python main.py
 3. **Analyze**: Points > Analysis > Compute Eigenvalues for geometric features
 4. **Cluster**: Points > Clustering > DBSCAN to segment the point cloud
 5. **Classify**: Use geometric classification or train a PointNet model under ML Models
-6. **Save**: File > Save Project to preserve your work as a `.pcdtk` project file
+6. **Flythrough**: View > Flythrough — navigate to a camera angle, click **Add Waypoint**, repeat, then hit **Play** for a smooth animated path
+7. **Save**: File > Save Project to preserve your work as a `.pcdtk` project file
 
 For a detailed walkthrough, see the [Getting Started Guide](GETTING_STARTED.md).
 
