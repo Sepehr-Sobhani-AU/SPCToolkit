@@ -425,15 +425,22 @@ class FlythroughDialog(QDialog):
             self._status_label.setText("Playback complete.")
             return
 
-        # Find current segment
-        seg = len(self._seg_starts) - 1
-        for i in range(len(self._seg_starts) - 1, -1, -1):
-            if self._frame_index >= self._seg_starts[i]:
+        # Apply smoothstep to global progress so the flythrough starts and
+        # ends at zero speed. Per-segment durations still control relative pacing.
+        global_raw = self._frame_index / max(self._total_frames - 1, 1)
+        global_eased = global_raw * global_raw * (3.0 - 2.0 * global_raw)
+        eased_pos = global_eased * (self._total_frames - 1)
+
+        # Find current segment from the eased position
+        seg = 0
+        for i in range(len(self._seg_starts)):
+            if eased_pos >= self._seg_starts[i]:
                 seg = i
+            else:
                 break
 
-        local = self._frame_index - self._seg_starts[seg]
-        t = local / max(self._seg_frames[seg] - 1, 1)
+        local = eased_pos - self._seg_starts[seg]
+        t = max(0.0, min(1.0, local / max(self._seg_frames[seg] - 1, 1)))
 
         last = len(self._anim_waypoints) - 1
         i0 = max(seg - 1, 0)
