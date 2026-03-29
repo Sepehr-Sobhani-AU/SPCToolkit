@@ -22,6 +22,7 @@ from sklearn.model_selection import train_test_split
 
 import torch
 import torch.nn as nn
+import traceback
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
@@ -109,7 +110,9 @@ class SegPointCloudDataset(Dataset):
 
     def __init__(self, file_paths, num_points, num_classes, augment=False,
                  feature_mean=None, feature_std=None, ignore_classes=None,
-                 label_remap=None):
+                 label_remap=None,
+                 scale_range_pct=20.0, jitter_pct=0.5, z_offset_pct=2.0,
+                 point_dropout_pct=15.0, flip_probability=0.5):
         """
         Args:
             file_paths: List of .npz file paths, each containing 'features' (N,F) and 'labels' (N,)
@@ -120,12 +123,22 @@ class SegPointCloudDataset(Dataset):
             feature_std: Optional per-feature std array (F,) for standardization
             ignore_classes: Optional list of dense class IDs to remap to -100 (ignored by loss)
             label_remap: Dict {original_id: dense_id} to remap sparse labels to dense 0..N-1
+            scale_range_pct: Scale variation as percentage (e.g. 20.0 means [0.8, 1.2])
+            jitter_pct: Jitter std as percentage of per-axis XYZ range
+            z_offset_pct: Random Z offset as percentage of Z range
+            point_dropout_pct: Max percentage of points to drop (uniform 0 to this value)
+            flip_probability: Probability of flipping each XY axis independently
         """
         self.num_points = num_points
         self.num_classes = num_classes
         self.augment = augment
         self.feature_mean = feature_mean
         self.feature_std = feature_std
+        self.scale_range_pct = scale_range_pct
+        self.jitter_pct = jitter_pct
+        self.z_offset_pct = z_offset_pct
+        self.point_dropout_pct = point_dropout_pct
+        self.flip_probability = flip_probability
         self.ignore_classes = set(ignore_classes) if ignore_classes else set()
         self.label_remap = label_remap
         # Pre-load all data into memory to avoid per-access disk I/O
@@ -165,49 +178,97 @@ class SegPointCloudDataset(Dataset):
         labels = labels[indices]
 
         if self.augment:
-            features = self._augment(features)
+            features, labels = self._augment(features, labels)
 
         # Per-feature standardization
         if self.feature_mean is not None and self.feature_std is not None:
             features = (features - self.feature_mean) / self.feature_std
 
+        # Point dropout: replace dropped points with duplicates of surviving points
+        # (no zero vectors, no mask channel, no train/val distribution shift)
+        N = features.shape[0]
+        if self.augment and self.point_dropout_pct > 0:
+            drop_frac = np.random.uniform(0, self.point_dropout_pct / 100.0)
+            n_drop = int(drop_frac * N)
+            if n_drop > 0:
+                drop_idx = np.random.choice(N, n_drop, replace=False)
+                keep_idx = np.setdiff1d(np.arange(N), drop_idx)
+                replace_idx = np.random.choice(keep_idx, n_drop, replace=True)
+                features[drop_idx] = features[replace_idx]
+                labels[drop_idx] = labels[replace_idx]
+
         return torch.FloatTensor(features), torch.LongTensor(labels)
 
-    def _augment(self, features):
-        """Apply random rotation, scaling, and jitter to XYZ and normals."""
+    def _augment(self, features, labels):
+        """Apply geometric augmentation: Z-rotation, XY-flip, scaling, jitter, Z-offset.
+
+        All spatial parameters are percentages, making augmentation independent of
+        absolute block size. Point dropout is handled separately in __getitem__
+        after standardization.
+
+        Args:
+            features: (N, F) feature array
+            labels: (N,) label array
+
+        Returns:
+            (features, labels) with geometric transforms applied
+        """
+        N = features.shape[0]
+        has_normals = features.shape[1] >= 6
+        has_eigenvalues = features.shape[1] > 6
+
+        # --- 1. Random Z-axis rotation ---
         theta = np.random.uniform(0, 2 * np.pi)
-        cos_theta = np.cos(theta)
-        sin_theta = np.sin(theta)
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        rot = np.array([[cos_t, -sin_t, 0],
+                         [sin_t,  cos_t, 0],
+                         [0,      0,     1]], dtype=np.float32)
 
-        rotation_matrix = np.array([
-            [cos_theta, -sin_theta, 0],
-            [sin_theta, cos_theta, 0],
-            [0, 0, 1]
-        ], dtype=np.float32)
+        xyz = features[:, :3] @ rot.T
 
-        # Random isotropic scaling
-        scale = np.random.uniform(0.9, 1.1)
+        normals = None
+        if has_normals:
+            normals = features[:, 3:6] @ rot.T
 
-        xyz = features[:, :3]
-        rotated_xyz = (xyz @ rotation_matrix.T) * scale
-        jitter = np.random.normal(0, 0.02, rotated_xyz.shape).astype(np.float32)
-        rotated_xyz = rotated_xyz + jitter
+        # --- 2. Random XY flip (independent per axis) ---
+        if np.random.random() < self.flip_probability:
+            xyz[:, 0] *= -1
+            if normals is not None:
+                normals[:, 0] *= -1
+        if np.random.random() < self.flip_probability:
+            xyz[:, 1] *= -1
+            if normals is not None:
+                normals[:, 1] *= -1
 
-        parts = [rotated_xyz]
+        # --- 3. Random isotropic scaling (percentage-based) ---
+        scale_lo = 1.0 - self.scale_range_pct / 100.0
+        scale_hi = 1.0 + self.scale_range_pct / 100.0
+        scale = np.random.uniform(scale_lo, scale_hi)
+        xyz *= scale
 
-        if features.shape[1] >= 6:
-            # Rotate normals (columns 3:6) by the same rotation (no scaling — unit vectors)
-            normals = features[:, 3:6]
-            rotated_normals = normals @ rotation_matrix.T
-            parts.append(rotated_normals)
-            # Eigenvalues are rotation-invariant but scale with point scale
-            if features.shape[1] > 6:
-                eigenvalues = features[:, 6:]
-                parts.append(eigenvalues * (scale ** 2))
-        elif features.shape[1] > 3:
+        # --- 4. Jitter (percentage of per-axis XYZ range) ---
+        xyz_range = (xyz.max(axis=0) - xyz.min(axis=0)).clip(min=1e-6)
+        jitter_std = xyz_range * (self.jitter_pct / 100.0)
+        xyz += (np.random.randn(N, 3) * jitter_std).astype(np.float32)
+
+        # --- 5. Random Z offset (percentage of Z range) ---
+        z_range = float(max(xyz[:, 2].max() - xyz[:, 2].min(), 1e-6))
+        z_offset = np.random.uniform(-1, 1) * (self.z_offset_pct / 100.0) * z_range
+        xyz[:, 2] += z_offset
+
+        # --- Reassemble features ---
+        parts = [xyz]
+        if has_normals:
+            parts.append(normals)
+        if has_eigenvalues:
+            eigenvalues = features[:, 6:]
+            parts.append(eigenvalues * (scale ** 2))
+        elif not has_normals and features.shape[1] > 3:
             parts.append(features[:, 3:])
 
-        return np.concatenate(parts, axis=1)
+        features_out = np.concatenate(parts, axis=1)
+
+        return features_out, labels
 
 
 class TrainSegModelPlugin(ActionPlugin):
@@ -565,6 +626,12 @@ class TrainSegModelPlugin(ActionPlugin):
             total_params = sum(p.numel() for p in model.parameters())
             print(f"\nModel: {total_params:,} parameters")
             print(f"T-Net: {use_tnet}")
+            print(f"Augmentation: scale=±{train_dataset.scale_range_pct:.0f}%, "
+                  f"jitter={train_dataset.jitter_pct:.1f}%, "
+                  f"z_offset=±{train_dataset.z_offset_pct:.1f}%, "
+                  f"point_dropout=0-{train_dataset.point_dropout_pct:.0f}%, "
+                  f"flip_prob={train_dataset.flip_probability:.1f}, "
+                  f"dropout_mode=duplicate-replace")
 
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-4)
             if scheduler_name == "OneCycleLR":
@@ -610,6 +677,8 @@ class TrainSegModelPlugin(ActionPlugin):
             progress_window.setWindowTitle(f"Segmentation Training - Run #{run_number}")
             progress_window.show()
             progress_window.training_started()
+            progress_window.set_training_config(
+                loss_function=loss_function, lr_scheduler=scheduler_name)
 
             screen_geometry = QtWidgets.QApplication.desktop().screenGeometry()
             x = (screen_geometry.width() - progress_window.width()) // 2
@@ -619,7 +688,6 @@ class TrainSegModelPlugin(ActionPlugin):
             main_window.tree_overlay.show_processing("Training model...")
 
         except Exception as e:
-            import traceback
             traceback.print_exc()
             QMessageBox.critical(main_window, "Setup Error",
                                f"Failed to set up training:\n\n{str(e)}")
@@ -718,6 +786,10 @@ class TrainSegModelPlugin(ActionPlugin):
 
                     with torch.no_grad(), torch.amp.autocast('cuda'):
                         for batch_features, batch_labels in val_loader:
+                            if progress_window.training_cancelled:
+                                training_state['was_cancelled'] = True
+                                break
+
                             batch_features = batch_features.to(device, non_blocking=True)
                             batch_labels = batch_labels.to(device, non_blocking=True)
 
@@ -736,6 +808,9 @@ class TrainSegModelPlugin(ActionPlugin):
                                 val_confusion, preds, batch_labels, num_classes)
 
                             del logits, loss, preds, valid
+
+                    if training_state['was_cancelled']:
+                        break
 
                     val_loss /= max(val_batch_count, 1)
                     val_acc = val_correct / max(val_total, 1)
@@ -797,6 +872,7 @@ class TrainSegModelPlugin(ActionPlugin):
                             'class_mapping': class_mapping,
                             'num_points': num_points,
                             'num_features': num_features,
+
                             'num_classes': num_classes,
                             'use_tnet': use_tnet,
                             'task_type': 'segmentation',
@@ -864,6 +940,8 @@ class TrainSegModelPlugin(ActionPlugin):
                     'use_tnet': use_tnet,
                     'learning_rate': learning_rate,
                     'batch_size': batch_size,
+                    'loss_function': loss_function,
+                    'lr_scheduler': scheduler_name,
                     'early_stopping_patience': early_stopping_patience,
                     'validation_split': val_split,
                     'random_seed': random_seed,
@@ -935,7 +1013,6 @@ class TrainSegModelPlugin(ActionPlugin):
                 else:
                     training_state['error'] = str(e)
             except Exception as e:
-                import traceback
                 traceback.print_exc()
                 training_state['error'] = str(e)
             finally:
@@ -946,7 +1023,7 @@ class TrainSegModelPlugin(ActionPlugin):
         thread.start()
 
         # --- QTimer polling (main thread) ---
-        poll_timer = QtCore.QTimer()
+        poll_timer = QtCore.QTimer(progress_window)
 
         def _on_poll():
             """Poll training thread state and update UI."""

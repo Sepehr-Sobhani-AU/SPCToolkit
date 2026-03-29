@@ -13,8 +13,8 @@ import time
 import numpy as np
 from typing import Dict, Any
 from datetime import datetime
-from PyQt5.QtWidgets import QMessageBox
 from PyQt5 import QtWidgets
+from PyQt5.QtWidgets import QMessageBox
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 
@@ -26,6 +26,7 @@ from torch.utils.data import Dataset, DataLoader
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.pointnet_model import PointNet
+from core.losses import FocalLoss
 from plugins.dialogs.training_progress_window import TrainingProgressWindow
 
 
@@ -96,7 +97,9 @@ class TrainPointNetPlugin(ActionPlugin):
         "val_split": 0.2,
         "use_tnet": True,
         "early_stopping_patience": 20,
-        "repetitions": 1
+        "repetitions": 1,
+        "loss_function": "Weighted CrossEntropy",
+        "scheduler": "ReduceLROnPlateau",
     }
 
     def get_name(self) -> str:
@@ -129,7 +132,7 @@ class TrainPointNetPlugin(ActionPlugin):
             'learning_rate', 'val_split', 'use_tnet', 'early_stopping_patience',
             'repetitions', 'random_seed', 'best_val_acc', 'final_val_acc',
             'epochs_completed', 'training_samples', 'validation_samples',
-            'num_classes', 'was_cancelled'
+            'num_classes', 'was_cancelled', 'loss_function', 'lr_scheduler'
         ]
 
         file_exists = os.path.exists(csv_path)
@@ -208,7 +211,31 @@ class TrainPointNetPlugin(ActionPlugin):
                 "max": 100,
                 "label": "Training Repetitions",
                 "description": "Number of times to train with different random initializations"
-            }
+            },
+            "loss_function": {
+                "type": "dropdown",
+                "options": {
+                    "Weighted CrossEntropy": "Weighted Cross Entropy (sklearn balanced weights)",
+                    "CrossEntropy": "Standard Cross Entropy (no class weighting)",
+                    "Focal + Class Weights": "Focal Loss + Class Weights (gamma=2)",
+                    "Focal Loss": "Focal Loss (gamma=2, no class weights)",
+                },
+                "default": self.last_params["loss_function"],
+                "label": "Loss Function",
+                "description": "Loss function for training"
+            },
+            "scheduler": {
+                "type": "dropdown",
+                "options": {
+                    "ReduceLROnPlateau": "Reduce on Plateau (halve LR when val accuracy stalls)",
+                    "OneCycleLR": "OneCycleLR (warmup + cosine decay)",
+                    "CosineAnnealing": "Cosine Annealing (smooth decay to min LR)",
+                    "CosineWarmRestarts": "Cosine Annealing + Warm Restarts (periodic resets)",
+                },
+                "default": self.last_params["scheduler"],
+                "label": "LR Scheduler",
+                "description": "Learning rate scheduling strategy"
+            },
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
@@ -223,6 +250,8 @@ class TrainPointNetPlugin(ActionPlugin):
         use_tnet = params['use_tnet']
         early_stopping_patience = int(params['early_stopping_patience'])
         repetitions = int(params['repetitions'])
+        loss_function = params.get('loss_function', 'Weighted CrossEntropy')
+        scheduler_name = params.get('scheduler', 'ReduceLROnPlateau')
 
         # Store parameters for next time
         TrainPointNetPlugin.last_params = {
@@ -234,7 +263,9 @@ class TrainPointNetPlugin(ActionPlugin):
             "val_split": val_split,
             "use_tnet": use_tnet,
             "early_stopping_patience": early_stopping_patience,
-            "repetitions": repetitions
+            "repetitions": repetitions,
+            "loss_function": loss_function,
+            "scheduler": scheduler_name,
         }
 
         # Validate directories
@@ -384,10 +415,35 @@ class TrainPointNetPlugin(ActionPlugin):
 
                 # Setup optimizer and scheduler
                 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, mode='max', factor=0.5, patience=10
-                )
-                criterion = nn.CrossEntropyLoss()
+
+                if scheduler_name == "OneCycleLR":
+                    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                        optimizer, max_lr=learning_rate, epochs=epochs,
+                        steps_per_epoch=len(train_loader), pct_start=0.05,
+                        anneal_strategy='cos', div_factor=10.0, final_div_factor=100.0)
+                    step_scheduler_per_batch = True
+                elif scheduler_name == "CosineAnnealing":
+                    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                        optimizer, T_max=epochs, eta_min=1e-6)
+                    step_scheduler_per_batch = False
+                elif scheduler_name == "CosineWarmRestarts":
+                    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                        optimizer, T_0=20, T_mult=2, eta_min=1e-6)
+                    step_scheduler_per_batch = False
+                else:  # ReduceLROnPlateau
+                    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                        optimizer, mode='max', factor=0.5, patience=10)
+                    step_scheduler_per_batch = False
+
+                # Build loss function
+                if loss_function == "CrossEntropy":
+                    criterion = nn.CrossEntropyLoss()
+                elif loss_function == "Focal + Class Weights":
+                    criterion = FocalLoss(alpha=class_weights_array, gamma=2.0)
+                elif loss_function == "Focal Loss":
+                    criterion = FocalLoss(alpha=None, gamma=2.0)
+                else:  # "Weighted CrossEntropy" (default)
+                    criterion = nn.CrossEntropyLoss(weight=class_weights)
 
                 # Create progress window
                 progress_window = TrainingProgressWindow(parent=main_window, total_epochs=epochs)
@@ -395,6 +451,8 @@ class TrainPointNetPlugin(ActionPlugin):
                     progress_window.setWindowTitle(f"PointNet Training Progress - Run #{run_number} ({rep_index + 1}/{repetitions})")
                 progress_window.show()
                 progress_window.training_started()
+                progress_window.set_training_config(
+                    loss_function=loss_function, lr_scheduler=scheduler_name)
 
                 screen_geometry = QtWidgets.QApplication.desktop().screenGeometry()
                 x = (screen_geometry.width() - progress_window.width()) // 2
@@ -405,6 +463,8 @@ class TrainPointNetPlugin(ActionPlugin):
                 print(f"  Epochs: {epochs}")
                 print(f"  Batch size: {batch_size}")
                 print(f"  Learning rate: {learning_rate}")
+                print(f"  Loss function: {loss_function}")
+                print(f"  LR Scheduler: {scheduler_name}")
                 print("-"*80)
 
                 # Training loop
@@ -432,24 +492,30 @@ class TrainPointNetPlugin(ActionPlugin):
                     train_total = 0
 
                     for batch_data, batch_labels in train_loader:
+                        if progress_window.training_cancelled:
+                            was_cancelled = True
+                            break
+
                         batch_data = batch_data.to(device)
                         batch_labels = batch_labels.to(device)
 
                         optimizer.zero_grad()
                         logits = model(batch_data)
-
-                        # Apply class weights
-                        weights = class_weights[batch_labels]
-                        loss = F.cross_entropy(logits, batch_labels, reduction='none')
-                        loss = (loss * weights).mean()
+                        loss = criterion(logits, batch_labels)
 
                         loss.backward()
                         optimizer.step()
+
+                        if step_scheduler_per_batch:
+                            scheduler.step()
 
                         train_loss += loss.item() * batch_data.size(0)
                         predictions = torch.argmax(logits, dim=1)
                         train_correct += (predictions == batch_labels).sum().item()
                         train_total += batch_data.size(0)
+
+                    if was_cancelled:
+                        break
 
                     train_loss /= train_total
                     train_acc = train_correct / train_total
@@ -463,6 +529,10 @@ class TrainPointNetPlugin(ActionPlugin):
 
                     with torch.no_grad():
                         for batch_data, batch_labels in val_loader:
+                            if progress_window.training_cancelled:
+                                was_cancelled = True
+                                break
+
                             batch_data = batch_data.to(device)
                             batch_labels = batch_labels.to(device)
 
@@ -480,6 +550,9 @@ class TrainPointNetPlugin(ActionPlugin):
                             for pred_i, true_i in zip(p, l):
                                 if 0 <= true_i < num_classes and 0 <= pred_i < num_classes:
                                     val_confusion[true_i, pred_i] += 1
+
+                    if was_cancelled:
+                        break
 
                     val_loss /= val_total
                     val_acc = val_correct / val_total
@@ -543,8 +616,12 @@ class TrainPointNetPlugin(ActionPlugin):
                     else:
                         epochs_without_improvement += 1
 
-                    # Update scheduler
-                    scheduler.step(val_acc)
+                    # Update scheduler (OneCycleLR steps per batch, not per epoch)
+                    if not step_scheduler_per_batch:
+                        if scheduler_name == "ReduceLROnPlateau":
+                            scheduler.step(val_acc)
+                        else:
+                            scheduler.step()
 
                     # Early stopping
                     if epochs_without_improvement >= early_stopping_patience:
@@ -596,6 +673,8 @@ class TrainPointNetPlugin(ActionPlugin):
                     'use_tnet': use_tnet,
                     'learning_rate': learning_rate,
                     'batch_size': batch_size,
+                    'loss_function': loss_function,
+                    'lr_scheduler': scheduler_name,
                     'early_stopping_patience': early_stopping_patience,
                     'validation_split': val_split,
                     'random_seed': random_seed,
@@ -702,7 +781,9 @@ class TrainPointNetPlugin(ActionPlugin):
                     'training_samples': training_metadata['training_samples'],
                     'validation_samples': training_metadata['validation_samples'],
                     'num_classes': training_metadata['num_classes'],
-                    'was_cancelled': was_cancelled
+                    'was_cancelled': was_cancelled,
+                    'loss_function': loss_function,
+                    'lr_scheduler': scheduler_name,
                 }
                 self._write_to_tracking_csv(output_dir, csv_data)
 

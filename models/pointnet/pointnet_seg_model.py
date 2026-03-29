@@ -26,9 +26,11 @@ class PointNetSegmentation(nn.Module):
 
     Architecture:
         Input(B,N,F) -> TNet -> Conv(F->64->64) -> [save local]
-        -> Conv(64->64->128->1024) -> GlobalMaxPool -> expand(B,1024,N)
+        -> Conv(64->64) -> Drop(0.2) -> Conv(64->128->1024) -> Drop(0.2)
+        -> GlobalMaxPool -> expand(B,1024,N)
         -> concat with local(B,64,N) -> (B,1088,N)
-        -> Conv(1088->512->256->128->C) -> Output(B,N,C)
+        -> Conv(1088->512) -> Drop(0.3) -> Conv(512->256) -> Drop(0.3)
+        -> Conv(256->128) -> Drop(0.5) -> Conv(128->C) -> Output(B,N,C)
 
     Args:
         num_points: Number of points per sample
@@ -55,8 +57,10 @@ class PointNetSegmentation(nn.Module):
 
         # Shared MLP for global features (64 -> 128 -> 1024)
         self.conv3 = ConvBNReLU(64, 64)
+        self.enc_drop1 = nn.Dropout(0.2)
         self.conv4 = ConvBNReLU(64, 128)
         self.conv5 = ConvBNReLU(128, 1024)
+        self.enc_drop2 = nn.Dropout(0.2)
 
         # Per-point segmentation MLP (1088 = 64 local + 1024 global)
         self.seg_conv1 = ConvBNReLU(1088, 512)
@@ -107,8 +111,10 @@ class PointNetSegmentation(nn.Module):
 
         # Shared MLP (64 -> 64 -> 128 -> 1024)
         x = self.conv3(x)
+        x = self.enc_drop1(x)
         x = self.conv4(x)
         x = self.conv5(x)
+        x = self.enc_drop2(x)
 
         # Global max pooling -> (B, 1024)
         global_feature = torch.max(x, dim=2)[0]

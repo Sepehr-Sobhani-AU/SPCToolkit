@@ -424,12 +424,11 @@ class ClusterByClassPlugin(ActionPlugin):
             output_cluster_names[int(cluster_id)] = class_name
 
         # Create Clusters object
-        output_cluster_colors = cluster_colors.copy() if cluster_colors else {}
         clusters = Clusters(
             labels=output_cluster_labels,
             cluster_names=output_cluster_names,
-            cluster_colors=output_cluster_colors
         )
+        clusters.set_random_color()
 
         # Create Clusters DataNode
         clusters_node = DataNode(
@@ -442,10 +441,16 @@ class ClusterByClassPlugin(ActionPlugin):
 
         # Add Clusters node to tree
         clusters_uid = data_nodes.add_node(clusters_node)
+        tooltip = (f"cluster_by_class\n"
+                   f"Algorithm: {algorithm}\n"
+                   f"Classes: {len(unique_class_ids)}\n"
+                   f"Clusters: {next_cluster_id}\n"
+                   f"Time: {elapsed_time:.2f}s")
         tree_widget.add_branch(
             str(clusters_uid),
             str(selected_uid_uuid),
-            "cluster_labels"
+            "cluster_labels",
+            tooltip=tooltip
         )
 
         # Show success message

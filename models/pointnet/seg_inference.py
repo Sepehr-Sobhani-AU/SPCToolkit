@@ -179,8 +179,10 @@ def segment_point_cloud_blockwise(
         print(f"Masking {len(ignore_classes)} ignored classes: {', '.join(ignored_names)}")
 
     # Determine feature configuration
-    use_normals = num_features >= 6
-    use_eigenvalues = num_features >= 9
+    has_mask_channel = metadata.get('has_mask_channel', False)
+    raw_features = num_features - 1 if has_mask_channel else num_features
+    use_normals = raw_features >= 6
+    use_eigenvalues = raw_features >= 9
 
     # Get preprocessing parameters from metadata
     source_metadata = metadata.get('source_metadata', {})
@@ -256,7 +258,8 @@ def segment_point_cloud_blockwise(
             block_normals=block_normals,
             block_eigenvalues=block_eigenvalues,
             feature_mean=feature_mean,
-            feature_std=feature_std
+            feature_std=feature_std,
+            has_mask_channel=has_mask_channel
         )
 
         if features is None:
@@ -332,7 +335,8 @@ def _compute_full_block_features(
     block_normals: Optional[np.ndarray] = None,
     block_eigenvalues: Optional[np.ndarray] = None,
     feature_mean: Optional[np.ndarray] = None,
-    feature_std: Optional[np.ndarray] = None
+    feature_std: Optional[np.ndarray] = None,
+    has_mask_channel: bool = False
 ) -> Optional[np.ndarray]:
     """
     Assemble features for all points in a block from pre-computed data.
@@ -347,6 +351,7 @@ def _compute_full_block_features(
         block_eigenvalues: (n, 3) pre-computed eigenvalues (from full cloud), or None
         feature_mean: Per-feature means from training for z-score standardization
         feature_std: Per-feature stds from training for z-score standardization
+        has_mask_channel: If True, append a column of 1.0 (all real points at inference)
 
     Returns:
         (n, F) feature array or None if block too small
@@ -385,6 +390,11 @@ def _compute_full_block_features(
     if feature_mean is not None and feature_std is not None:
         combined -= feature_mean
         combined /= feature_std
+
+    # Append binary mask channel (all 1.0 — every point is real at inference)
+    if has_mask_channel:
+        mask_col = np.ones((n, 1), dtype=np.float32)
+        combined = np.hstack([combined, mask_col])
 
     return combined
 

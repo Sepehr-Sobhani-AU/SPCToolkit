@@ -4,10 +4,13 @@ Training Progress Window - Shows real-time PointNet training progress with GPU m
 """
 
 import time
+import numpy as np
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — needed for projection='3d'
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 # Use pynvml for fork-free GPU monitoring (subprocess.run forks, which is unsafe
@@ -49,6 +52,7 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         self.val_acc_history = []
         self.train_miou_history = []
         self.val_miou_history = []
+        self.lr_history = []
 
         # Best values tracking
         self.best_train_loss = float('inf')
@@ -94,21 +98,6 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         right_panel = QtWidgets.QVBoxLayout()
         right_panel.setSpacing(10)
 
-        # Title
-        title_label = QtWidgets.QLabel("PointNet Training Progress")
-        title_font = QtGui.QFont()
-        title_font.setPointSize(12)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
-        title_label.setAlignment(QtCore.Qt.AlignCenter)
-        left_panel.addWidget(title_label)
-
-        # Separator
-        line1 = QtWidgets.QFrame()
-        line1.setFrameShape(QtWidgets.QFrame.HLine)
-        line1.setFrameShadow(QtWidgets.QFrame.Sunken)
-        left_panel.addWidget(line1)
-
         # Epoch info
         epoch_layout = QtWidgets.QHBoxLayout()
         self.epoch_label = QtWidgets.QLabel("Epoch: 0 / 100")
@@ -122,17 +111,51 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         # Progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(100)
+        self.progress_bar.setMaximum(1000)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("%p%")
         self.progress_bar.setMinimumHeight(25)
         left_panel.addWidget(self.progress_bar)
 
         left_panel.addSpacing(10)
 
+        # Training Configuration section
+        config_group = QtWidgets.QGroupBox()
+        config_layout = QtWidgets.QVBoxLayout()
+
+        self.loss_function_label = QtWidgets.QLabel("Loss Function:  -")
+        config_layout.addWidget(self.loss_function_label)
+
+        self.lr_scheduler_label = QtWidgets.QLabel("LR Scheduler:   -")
+        config_layout.addWidget(self.lr_scheduler_label)
+
+        # Learning rate (moved from Training Metrics)
+        self.learning_rate_label = QtWidgets.QLabel("Learning Rate:     -.------")
+        config_layout.addWidget(self.learning_rate_label)
+
+        # 3D training progress mini-graph (x=Epoch, y=LR, z=mIoU)
+        self._lr_formatter = FuncFormatter(lambda x, _: f"{x:.0e}")
+        self.lr_figure = Figure(figsize=(3, 2.0), dpi=100)
+        self.lr_canvas = FigureCanvas(self.lr_figure)
+        self.lr_canvas.setMinimumHeight(160)
+        self.lr_canvas.setMaximumHeight(220)
+        self.ax_lr = self.lr_figure.add_subplot(111, projection='3d')
+        self.ax_lr.set_xlabel('Epoch', fontsize=6, labelpad=1)
+        self.ax_lr.set_ylabel('LR', fontsize=6, labelpad=1)
+        self.ax_lr.set_zlabel('mIoU', fontsize=6, labelpad=1)
+        self.ax_lr.tick_params(axis='both', labelsize=5, pad=0)
+        self.ax_lr.tick_params(axis='z', labelsize=5, pad=0)
+        self.ax_lr.yaxis.set_major_formatter(self._lr_formatter)
+        self.ax_lr.view_init(elev=25, azim=-60)
+        self.lr_figure.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
+        self.lr_canvas.draw()
+        config_layout.addWidget(self.lr_canvas)
+
+        config_group.setLayout(config_layout)
+        left_panel.addWidget(config_group)
+
         # Metrics section
-        metrics_group = QtWidgets.QGroupBox("Training Metrics")
+        metrics_group = QtWidgets.QGroupBox()
         metrics_layout = QtWidgets.QVBoxLayout()
 
         # Training loss
@@ -163,23 +186,11 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         self.val_miou_label.setVisible(False)
         metrics_layout.addWidget(self.val_miou_label)
 
-        metrics_layout.addSpacing(5)
-
-        # Learning rate
-        self.learning_rate_label = QtWidgets.QLabel("Learning Rate:     -.------")
-        metrics_layout.addWidget(self.learning_rate_label)
-
         metrics_group.setLayout(metrics_layout)
         left_panel.addWidget(metrics_group)
 
-        # Separator
-        line2 = QtWidgets.QFrame()
-        line2.setFrameShape(QtWidgets.QFrame.HLine)
-        line2.setFrameShadow(QtWidgets.QFrame.Sunken)
-        left_panel.addWidget(line2)
-
         # GPU section
-        gpu_group = QtWidgets.QGroupBox("GPU Status")
+        gpu_group = QtWidgets.QGroupBox()
         gpu_layout = QtWidgets.QVBoxLayout()
 
         self.gpu_usage_label = QtWidgets.QLabel("GPU Usage:       --%")
@@ -194,14 +205,11 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         gpu_group.setLayout(gpu_layout)
         left_panel.addWidget(gpu_group)
 
-        # Separator
-        line3 = QtWidgets.QFrame()
-        line3.setFrameShape(QtWidgets.QFrame.HLine)
-        line3.setFrameShadow(QtWidgets.QFrame.Sunken)
-        left_panel.addWidget(line3)
+        left_panel.addStretch()
 
-        # Time info
+        # Time info (near bottom)
         time_layout = QtWidgets.QVBoxLayout()
+        time_layout.setSpacing(2)
 
         self.elapsed_time_label = QtWidgets.QLabel("Time Elapsed:    --m --s")
         time_layout.addWidget(self.elapsed_time_label)
@@ -210,8 +218,6 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         time_layout.addWidget(self.est_time_label)
 
         left_panel.addLayout(time_layout)
-
-        left_panel.addStretch()
 
         # Status label at bottom
         self.status_label = QtWidgets.QLabel("Waiting to start...")
@@ -352,6 +358,27 @@ class TrainingProgressWindow(QtWidgets.QDialog):
                                label='Validation', linewidth=1)
             self.ax_acc.legend(loc='lower right', fontsize=9)
 
+        # Update 3D mini-chart (x=Epoch, y=LR, z=mIoU)
+        self.ax_lr.clear()
+        self.ax_lr.set_xlabel('Epoch', fontsize=6, labelpad=1)
+        self.ax_lr.set_ylabel('LR', fontsize=6, labelpad=1)
+        self.ax_lr.set_zlabel('mIoU', fontsize=6, labelpad=1)
+        self.ax_lr.tick_params(axis='both', labelsize=5, pad=0)
+        self.ax_lr.tick_params(axis='z', labelsize=5, pad=0)
+        self.ax_lr.yaxis.set_major_formatter(self._lr_formatter)
+        self.ax_lr.view_init(elev=25, azim=-60)
+        n = min(len(self.lr_history), len(self.train_miou_history))
+        if n > 0:
+            epochs = self.epochs_history[:n]
+            lrs = self.lr_history[:n]
+            mious = self.train_miou_history[:n]
+            self.ax_lr.plot(epochs, lrs, mious, color='green', linewidth=1.5)
+            # Ribbon: drop lines from each point to the floor (z=0)
+            for i in range(n):
+                self.ax_lr.plot([epochs[i], epochs[i]], [lrs[i], lrs[i]],
+                               [0, mious[i]], color='green', alpha=0.2, linewidth=0.8)
+        self.lr_canvas.draw()
+
         # Adjust layout and refresh canvas
         try:
             self.figure.tight_layout()
@@ -386,8 +413,9 @@ class TrainingProgressWindow(QtWidgets.QDialog):
 
         # Update epoch label and progress bar
         self.epoch_label.setText(f"Epoch: {epoch} / {self.total_epochs}")
-        progress = int((epoch / self.total_epochs) * 100)
-        self.progress_bar.setValue(progress)
+        progress_pct = (epoch / self.total_epochs) * 100
+        self.progress_bar.setValue(int(progress_pct * 10))
+        self.progress_bar.setFormat(f"{progress_pct:.1f}%")
 
         # Update best values
         if train_loss < self.best_train_loss:
@@ -420,6 +448,7 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         # Update learning rate if provided
         if learning_rate is not None:
             self.learning_rate_label.setText(f"Learning Rate:     {learning_rate:.6f}")
+            self.lr_history.append(learning_rate)
 
         # Update time estimates
         elapsed = time.time() - self.start_time
@@ -453,6 +482,18 @@ class TrainingProgressWindow(QtWidgets.QDialog):
         """Mark training as started."""
         self.start_time = time.time()
         self.status_label.setText("Training started...")
+
+    def set_training_config(self, loss_function=None, lr_scheduler=None):
+        """Set training configuration labels shown in the UI.
+
+        Args:
+            loss_function: Name of the loss function (e.g. "Focal + Class Weights")
+            lr_scheduler: Name of the LR scheduler (e.g. "OneCycleLR")
+        """
+        if loss_function:
+            self.loss_function_label.setText(f"Loss Function:  {loss_function}")
+        if lr_scheduler:
+            self.lr_scheduler_label.setText(f"LR Scheduler:   {lr_scheduler}")
 
     def _on_cancel_clicked(self):
         """Handle cancel button click."""

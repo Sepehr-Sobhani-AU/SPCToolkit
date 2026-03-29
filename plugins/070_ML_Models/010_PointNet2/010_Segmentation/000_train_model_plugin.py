@@ -24,7 +24,6 @@ from sklearn.utils.class_weight import compute_class_weight
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 import importlib
@@ -59,6 +58,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
         "val_split": 0.2,
         "early_stopping_patience": 20,
         "loss_function": "Focal + Class Weights",
+        "scheduler": "ReduceLROnPlateau",
         "use_scene_validation": True,
         "val_data_dir": "training_data_seg_val",
         "use_random_sampling": True,
@@ -172,6 +172,18 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                 "label": "Loss Function",
                 "description": "Loss function for training"
             },
+            "scheduler": {
+                "type": "dropdown",
+                "options": {
+                    "OneCycleLR": "OneCycleLR (warmup + cosine decay, no restarts)",
+                    "CosineAnnealing": "Cosine Annealing (smooth decay to min LR)",
+                    "CosineWarmRestarts": "Cosine Annealing + Warm Restarts (periodic LR resets)",
+                    "ReduceLROnPlateau": "Reduce on Plateau (halve LR when val mIoU stalls)",
+                },
+                "default": self.last_params["scheduler"],
+                "label": "LR Scheduler",
+                "description": "Learning rate scheduling strategy"
+            },
             "use_random_sampling": {
                 "type": "bool",
                 "default": self.last_params.get("use_random_sampling", True),
@@ -193,6 +205,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
         val_split = float(params['val_split'])
         early_stopping_patience = int(params['early_stopping_patience'])
         loss_function = params.get('loss_function', 'Focal + Class Weights')
+        scheduler_name = params.get('scheduler', 'ReduceLROnPlateau')
         use_scene_validation = params.get('use_scene_validation', True)
         val_data_dir = params.get('val_data_dir', '').strip()
         use_random_sampling = params.get('use_random_sampling', True)
@@ -390,8 +403,25 @@ class TrainPointNet2SegPlugin(ActionPlugin):
             print(f"Point sampling: {sampling_mode}")
 
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-4)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6)
+
+            if scheduler_name == "OneCycleLR":
+                scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                    optimizer, max_lr=learning_rate, epochs=epochs,
+                    steps_per_epoch=len(train_loader), pct_start=0.05,
+                    anneal_strategy='cos', div_factor=10.0, final_div_factor=100.0)
+                step_scheduler_per_batch = True
+            elif scheduler_name == "CosineAnnealing":
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=epochs, eta_min=1e-6)
+                step_scheduler_per_batch = False
+            elif scheduler_name == "CosineWarmRestarts":
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer, T_0=20, T_mult=2, eta_min=1e-6)
+                step_scheduler_per_batch = False
+            else:  # ReduceLROnPlateau
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6)
+                step_scheduler_per_batch = False
 
             # Build loss function
             if loss_function == "Cross Entropy":
@@ -411,12 +441,15 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     weight=class_weights_tensor, gamma=2.0, ignore_index=-100,
                     label_smoothing=0.1)
             print(f"Loss function: {loss_function}")
+            print(f"LR Scheduler: {scheduler_name}")
 
             # Create progress window
             progress_window = TrainingProgressWindow(parent=main_window, total_epochs=epochs)
             progress_window.setWindowTitle(f"PointNet++ SSG Training - Run #{run_number}")
             progress_window.show()
             progress_window.training_started()
+            progress_window.set_training_config(
+                loss_function=loss_function, lr_scheduler=scheduler_name)
 
             screen_geometry = QtWidgets.QApplication.desktop().screenGeometry()
             x = (screen_geometry.width() - progress_window.width()) // 2
@@ -492,6 +525,9 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                         scaler.step(optimizer)
                         scaler.update()
 
+                        if step_scheduler_per_batch:
+                            scheduler.step()
+
                         train_loss += loss.item() * B
                         train_batch_count += B
                         preds = torch.argmax(logits, dim=2)
@@ -520,6 +556,10 @@ class TrainPointNet2SegPlugin(ActionPlugin):
 
                     with torch.no_grad(), torch.amp.autocast('cuda'):
                         for batch_features, batch_labels in val_loader:
+                            if progress_window.training_cancelled:
+                                training_state['was_cancelled'] = True
+                                break
+
                             batch_features = batch_features.to(device, non_blocking=True)
                             batch_labels = batch_labels.to(device, non_blocking=True)
 
@@ -536,6 +576,9 @@ class TrainPointNet2SegPlugin(ActionPlugin):
 
                             _pn_train_mod.TrainSegModelPlugin._update_confusion_matrix(
                                 val_confusion, preds, batch_labels, num_classes)
+
+                    if training_state['was_cancelled']:
+                        break
 
                     val_loss /= max(val_batch_count, 1)
                     val_acc = val_correct / max(val_total, 1)
@@ -592,6 +635,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                             'class_mapping': class_mapping,
                             'num_points': num_points,
                             'num_features': num_features,
+
                             'num_classes': num_classes,
                             'block_size': block_size,
                             'use_fps': use_fps,
@@ -605,7 +649,11 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     else:
                         epochs_without_improvement += 1
 
-                    scheduler.step(val_miou)
+                    if not step_scheduler_per_batch:
+                        if scheduler_name == "ReduceLROnPlateau":
+                            scheduler.step(val_miou)
+                        else:
+                            scheduler.step()
 
                     if epochs_without_improvement >= early_stopping_patience:
                         print(f"\nEarly stopping after {epoch+1} epochs")
@@ -661,6 +709,8 @@ class TrainPointNet2SegPlugin(ActionPlugin):
                     'final_val_acc': float(history['val_acc'][-1]) if history['val_acc'] else 0.0,
                     'learning_rate': learning_rate,
                     'batch_size': batch_size,
+                    'loss_function': loss_function,
+                    'lr_scheduler': scheduler_name,
                     'early_stopping_patience': early_stopping_patience,
                     'validation_split': val_split,
                     'random_seed': random_seed,
@@ -743,7 +793,7 @@ class TrainPointNet2SegPlugin(ActionPlugin):
         thread.start()
 
         # --- QTimer polling (main thread) ---
-        poll_timer = QtCore.QTimer()
+        poll_timer = QtCore.QTimer(progress_window)
 
         def _on_poll():
             """Poll training thread state and update UI."""
