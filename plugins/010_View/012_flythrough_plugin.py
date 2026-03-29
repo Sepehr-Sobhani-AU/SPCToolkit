@@ -425,23 +425,25 @@ class FlythroughDialog(QDialog):
             self._status_label.setText("Playback complete.")
             return
 
-        # Apply smoothstep to global progress so the flythrough starts and
-        # ends at zero speed. Per-segment durations still control relative pacing.
-        global_raw = self._frame_index / max(self._total_frames - 1, 1)
-        s = global_raw * global_raw * (3.0 - 2.0 * global_raw)
-        global_eased = s * s * (3.0 - 2.0 * s)  # smoothstep applied twice
-        eased_pos = global_eased * (self._total_frames - 1)
-
-        # Find current segment from the eased position
-        seg = 0
-        for i in range(len(self._seg_starts)):
-            if eased_pos >= self._seg_starts[i]:
+        # Find current segment
+        seg = len(self._seg_starts) - 1
+        for i in range(len(self._seg_starts) - 1, -1, -1):
+            if self._frame_index >= self._seg_starts[i]:
                 seg = i
-            else:
                 break
 
-        local = eased_pos - self._seg_starts[seg]
-        t = max(0.0, min(1.0, local / max(self._seg_frames[seg] - 1, 1)))
+        local = self._frame_index - self._seg_starts[seg]
+        t = local / max(self._seg_frames[seg] - 1, 1)
+
+        # Ease-in at the very start of the flythrough, ease-out at the very end.
+        # Middle segments stay linear (constant speed).
+        n_segs = len(self._seg_frames)
+        if n_segs == 1:
+            t = t * t * (3.0 - 2.0 * t)          # smoothstep: ease both ends
+        elif seg == 0:
+            t = t * t                              # quadratic ease-in
+        elif seg == n_segs - 1:
+            t = 1.0 - (1.0 - t) * (1.0 - t)      # quadratic ease-out
 
         last = len(self._anim_waypoints) - 1
         i0 = max(seg - 1, 0)
