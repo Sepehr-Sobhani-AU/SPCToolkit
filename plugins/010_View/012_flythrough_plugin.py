@@ -428,7 +428,8 @@ class FlythroughDialog(QDialog):
         # Apply smoothstep to global progress so the flythrough starts and
         # ends at zero speed. Per-segment durations still control relative pacing.
         global_raw = self._frame_index / max(self._total_frames - 1, 1)
-        global_eased = global_raw * global_raw * (3.0 - 2.0 * global_raw)
+        s = global_raw * global_raw * (3.0 - 2.0 * global_raw)
+        global_eased = s * s * (3.0 - 2.0 * s)  # smoothstep applied twice
         eased_pos = global_eased * (self._total_frames - 1)
 
         # Find current segment from the eased position
