@@ -26,7 +26,7 @@ class FileManager(QObject):
         super().__init__()  # Call the parent class constructor
         self.min_bound = None
         self.current_project_path = None
-        self.camera_waypoints = []
+        self.flythroughs = []  # List of {name, fps, waypoints: [{name, duration, ...}]}
 
     def _save_version_copy(self, filepath):
         """Create an auto-versioned copy of the saved project file.
@@ -138,7 +138,7 @@ class FileManager(QObject):
             'version': '1.0.0',
             'data_nodes': data_nodes,
             'tree_visibility': tree_visibility,
-            'camera_waypoints': self.camera_waypoints,
+            'flythroughs': self.flythroughs,
         }
 
         try:
@@ -197,7 +197,14 @@ class FileManager(QObject):
                 loaded_data_nodes = project_data['data_nodes']
                 # Extract tree visibility state if available
                 self._last_loaded_tree_visibility = project_data.get('tree_visibility', None)
-                self.camera_waypoints = project_data.get('camera_waypoints', [])
+                self.flythroughs = project_data.get('flythroughs', [])
+                # Backward compat: migrate old camera_waypoints to a single flythrough
+                if not self.flythroughs:
+                    old = project_data.get('camera_waypoints', [])
+                    if old:
+                        for wp in old:
+                            wp.setdefault('duration', 3.0)
+                        self.flythroughs = [{'name': 'Default', 'fps': 30, 'waypoints': old}]
             else:
                 # Handle older project files without version info
                 loaded_data_nodes = project_data
