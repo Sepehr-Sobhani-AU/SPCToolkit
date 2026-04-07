@@ -57,7 +57,7 @@ class FileManager(QObject):
         shutil.copy2(filepath, version_path)
 
     def open_point_cloud_file(self, parent=None):
-        """Opens a file dialog, loads a point cloud file, and returns the data."""
+        """Opens a file dialog, loads a PLY point cloud using plyfile, and emits the loaded signal."""
 
         options = QtWidgets.QFileDialog.Options()
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -68,29 +68,102 @@ class FileManager(QObject):
             options=options
         )
 
-        if file_path:
-            # Load the point cloud data using Open3D
-            point_cloud_data = o3d.io.read_point_cloud(file_path)
-            points = np.asarray(point_cloud_data.points, dtype=np.float64)
-            colors = np.asarray(point_cloud_data.colors, dtype=np.float32) if point_cloud_data.colors else None
-            normals = np.asarray(point_cloud_data.normals, dtype=np.float32) if point_cloud_data.normals else None
+        if not file_path:
+            return
 
-            # Find the min bound of the point cloud
-            if self.min_bound is None:
-                self.min_bound = np.min(points, axis=0)
+        try:
+            from plyfile import PlyData
+            ply = PlyData.read(file_path)
+            vertex = ply['vertex']
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(
+                None, "Import Failed",
+                f"Failed to load point cloud from:\n{file_path}\n\nThe file may be empty or corrupted.\n\nDetails: {e}"
+            )
+            return
 
-            # Translate the point cloud to the origin to save memory by using float32
-            points = (points - self.min_bound).astype(np.float32)
+        # Case-insensitive property map: lowercase_name -> actual_name
+        prop_names = {p.name.lower(): p.name for p in vertex.properties}
 
-            point_cloud = PointCloud(points=points, colors=colors, normals=normals)
+        # Coordinates (required)
+        x_col = prop_names.get('x')
+        y_col = prop_names.get('y')
+        z_col = prop_names.get('z')
+        if x_col is None or y_col is None or z_col is None:
+            QtWidgets.QMessageBox.warning(
+                None, "Import Failed",
+                f"Failed to load point cloud from:\n{file_path}\n\nNo x/y/z properties found in PLY header."
+            )
+            return
 
-            point_cloud.translation = -self.min_bound
-            point_cloud.name = file_path.split("/")[-1]
+        points = np.column_stack([
+            np.asarray(vertex[x_col], dtype=np.float64),
+            np.asarray(vertex[y_col], dtype=np.float64),
+            np.asarray(vertex[z_col], dtype=np.float64),
+        ])
 
-            # Emit signal with file path
-            self.point_cloud_loaded.emit(file_path, point_cloud)
-        else:
-            return None, None, None
+        if len(points) == 0:
+            QtWidgets.QMessageBox.warning(
+                None, "Import Failed",
+                f"Failed to load point cloud from:\n{file_path}\n\nThe file appears to contain no points."
+            )
+            return
+
+        # Colors (optional)
+        colors = None
+        r_col = prop_names.get('red') or prop_names.get('r')
+        g_col = prop_names.get('green') or prop_names.get('g')
+        b_col = prop_names.get('blue') or prop_names.get('b')
+        if r_col and g_col and b_col:
+            r = np.asarray(vertex[r_col], dtype=np.float32)
+            g = np.asarray(vertex[g_col], dtype=np.float32)
+            b = np.asarray(vertex[b_col], dtype=np.float32)
+            if r.max() > 1.0:
+                r, g, b = r / 255.0, g / 255.0, b / 255.0
+            colors = np.column_stack([r, g, b])
+
+        # Normals (optional)
+        normals = None
+        nx_col = prop_names.get('nx') or prop_names.get('normal_x')
+        ny_col = prop_names.get('ny') or prop_names.get('normal_y')
+        nz_col = prop_names.get('nz') or prop_names.get('normal_z')
+        if nx_col and ny_col and nz_col:
+            normals = np.column_stack([
+                np.asarray(vertex[nx_col], dtype=np.float32),
+                np.asarray(vertex[ny_col], dtype=np.float32),
+                np.asarray(vertex[nz_col], dtype=np.float32),
+            ])
+
+        # Extra per-point attributes (e.g. Intensity, GPS_Time from Paris-Lille-3D)
+        handled_lower = {x_col.lower(), y_col.lower(), z_col.lower()}
+        if r_col:
+            handled_lower.update({r_col.lower(), g_col.lower(), b_col.lower()})
+        if nx_col:
+            handled_lower.update({nx_col.lower(), ny_col.lower(), nz_col.lower()})
+
+        extra_attributes = {}
+        for lower_name, actual_name in prop_names.items():
+            if lower_name in handled_lower:
+                continue
+            try:
+                extra_attributes[actual_name] = np.asarray(vertex[actual_name])
+            except Exception:
+                pass
+
+        # Translate to origin (preserves float32 precision)
+        if self.min_bound is None:
+            self.min_bound = np.min(points, axis=0)
+        points = (points - self.min_bound).astype(np.float32)
+
+        # Build PointCloud
+        point_cloud = PointCloud(points=points, colors=colors, normals=normals)
+        point_cloud.translation = -self.min_bound
+        point_cloud.name = file_path.split("/")[-1]
+
+        for attr_name, attr_values in extra_attributes.items():
+            point_cloud.add_attribute(attr_name, attr_values)
+
+        self.point_cloud_loaded.emit(file_path, point_cloud)
 
     def save_project(self, data_nodes, parent=None, new_file=False):
         """
