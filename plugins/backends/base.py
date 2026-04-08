@@ -57,13 +57,14 @@ class KNNBackend(BaseBackend):
     """Abstract base class for K-Nearest Neighbors backends."""
 
     @abstractmethod
-    def query(self, points: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
+    def query(self, points: np.ndarray, k: int, batch_size: int = 100_000) -> Tuple[np.ndarray, np.ndarray]:
         """
         Find k nearest neighbors for each point.
 
         Args:
             points: (N, 3) array of XYZ coordinates
             k: Number of neighbors to find
+            batch_size: Number of query points to process per batch
 
         Returns:
             Tuple of:

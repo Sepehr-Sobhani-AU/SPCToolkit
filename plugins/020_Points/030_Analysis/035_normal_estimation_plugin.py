@@ -176,7 +176,7 @@ class NormalEstimationPlugin(ActionPlugin):
                 )
                 registry = global_variables.global_backend_registry
                 knn_backend = registry.get_knn()
-                distances, indices = knn_backend.query(points, k=k)
+                distances, indices = knn_backend.query(points, k=k, batch_size=batch_size)
 
                 use_radius = max_radius != float('inf')
                 if not use_radius:

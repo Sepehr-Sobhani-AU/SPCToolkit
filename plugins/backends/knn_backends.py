@@ -80,19 +80,31 @@ class ScipyKNN(KNNBackend):
     def is_gpu(self) -> bool:
         return False
 
-    def query(self, points: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Find k nearest neighbors using scipy KDTree on CPU."""
+    def query(self, points: np.ndarray, k: int, batch_size: int = 100_000) -> Tuple[np.ndarray, np.ndarray]:
+        """Find k nearest neighbors using scipy KDTree on CPU.
+
+        Builds the index on all points, then queries in batches to keep
+        peak memory bounded for large point clouds.
+        """
         self.log_execution("KNN")
 
         from scipy.spatial import KDTree
 
         start_time = time.time()
+        n_points = len(points)
         print(f"Using scipy KDTree for KNN")
-        print(f"Processing {len(points):,} points with k={k}")
+        print(f"Processing {n_points:,} points with k={k}, batch_size={batch_size:,}")
 
-        # Build KDTree and query
         tree = KDTree(points)
-        distances, indices = tree.query(points, k=k)
+
+        distances = np.empty((n_points, k), dtype=np.float32)
+        indices = np.empty((n_points, k), dtype=np.int64)
+
+        for start in range(0, n_points, batch_size):
+            end = min(start + batch_size, n_points)
+            d, idx = tree.query(points[start:end], k=k)
+            distances[start:end] = d.astype(np.float32)
+            indices[start:end] = idx.astype(np.int64)
 
         elapsed_time = time.time() - start_time
         print(f"KNN completed in {elapsed_time:.2f} seconds (scipy CPU)")
