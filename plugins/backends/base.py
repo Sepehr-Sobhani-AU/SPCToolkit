@@ -53,6 +53,28 @@ class DBSCANBackend(BaseBackend):
         pass
 
 
+class HDBSCANBackend(BaseBackend):
+    """Abstract base class for HDBSCAN clustering backends."""
+
+    @abstractmethod
+    def run(self, points: np.ndarray, min_cluster_size: int, min_samples: int,
+            cluster_selection_epsilon: float = 0.0, alpha: float = 1.0) -> np.ndarray:
+        """
+        Run HDBSCAN clustering on point cloud.
+
+        Args:
+            points: (N, 3) array of XYZ coordinates
+            min_cluster_size: Minimum cluster size
+            min_samples: Minimum samples for core point
+            cluster_selection_epsilon: Distance threshold for cluster merging
+            alpha: Distance scaling parameter
+
+        Returns:
+            np.ndarray: (N,) array of cluster labels (-1 for noise)
+        """
+        pass
+
+
 class KNNBackend(BaseBackend):
     """Abstract base class for K-Nearest Neighbors backends."""
 

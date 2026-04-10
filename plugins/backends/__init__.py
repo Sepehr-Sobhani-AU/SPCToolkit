@@ -12,6 +12,7 @@ Backends are selected automatically by BackendRegistry based on available hardwa
 from .base import (
     BaseBackend,
     DBSCANBackend,
+    HDBSCANBackend,
     KNNBackend,
     MaskingBackend,
     EigenvalueBackend,
@@ -23,6 +24,12 @@ from .dbscan_backends import (
     CuMLDBSCAN,
     SklearnDBSCAN,
     Open3DDBSCAN,
+)
+
+# HDBSCAN backends
+from .hdbscan_backends import (
+    CuMLHDBSCAN,
+    SklearnHDBSCAN,
 )
 
 # KNN backends
@@ -54,6 +61,7 @@ __all__ = [
     # Base classes
     'BaseBackend',
     'DBSCANBackend',
+    'HDBSCANBackend',
     'KNNBackend',
     'MaskingBackend',
     'EigenvalueBackend',
@@ -61,6 +69,9 @@ __all__ = [
     'CuMLDBSCAN',
     'SklearnDBSCAN',
     'Open3DDBSCAN',
+    # HDBSCAN
+    'CuMLHDBSCAN',
+    'SklearnHDBSCAN',
     # KNN
     'CuMLKNN',
     'ScipyKNN',

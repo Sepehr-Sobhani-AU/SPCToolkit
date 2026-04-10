@@ -1,4 +1,5 @@
 # plugins/analysis/hdbscan_plugin.py
+
 from typing import Dict, Any, List, Tuple
 import numpy as np
 
@@ -6,34 +7,26 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
+from core.services.batch_processor import BatchProcessor
 
 
 class HDBSCANPlugin(Plugin):
     """
-    HDBSCAN clustering algorithm plugin.
+    HDBSCAN clustering algorithm plugin with integrated batch processing.
 
     This plugin implements the Hierarchical Density-Based Spatial Clustering of Applications
-    with Noise (HDBSCAN) algorithm for clustering point clouds. HDBSCAN extends DBSCAN by
-    handling varying density clusters more effectively and automatically selecting the
-    appropriate density threshold.
+    with Noise (HDBSCAN) algorithm for clustering point clouds. It uses a spatial batch
+    processing approach to efficiently handle large point clouds by dividing them into
+    overlapping spatial regions.
+
+    The batch processing automatically uses a 10% overlap between spatial cells to ensure
+    proper cluster continuity across batch boundaries.
     """
 
     def get_name(self) -> str:
-        """
-        Return the name of this plugin.
-
-        Returns:
-            str: The unique name "hdbscan"
-        """
         return "hdbscan"
 
     def get_parameters(self) -> Dict[str, Any]:
-        """
-        Define the parameters needed for HDBSCAN.
-
-        Returns:
-            Dict[str, Any]: Parameter schema with types, defaults, and UI hints
-        """
         return {
             "min_cluster_size": {
                 "type": "int",
@@ -66,70 +59,89 @@ class HDBSCANPlugin(Plugin):
                 "max": 10.0,
                 "label": "Alpha",
                 "description": "Normalization factor for the mutual reachability distance calculation"
+            },
+            "target_batch_size": {
+                "type": "int",
+                "default": 250000,
+                "min": 50000,
+                "max": 1000000,
+                "label": "Target Batch Size",
+                "description": "Target number of points per batch for processing (smaller values use less memory)"
             }
         }
 
-    # plugins/analysis/hdbscan_plugin.py
     def execute(self, data_node: DataNode, params: Dict[str, Any]) -> Tuple[Any, str, List]:
         """
-        Execute HDBSCAN clustering on the point cloud.
+        Execute HDBSCAN clustering on the point cloud using spatial batch processing.
 
-        Args:
-            data_node (DataNode): The data node containing the point cloud
-            params (Dict[str, Any]): Parameters for HDBSCAN
-
-        Returns:
-            Tuple[Clusters, str, List]:
-                - Clusters object with the clustering results
-                - Result type identifier "cluster_labels"
-                - List containing the data_node's UID as a dependency
+        Progress is reported throughout the process via global_variables.global_progress.
         """
         from config.config import global_variables
 
-        # Extract the point cloud from the data node
         point_cloud: PointCloud = data_node.data
-
-        # Check if point_cloud has points
-        if not hasattr(point_cloud, 'points') or point_cloud.points is None:
-            raise ValueError("Point cloud has no points data")
-
-        # Check if HDBSCAN is available
-        try:
-            from hdbscan import HDBSCAN
-        except ImportError:
-            raise ImportError("HDBSCAN package is not installed. Please install it with: pip install hdbscan")
-
-        # Get points from the point cloud
         points = point_cloud.points
 
-        # Extract parameters
         min_cluster_size = params["min_cluster_size"]
         min_samples = params["min_samples"]
         cluster_selection_epsilon = params["cluster_selection_epsilon"]
         alpha = params["alpha"]
+        target_batch_size = params.get("target_batch_size", 250000)
 
-        # IMPORTANT: Do NOT set cluster_selection_epsilon to None
-        # The HDBSCAN implementation requires a float value >= 0
-        # If you want automatic selection, the documentation suggests using 0.0
+        # Fixed batch overlap at 10%
+        BATCH_OVERLAP = 0.1
 
-        # Initialize HDBSCAN clusterer
-        clusterer = HDBSCAN(
+        import time
+        start_time = time.time()
+
+        print(f"\n{'='*60}")
+        print(f"Starting batch-processed HDBSCAN")
+        print(f"{'='*60}")
+        print(f"  Total points:     {len(points):,}")
+        print(f"  Parameters:       min_cluster_size={min_cluster_size}, min_samples={min_samples}")
+        print(f"  Batch size:       {target_batch_size:,}")
+        print(f"{'='*60}\n")
+
+        def hdbscan_func(batch_points, eps, min_points, **kwargs):
+            """Wrapper for HDBSCAN to use with batch processor."""
+            batch_pc = PointCloud(points=batch_points)
+            return batch_pc.hdbscan(
+                min_cluster_size=kwargs['min_cluster_size'],
+                min_samples=min_points,
+                cluster_selection_epsilon=kwargs['cluster_selection_epsilon'],
+                alpha=kwargs['alpha']
+            )
+
+        batch_processor = BatchProcessor(
+            points=points,
+            batch_size=target_batch_size,
+            overlap_percent=BATCH_OVERLAP
+        )
+
+        cluster_labels = batch_processor.cluster_in_batches(
+            clustering_func=hdbscan_func,
+            min_points=min_samples,
+            eps=cluster_selection_epsilon,
             min_cluster_size=min_cluster_size,
-            min_samples=min_samples,
-            cluster_selection_epsilon=cluster_selection_epsilon,  # Use the float value directly
+            cluster_selection_epsilon=cluster_selection_epsilon,
             alpha=alpha
         )
 
-        # Perform clustering
-        global_variables.global_progress = (None, f"HDBSCAN clustering {len(points):,} points...")
-        cluster_labels = clusterer.fit_predict(points)
-        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
-        global_variables.global_progress = (90, f"HDBSCAN done — {n_clusters} clusters found")
-
-        # Create a Clusters object and set random colors
         clusters = Clusters(cluster_labels)
         clusters.set_random_color()
 
-        # Return results, type, and dependencies
+        elapsed_time = time.time() - start_time
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = list(cluster_labels).count(-1)
+
+        print(f"\n{'='*60}")
+        print(f"BATCH PROCESSING COMPLETED")
+        print(f"{'='*60}")
+        print(f"  Total points:      {len(points):,}")
+        print(f"  Clusters found:    {n_clusters}")
+        print(f"  Noise points:      {n_noise:,} ({100*n_noise/len(points):.1f}%)")
+        print(f"  Total time:        {elapsed_time:.2f} seconds")
+        print(f"  Points/second:     {len(points)/elapsed_time:,.0f}")
+        print(f"{'='*60}\n")
+
         dependencies = [data_node.uid]
         return clusters, "cluster_labels", dependencies

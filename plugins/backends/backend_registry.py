@@ -12,12 +12,15 @@ from typing import Dict
 from infrastructure.hardware_detector import HardwareInfo
 from plugins.backends import (
     DBSCANBackend,
+    HDBSCANBackend,
     KNNBackend,
     MaskingBackend,
     EigenvalueBackend,
     NormalEstimationBackend,
     CuMLDBSCAN,
     SklearnDBSCAN,
+    CuMLHDBSCAN,
+    SklearnHDBSCAN,
     CuMLKNN,
     ScipyKNN,
     CuPyMasking,
@@ -80,6 +83,14 @@ class BackendRegistry:
             self._backends['dbscan'] = SklearnDBSCAN()
             logger.info("DBSCAN backend: scikit-learn (CPU)")
 
+        # HDBSCAN: cuML (RAPIDS only) > sklearn
+        if self.scenario == "FULL GPU":
+            self._backends['hdbscan'] = CuMLHDBSCAN()
+            logger.info("HDBSCAN backend: cuML (GPU)")
+        else:
+            self._backends['hdbscan'] = SklearnHDBSCAN()
+            logger.info("HDBSCAN backend: scikit-learn (CPU)")
+
         # KNN: cuML (RAPIDS only) > scipy
         if self.scenario == "FULL GPU":
             self._backends['knn'] = CuMLKNN()
@@ -119,6 +130,10 @@ class BackendRegistry:
         """Get the DBSCAN clustering backend."""
         return self._backends['dbscan']
 
+    def get_hdbscan(self) -> HDBSCANBackend:
+        """Get the HDBSCAN clustering backend."""
+        return self._backends['hdbscan']
+
     def get_knn(self) -> KNNBackend:
         """Get the K-Nearest Neighbors backend."""
         return self._backends['knn']
@@ -153,6 +168,7 @@ class BackendRegistry:
         """
         return {
             'DBSCAN': self._backends['dbscan'].name,
+            'HDBSCAN': self._backends['hdbscan'].name,
             'KNN': self._backends['knn'].name,
             'Masking': self._backends['masking'].name,
             'Eigenvalues': self._backends['eigenvalue'].name,
@@ -169,6 +185,7 @@ class BackendRegistry:
         lines = [
             f"Backend Configuration ({self.scenario}):",
             f"  DBSCAN:             {report['DBSCAN']}",
+            f"  HDBSCAN:            {report['HDBSCAN']}",
             f"  KNN:                {report['KNN']}",
             f"  Masking:            {report['Masking']}",
             f"  Eigenvalues:        {report['Eigenvalues']}",

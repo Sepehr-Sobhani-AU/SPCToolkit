@@ -638,6 +638,92 @@ class PointCloud:
         print(f"  Processing time:  {elapsed_time:.2f} seconds")
         print(f"{'='*60}\n")
 
+    def hdbscan(self, min_cluster_size=5, min_samples=5,
+                cluster_selection_epsilon=0.0, alpha=1.0,
+                return_clusters_object=False):
+        """
+        Apply HDBSCAN clustering to the points.
+
+        Uses the backend registry to select the best available implementation
+        (GPU via cuML or CPU via scikit-learn).
+
+        Parameters:
+        - min_cluster_size (int): Minimum cluster size. Default is 5.
+        - min_samples (int): Number of samples in a neighborhood for core point. Default is 5.
+        - cluster_selection_epsilon (float): Distance threshold for cluster extraction. Default is 0.0.
+        - alpha (float): Distance scaling parameter. Default is 1.0.
+        - return_clusters_object (bool): If True, returns a Clusters object. Default is False.
+
+        Returns:
+        - labels (np.ndarray) or Clusters: Cluster labels, and optionally a Clusters object.
+        """
+        from config.config import global_variables
+
+        if len(self.points) == 0:
+            raise ValueError("The point cloud has no points for HDBSCAN clustering.")
+
+        backend_registry = global_variables.global_backend_registry
+
+        if backend_registry is not None:
+            hdbscan_backend = backend_registry.get_hdbscan()
+            labels = hdbscan_backend.run(
+                self.points, min_cluster_size, min_samples,
+                cluster_selection_epsilon, alpha
+            )
+        else:
+            labels = self._hdbscan_fallback(
+                min_cluster_size, min_samples,
+                cluster_selection_epsilon, alpha
+            )
+
+        if return_clusters_object:
+            from core.entities.clusters import Clusters
+            clusters = Clusters(labels)
+            clusters.set_random_color()
+            return clusters
+        return labels
+
+    def _hdbscan_fallback(self, min_cluster_size, min_samples,
+                          cluster_selection_epsilon, alpha):
+        """
+        Fallback HDBSCAN implementation when backend registry is not available.
+
+        Uses sklearn HDBSCAN. Used during testing or if the registry is not initialized.
+        """
+        import time
+        start_time = time.time()
+
+        from sklearn.cluster import HDBSCAN
+        import sklearn
+
+        print(f"Using scikit-learn HDBSCAN fallback (version {sklearn.__version__})")
+        print(f"Processing {len(self.points):,} points with min_cluster_size={min_cluster_size}, "
+              f"min_samples={min_samples}")
+
+        clusterer = HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            cluster_selection_epsilon=cluster_selection_epsilon,
+            alpha=alpha,
+            n_jobs=-1
+        )
+        labels = clusterer.fit_predict(self.points)
+
+        elapsed_time = time.time() - start_time
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_noise = np.sum(labels == -1)
+
+        print(f"\n{'='*60}")
+        print(f"HDBSCAN COMPLETED (scikit-learn fallback)")
+        print(f"{'='*60}")
+        print(f"  Total points:     {len(self.points):,}")
+        print(f"  Clusters found:   {n_clusters}")
+        print(f"  Noise points:     {n_noise:,} ({100*n_noise/len(self.points):.1f}%)")
+        print(f"  Processing time:  {elapsed_time:.2f} seconds")
+        print(f"{'='*60}\n")
+
+        return labels
+
     def density_downsample(self, voxel_size):
         """
         A density based downsampling of the cluster. It preserves
