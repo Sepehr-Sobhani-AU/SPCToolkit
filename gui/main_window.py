@@ -508,6 +508,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._progress_label.setText("")
         QtWidgets.QApplication.processEvents()
 
+    def show_cancel_button(self):
+        """Show the status-bar cancel button and clear any stale cancel flag.
+
+        The button is already wired to set `global_variables.global_cancel_event`.
+        ActionPlugins that manage their own background thread can call this to
+        expose cancel support, then poll the event from the worker thread.
+        """
+        global_variables.global_cancel_event.clear()
+        self._cancel_button.setText("Cancel")
+        self._cancel_button.setEnabled(True)
+        self._cancel_button.show()
+
+    def hide_cancel_button(self):
+        """Hide the status-bar cancel button and clear the cancel flag."""
+        self._cancel_button.hide()
+        global_variables.global_cancel_event.clear()
+
     def disable_menus(self):
         """
         Disable the entire menu bar to prevent user interaction during processing.
