@@ -610,17 +610,24 @@ class MainWindow(QtWidgets.QMainWindow):
                     memory_usage = self.controller.get_cache_memory_usage(uid)
                     self.tree_widget.update_cache_tooltip(uid, memory_usage)
 
+        # Collect CAD object wireframe/polyline data
+        mesh_verts, mesh_edges, mesh_colors = (
+            self.controller.rendering_coordinator.prepare_mesh_lines(visibility_status)
+        )
+
         # Send to viewer
         if vertices is not None:
             self.pcd_viewer_widget.set_branch_offsets(
                 self.controller.rendering_coordinator.branch_offsets
             )
             self.pcd_viewer_widget.set_point_vertices(vertices)
-            self.pcd_viewer_widget.update()
         else:
             self.pcd_viewer_widget.set_branch_offsets({})
             self.pcd_viewer_widget.set_points(None)
-            self.pcd_viewer_widget.update()
+
+        # Set line geometry (independent of point data)
+        self.pcd_viewer_widget.set_lines(mesh_verts, mesh_edges, mesh_colors)
+        self.pcd_viewer_widget.update()
 
         if zoom_extent and vertices is not None:
             self.pcd_viewer_widget.zoom_to_extent(preserve_rotation=True)

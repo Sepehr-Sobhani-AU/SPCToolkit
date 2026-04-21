@@ -60,7 +60,9 @@ class GLRenderingMixin:
         If no point cloud data is set, the method returns without rendering anything.
         """
 
-        if self.points is None or self.max_extent is None:
+        has_points = self.points is not None
+        has_lines = self.line_vertices is not None and self.line_indices is not None
+        if (not has_points and not has_lines) or self.max_extent is None:
             return
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
@@ -103,6 +105,9 @@ class GLRenderingMixin:
 
         # Render the point cloud
         self.render_point_cloud()
+
+        # Render line geometry (e.g. mesh wireframes)
+        self.render_lines()
 
         # Render picked points
         self.render_picked_points()
@@ -169,6 +174,38 @@ class GLRenderingMixin:
             logger.error(f"  Traceback:\n{traceback.format_exc()}")
             raise
 
+    def render_lines(self):
+        """
+        Render stored line geometry as GL_LINES.
+
+        Supports optional per-vertex colors via self.line_colors (Nx3 float32).
+        Falls back to uniform gray when no colors are set.
+
+        Uses immediate-mode drawing (matches the axis-symbol pattern). Line
+        count is typically in the thousands for previewed meshes, so per-frame
+        cost is acceptable without a dedicated VBO/IBO path.
+        """
+        if self.line_vertices is None or self.line_indices is None:
+            return
+
+        glLineWidth(1.0)
+        verts = self.line_vertices
+        colors = self.line_colors
+
+        glBegin(GL_LINES)
+        if colors is not None:
+            for idx in self.line_indices:
+                c = colors[idx]
+                glColor3f(c[0], c[1], c[2])
+                v = verts[idx]
+                glVertex3f(v[0], v[1], v[2])
+        else:
+            glColor3f(0.85, 0.85, 0.85)
+            for idx in self.line_indices:
+                v = verts[idx]
+                glVertex3f(v[0], v[1], v[2])
+        glEnd()
+
     def render_picked_points(self):
         """
         Render the picked points in the point cloud.
@@ -190,7 +227,7 @@ class GLRenderingMixin:
 
             if valid:
                 positions = self.points[valid, :3]
-                highlight_size = self.point_size * self.picked_point_highlight_size * 5
+                highlight_size = self.point_size * self.picked_point_highlight_size * self._PICKED_POINT_SIZE_MULTIPLIER
                 glPointSize(highlight_size)
                 glColor3f(*self.picked_point_highlight_color)
                 glBegin(GL_POINTS)

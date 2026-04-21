@@ -9,6 +9,75 @@ logger = logging.getLogger(__name__)
 class PointPickingMixin:
     """Point selection and deselection logic for PCDViewerWidget."""
 
+    @staticmethod
+    def _project_points_to_screen(pts_3d, mv, proj, viewport):
+        """Project an array of 3D points to 2D screen coordinates (Qt: top-left origin, Y-down).
+
+        Args:
+            pts_3d: (N, 3) float64 array of world coordinates.
+            mv: 4x4 model-view matrix (column-major transposed).
+            proj: 4x4 projection matrix (same convention).
+            viewport: (vp_x, vp_y, vp_w, vp_h).
+
+        Returns:
+            tuple: (screen_x, screen_y, valid_mask) arrays of shape (N,).
+        """
+        n = pts_3d.shape[0]
+        ones = np.ones((n, 1), dtype=np.float64)
+        pts_homo = np.hstack([pts_3d, ones])
+
+        clip = pts_homo @ mv @ proj
+        w = clip[:, 3]
+        valid_mask = w > 0
+
+        ndc_x = np.zeros(n, dtype=np.float64)
+        ndc_y = np.zeros(n, dtype=np.float64)
+        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
+        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
+
+        vp_x, vp_y, vp_w, vp_h = viewport[0], viewport[1], viewport[2], viewport[3]
+        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
+        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+
+        return screen_x, screen_y, valid_mask
+
+    def _unproject_mouse_to_nearest_point(self, mouse_pos):
+        """Unproject a mouse position through the depth buffer and find the nearest point.
+
+        Returns:
+            tuple: (point_index, point_3d_coords) or (None, None) if no point found.
+        """
+        self.makeCurrent()
+
+        modelview = self.model_view_matrix
+        projection = self.projection_matrix
+        viewport = self.viewport
+
+        win_x = mouse_pos.x()
+        win_y = viewport[3] - mouse_pos.y()
+
+        z_buffer = glReadPixels(int(win_x), int(win_y), 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT)
+        win_z = z_buffer[0][0]
+
+        if win_z == 1.0:
+            return None, None
+
+        world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
+        pick_point = np.array(world_coords[:3])
+
+        threshold = self.max_extent * self.picking_point_threshold_factor
+
+        if self._kdtree is not None:
+            min_distance, min_index = self._kdtree.query(pick_point, k=1)
+        else:
+            distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
+            min_index = np.argmin(distances)
+            min_distance = distances[min_index]
+
+        if min_distance < threshold:
+            return min_index, self.points[min_index, :3].copy()
+        return None, None
+
     def pick_point(self, mouse_pos, select=True):
         """
         Handle point picking or deselecting points in the point cloud.
@@ -80,55 +149,14 @@ class PointPickingMixin:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
         """
 
-        # Ensure OpenGL context is current
-        self.makeCurrent()
-
-        # Use stored matrices
-        modelview = self.model_view_matrix
-        projection = self.projection_matrix
-        viewport = self.viewport
-
-        # Get the window coordinates
-        win_x = mouse_pos.x()
-        win_y = viewport[3] - mouse_pos.y()  # Invert Y coordinate
-
-        # Read the depth value at the mouse position
-        z_buffer = glReadPixels(int(win_x), int(win_y), 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT)
-        win_z = z_buffer[0][0]
-
-        # Handle cases where the depth value is 1.0 (background)
-        if win_z == 1.0:
+        idx, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
+        if idx is None:
             return
 
-        # Unproject the window coordinates to get the world coordinates
-        world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
-        pick_point = np.array(world_coords[:3])
-
-        # Set a threshold to determine if a point is close enough to be considered picked
-        threshold = self.max_extent * self.picking_point_threshold_factor
-
-        # Find the closest point using KDTree for O(log n) performance
-        if self._kdtree is not None:
-            min_distance, min_distance_index = self._kdtree.query(pick_point, k=1)
-        else:
-            # Fallback to brute-force if KDTree not available
-            distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
-            min_distance_index = np.argmin(distances)
-            min_distance = distances[min_distance_index]
-
-        if min_distance < threshold:
-            # Filter: only allow selection within the selected branch
-            if not self._is_index_in_selected_branch(min_distance_index):
-                return
-            # Filter: skip points in clusters locked against selection
-            if self._is_point_selection_locked(min_distance_index):
-                return
-            # Filter: skip noise points (cluster label == -1)
-            if self._is_noise_point(min_distance_index):
-                return
-            # Add the index to the list of picked points
-            if min_distance_index not in self.picked_points_indices:
-                self.picked_points_indices.append(min_distance_index)
+        if not self._is_point_selectable(idx):
+            return
+        if idx not in self.picked_points_indices:
+            self.picked_points_indices.append(idx)
 
     def deselect_point_at(self, mouse_pos):
         """
@@ -200,39 +228,8 @@ class PointPickingMixin:
         if not self.picked_points_indices:
             return
 
-        # Ensure OpenGL context is current
-        self.makeCurrent()
-
-        # Use stored matrices
-        modelview = self.model_view_matrix
-        projection = self.projection_matrix
-        viewport = self.viewport
-
-        # Get the window coordinates
-        win_x = mouse_pos.x()
-        win_y = viewport[3] - mouse_pos.y()
-
-        # Read the depth value at the mouse position
-        z_buffer = glReadPixels(int(win_x), int(win_y), 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT)
-        win_z = z_buffer[0][0]
-
-        if win_z == 1.0:
-            return
-
-        # Unproject to world coordinates
-        world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
-        pick_point = np.array(world_coords[:3])
-
-        # Find the closest point using KDTree
-        threshold = self.max_extent * self.picking_point_threshold_factor
-        if self._kdtree is not None:
-            min_distance, clicked_index = self._kdtree.query(pick_point, k=1)
-        else:
-            distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
-            clicked_index = np.argmin(distances)
-            min_distance = distances[clicked_index]
-
-        if min_distance >= threshold:
+        clicked_index, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
+        if clicked_index is None:
             return
 
         # Get the color of the clicked point

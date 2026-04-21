@@ -132,6 +132,55 @@ class BranchSelectionMixin:
                 return False
         return False
 
+    def _filter_selection(self, indices):
+        """Apply the full selection filtering pipeline to an array of point indices.
+
+        Filters in order: branch membership, selection lock, noise points.
+
+        Args:
+            indices (np.ndarray): 1D array of candidate point indices.
+
+        Returns:
+            np.ndarray: Filtered array of valid point indices.
+        """
+        if indices.size == 0:
+            return indices
+
+        # 1. Branch membership filter
+        branch_ranges = self._get_selected_branch_index_range()
+        if branch_ranges is not None:
+            mask = np.zeros(indices.size, dtype=bool)
+            for start, end in branch_ranges:
+                mask |= (indices >= start) & (indices < end)
+            indices = indices[mask]
+
+        # 2. Selection lock filter
+        if indices.size > 0:
+            indices = self._filter_selection_locked(indices)
+
+        # 3. Noise filter
+        if indices.size > 0:
+            indices = self._filter_noise_points(indices)
+
+        return indices
+
+    def _is_point_selectable(self, index):
+        """Check whether a single point passes all selection filters.
+
+        Args:
+            index (int): Point index to check.
+
+        Returns:
+            bool: True if the point passes all filters.
+        """
+        if not self._is_index_in_selected_branch(index):
+            return False
+        if self._is_point_selection_locked(index):
+            return False
+        if self._is_noise_point(index):
+            return False
+        return True
+
     def _filter_noise_points(self, indices):
         """Filter out indices that are noise points (cluster label == -1)."""
         if not self._branch_offsets:

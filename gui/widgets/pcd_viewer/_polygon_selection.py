@@ -68,52 +68,18 @@ class PolygonSelectionMixin:
             polygon.copy(), mv.copy(), proj.copy(), tuple(self.viewport)
         ))
 
-        # Get all 3D points as homogeneous coordinates (row vectors)
-        pts_3d = self.points[:, :3].astype(np.float64)  # (N, 3)
-        n = pts_3d.shape[0]
-        ones = np.ones((n, 1), dtype=np.float64)
-        pts_homo = np.hstack([pts_3d, ones])  # (N, 4)
-
-        # Row-vector projection: clip = pts @ MV^T @ P^T  -> (N, 4)
-        clip = pts_homo @ mv @ proj  # (N, 4)
-
-        w = clip[:, 3]
-        # Filter points behind camera (w <= 0)
-        valid_mask = w > 0
-
-        # NDC coordinates
-        ndc_x = np.zeros(n, dtype=np.float64)
-        ndc_y = np.zeros(n, dtype=np.float64)
-        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
-        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
-
-        # Viewport transform: NDC -> Qt widget coordinates (top-left origin, Y down)
-        vp = self.viewport
-        vp_x, vp_y, vp_w, vp_h = vp[0], vp[1], vp[2], vp[3]
-        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
-        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y  # Flip Y for Qt coords
+        # Project all 3D points to screen coordinates
+        pts_3d = self.points[:, :3].astype(np.float64)
+        screen_x, screen_y, valid_mask = self._project_points_to_screen(
+            pts_3d, mv, proj, self.viewport
+        )
 
         # Point-in-polygon test (ray casting)
         inside = self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
 
-        # Get indices of selected points
+        # Get indices of selected points and apply selection filters
         new_indices = np.where(inside)[0]
-
-        # Filter to selected branch range(s)
-        branch_ranges = self._get_selected_branch_index_range()
-        if branch_ranges is not None and new_indices.size > 0:
-            mask = np.zeros(new_indices.size, dtype=bool)
-            for start, end in branch_ranges:
-                mask |= (new_indices >= start) & (new_indices < end)
-            new_indices = new_indices[mask]
-
-        # Filter out points in clusters locked against selection
-        if new_indices.size > 0:
-            new_indices = self._filter_selection_locked(new_indices)
-
-        # Filter out noise points (cluster label == -1)
-        if new_indices.size > 0:
-            new_indices = self._filter_noise_points(new_indices)
+        new_indices = self._filter_selection(new_indices)
 
         # Avoid duplicates
         if new_indices.size > 0:
@@ -144,27 +110,12 @@ class PolygonSelectionMixin:
             return None
 
         pts = np.asarray(points_3d, dtype=np.float64)
-        n = pts.shape[0]
-        ones = np.ones((n, 1), dtype=np.float64)
-        pts_homo = np.hstack([pts, ones])  # (N, 4)
-
-        combined_mask = np.zeros(n, dtype=bool)
+        combined_mask = np.zeros(pts.shape[0], dtype=bool)
 
         for polygon, mv, proj, viewport in self._selection_polygons:
-            vp_x, vp_y, vp_w, vp_h = viewport
-
-            clip = pts_homo @ mv @ proj  # (N, 4)
-            w = clip[:, 3]
-            valid_mask = w > 0
-
-            ndc_x = np.zeros(n, dtype=np.float64)
-            ndc_y = np.zeros(n, dtype=np.float64)
-            ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
-            ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
-
-            screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
-            screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
-
+            screen_x, screen_y, valid_mask = self._project_points_to_screen(
+                pts, mv, proj, viewport
+            )
             combined_mask |= self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
 
         return combined_mask
@@ -187,24 +138,9 @@ class PolygonSelectionMixin:
         # Only project the currently selected points (not all points)
         selected_indices = np.array(self.picked_points_indices, dtype=np.int64)
         pts_3d = self.points[selected_indices, :3].astype(np.float64)
-        n = pts_3d.shape[0]
-        ones = np.ones((n, 1), dtype=np.float64)
-        pts_homo = np.hstack([pts_3d, ones])
-
-        clip = pts_homo @ mv @ proj
-
-        w = clip[:, 3]
-        valid_mask = w > 0
-
-        ndc_x = np.zeros(n, dtype=np.float64)
-        ndc_y = np.zeros(n, dtype=np.float64)
-        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
-        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
-
-        vp = self.viewport
-        vp_x, vp_y, vp_w, vp_h = vp[0], vp[1], vp[2], vp[3]
-        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
-        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+        screen_x, screen_y, valid_mask = self._project_points_to_screen(
+            pts_3d, mv, proj, self.viewport
+        )
 
         inside = self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
 

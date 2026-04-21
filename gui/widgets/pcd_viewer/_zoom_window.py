@@ -48,7 +48,7 @@ class ZoomWindowMixin:
         x2, y2 = self._zoom_window_current
 
         # Minimum rectangle size check to avoid accidental clicks
-        if abs(x2 - x1) < 10 or abs(y2 - y1) < 10:
+        if abs(x2 - x1) < self._MIN_ZOOM_WINDOW_SIZE_PX or abs(y2 - y1) < self._MIN_ZOOM_WINDOW_SIZE_PX:
             self.exit_zoom_window_mode()
             return
 
@@ -58,28 +58,13 @@ class ZoomWindowMixin:
         rect_top = min(y1, y2)
         rect_bottom = max(y1, y2)
 
-        # Project all 3D points to screen coords (same approach as polygon selection)
+        # Project all 3D points to screen coordinates
+        pts_3d = self.points[:, :3].astype(np.float64)
         mv = np.array(self.model_view_matrix, dtype=np.float64)
         proj = np.array(self.projection_matrix, dtype=np.float64)
-
-        pts_3d = self.points[:, :3].astype(np.float64)
-        n = pts_3d.shape[0]
-        ones = np.ones((n, 1), dtype=np.float64)
-        pts_homo = np.hstack([pts_3d, ones])
-
-        clip = pts_homo @ mv @ proj
-        w = clip[:, 3]
-        valid_mask = w > 0
-
-        ndc_x = np.zeros(n, dtype=np.float64)
-        ndc_y = np.zeros(n, dtype=np.float64)
-        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
-        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
-
-        vp = self.viewport
-        vp_x, vp_y, vp_w, vp_h = vp[0], vp[1], vp[2], vp[3]
-        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
-        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+        screen_x, screen_y, valid_mask = self._project_points_to_screen(
+            pts_3d, mv, proj, self.viewport
+        )
 
         # Filter points inside the rectangle and in front of camera
         inside = (valid_mask
@@ -101,7 +86,7 @@ class ZoomWindowMixin:
 
         # Compute the new camera distance for this region
         half_fov_rad = np.radians(self.fov / 2)
-        new_camera_distance = new_max_extent / (2 * np.tan(half_fov_rad)) * 1.2
+        new_camera_distance = new_max_extent / (2 * np.tan(half_fov_rad)) * self._CAMERA_DISTANCE_PADDING
 
         # Guard: if the new distance is >= old, the rectangle doesn't zoom in
         old_effective_distance = self.camera_distance * self.zoom_factor

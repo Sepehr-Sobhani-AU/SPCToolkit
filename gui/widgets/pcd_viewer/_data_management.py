@@ -15,8 +15,81 @@ class DataManagementMixin:
         self.vbo = None
         self._kdtree = None  # Spatial index for fast point picking
 
+        # Line geometry (e.g. mesh wireframes, CAD polylines). Independent of point data.
+        self.line_vertices = None  # Nx3 float32
+        self.line_indices = None   # (2*M,) uint32 — flattened edge endpoint indices
+        self.line_colors = None    # Nx3 float32 per-vertex colors, or None for uniform gray
+
         # Initialize list to store indices of picked points
         self.picked_points_indices = []
+
+    def _release_point_data(self):
+        """Release current point cloud data and associated resources."""
+        from infrastructure.memory_manager import MemoryManager
+
+        if self.vbo is not None:
+            try:
+                self.vbo.delete()
+            except Exception as e:
+                logger.warning(f"  Error deleting VBO: {e}")
+            self.vbo = None
+        self.points = None
+        self._kdtree = None
+        MemoryManager.cleanup()
+
+    def _clear_display(self):
+        """Clear the display: release data and trigger repaint."""
+        self._release_point_data()
+        self._release_line_data()
+        self.update()
+
+    def _release_line_data(self):
+        """Drop any stored line geometry."""
+        self.line_vertices = None
+        self.line_indices = None
+        self.line_colors = None
+
+    def set_lines(self, vertices: np.ndarray, edges: np.ndarray,
+                  colors: np.ndarray = None):
+        """
+        Set wireframe line geometry to be rendered in the widget.
+
+        Line data is independent of point data — both can be displayed
+        simultaneously. When no point data is present, camera bounds are
+        recomputed from the line vertices so zoom_to_extent() works.
+
+        Args:
+            vertices: Nx3 float32 array of vertex positions, or None to clear.
+            edges: Mx2 integer array of vertex-index pairs defining line segments.
+            colors: Nx3 float32 per-vertex RGB colors in [0, 1], or None for
+                uniform gray (0.85, 0.85, 0.85).
+        """
+        if vertices is None or edges is None or len(edges) == 0:
+            self._release_line_data()
+            self.update()
+            return
+
+        assert vertices.ndim == 2 and vertices.shape[1] == 3, "vertices must be Nx3"
+        assert vertices.dtype == np.float32, f"vertices must be float32, not {vertices.dtype}"
+        assert edges.ndim == 2 and edges.shape[1] == 2, "edges must be Mx2"
+
+        self._release_line_data()
+
+        self.line_vertices = vertices
+        self.line_indices = edges.reshape(-1).astype(np.uint32, copy=False)
+        if colors is not None:
+            assert colors.shape == vertices.shape, "colors must match vertices shape Nx3"
+            self.line_colors = np.asarray(colors, dtype=np.float32)
+
+        # Compute camera bounds from lines only when no point data exists.
+        if self.points is None:
+            min_bounds = np.min(vertices, axis=0)
+            max_bounds = np.max(vertices, axis=0)
+            self.center = (min_bounds + max_bounds) / 2.0
+            self.size = max_bounds - min_bounds
+            self.max_extent = float(np.max(self.size)) or 1.0
+
+        self.update()
 
     def set_points(self, points: np.ndarray, colors: np.ndarray = None):
         """
@@ -34,23 +107,11 @@ class DataManagementMixin:
             AssertionError: If the `points` array does not have the correct shape or data type.
             AssertionError: If the `colors` array is provided but does not have the correct shape or data type.
         """
-        from infrastructure.memory_manager import MemoryManager
-
         logger.debug("PCDViewerWidget.set_points() called")
 
         if points is None:
-            # Clear display and release memory
             logger.debug("  Clearing display")
-            if self.vbo is not None:
-                try:
-                    self.vbo.delete()
-                except Exception as e:
-                    logger.warning(f"  Error deleting VBO: {e}")
-                self.vbo = None
-            self.points = None
-            self._kdtree = None  # Clear spatial index
-            MemoryManager.cleanup()
-            self.update()
+            self._clear_display()
             return
 
         # Validate inputs
@@ -68,15 +129,8 @@ class DataManagementMixin:
             colors = np.ones_like(points, dtype=np.float32)
 
         try:
-            # Release existing memory before allocating new arrays
-            if self.vbo is not None:
-                try:
-                    self.vbo.delete()
-                except Exception:
-                    pass
-                self.vbo = None
-            self.points = None
-            MemoryManager.cleanup()
+            # Release existing point data before allocating new arrays
+            self._release_point_data()
 
             # Create combined array (pre-allocated for efficiency)
             num_points = len(points)
@@ -115,23 +169,11 @@ class DataManagementMixin:
         Raises:
             AssertionError: If the array does not have shape Nx6 or is not float32.
         """
-        from infrastructure.memory_manager import MemoryManager
-
         logger.debug("PCDViewerWidget.set_point_vertices() called")
 
         if vertices is None:
-            # Clear display and release memory
             logger.debug("  Clearing display")
-            if self.vbo is not None:
-                try:
-                    self.vbo.delete()
-                except Exception as e:
-                    logger.warning(f"  Error deleting VBO: {e}")
-                self.vbo = None
-            self.points = None
-            self._kdtree = None  # Clear spatial index
-            MemoryManager.cleanup()
-            self.update()
+            self._clear_display()
             return
 
         # Validate input
@@ -142,15 +184,8 @@ class DataManagementMixin:
             raise ValueError(f"Vertices must be float32, not {vertices.dtype}")
 
         try:
-            # Release existing memory before assigning new array
-            if self.vbo is not None:
-                try:
-                    self.vbo.delete()
-                except Exception:
-                    pass
-                self.vbo = None
-            self.points = None
-            MemoryManager.cleanup()
+            # Release existing point data before assigning new array
+            self._release_point_data()
 
             # Direct assignment - no copying needed
             self.points = vertices

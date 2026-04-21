@@ -1,5 +1,5 @@
 import logging
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 
 logger = logging.getLogger(__name__)
 
@@ -193,19 +193,18 @@ class MouseInputMixin:
         if self.is_rotating:
             # Rotate around X and Y axes
             # / 10 is a scaling factor to adjust the rotation sensitivity
-            self.rot_x += dy * self.rotate_sensitivity / 10
-            self.rot_y += dx * self.rotate_sensitivity / 10
+            self.rot_x += dy * self.rotate_sensitivity / self._ROTATION_SENSITIVITY_DIVISOR
+            self.rot_y += dx * self.rotate_sensitivity / self._ROTATION_SENSITIVITY_DIVISOR
         elif self.is_rotating_z:
             # Rotate around Z-axis
-            self.rot_z += dx * self.rotate_sensitivity / 10  # Horizontal movement affects Z rotation
+            self.rot_z += dx * self.rotate_sensitivity / self._ROTATION_SENSITIVITY_DIVISOR
         elif self.is_panning:
             # Pan along X and Y axes
-            # / 10000 is a scaling factor to adjust the panning sensitivity
-            self.pan_x += dx * self.pan_sensitivity / 10000 * self.camera_distance
-            self.pan_y -= dy * self.pan_sensitivity / 10000 * self.camera_distance
+            self.pan_x += dx * self.pan_sensitivity / self._PAN_SENSITIVITY_DIVISOR * self.camera_distance
+            self.pan_y -= dy * self.pan_sensitivity / self._PAN_SENSITIVITY_DIVISOR * self.camera_distance
         elif self.is_panning_z:
             # Pan along Z-axis
-            self.pan_z += dy * self.pan_sensitivity / 10000 * self.camera_distance  # Vertical movement affects Z panning
+            self.pan_z += dy * self.pan_sensitivity / self._PAN_SENSITIVITY_DIVISOR * self.camera_distance
 
         self.last_mouse_pos = event.pos()
         self.update()
@@ -223,24 +222,11 @@ class MouseInputMixin:
         """
 
         delta = event.angleDelta().y()
-        # / 1000 is a scaling factor to be able to set the defult_zoom_sensitivity to a reasonable value
-        #
-        zoom_step = delta * self.zoom_sensitivity / 1000
+        zoom_step = delta * self.zoom_sensitivity / self._ZOOM_WHEEL_DIVISOR
         self.zoom_factor *= (1 + zoom_step)
         self.zoom_factor = max(self.zoom_min_factor, min(self.zoom_factor, self.zoom_max_factor))  # Limit zoom factor
 
-        # Show the axis symbol after zooming
-        self.show_axis = True
-
-        # Stop existing timer if any to prevent memory leak
-        if self.axis_timer is not None:
-            self.axis_timer.stop()
-
-        # Set a timer to hide the axis symbol after zooming is done
-        self.axis_timer = QTimer(self)
-        self.axis_timer.setSingleShot(True)
-        self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
-        self.axis_timer.start(500)  # 500 milliseconds delay to hide the axis symbol
+        self._show_axis_briefly()
 
         # Check if LOD needs to be updated
         self._on_zoom_changed()

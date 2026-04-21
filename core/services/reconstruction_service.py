@@ -97,7 +97,7 @@ class ReconstructionService:
         for node in path[1:]:
             if node.data_type == "point_cloud":
                 point_cloud = node.data
-            elif node.data_type == "container":
+            elif node.data_type in ("container", "cad_object"):
                 continue
             else:
                 point_cloud = self._apply_transformer(point_cloud, node)

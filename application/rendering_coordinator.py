@@ -153,6 +153,10 @@ class RenderingCoordinator:
                     logger.warning(f"Node not found: {uid}")
                     continue
 
+                # CAD objects render as line geometry, not points
+                if node.data_type == "cad_object":
+                    continue
+
                 # Reconstruct (uses cache if available)
                 point_cloud = self._reconstruction_service.reconstruct(uid)
                 n = point_cloud.size
@@ -234,7 +238,81 @@ class RenderingCoordinator:
                 return len(node.data.points)
         if node.data_type in ("class_reference", "container"):
             return 100000
+        if node.data_type == "cad_object":
+            return 0
         return 0
+
+    def prepare_mesh_lines(self, visibility_status: dict):
+        """
+        Collect wireframe/polyline data from visible CADObject nodes.
+
+        Scans visible nodes for ``data_type == "cad_object"``, reads their
+        geometry, applies each object's transform_matrix, and assembles the
+        result into arrays suitable for ``PCDViewerWidget.set_lines()``.
+
+        Returns:
+            Tuple of (vertices, edges, colors) or (None, None, None) when
+            there are no visible CAD objects.
+
+            - vertices: (V, 3) float32 — all transformed vertex positions.
+            - edges: (E, 2) uint32 — index pairs into *vertices*.
+            - colors: (V, 3) float32 — per-vertex RGB colours.
+        """
+        all_verts = []
+        all_edges = []
+        all_colors = []
+        vertex_offset = 0
+
+        for uid, vis in visibility_status.items():
+            if not vis:
+                continue
+            try:
+                node = self.data_nodes.get_node(uuid.UUID(uid))
+            except (ValueError, AttributeError):
+                continue
+            if node is None or node.data_type != "cad_object":
+                continue
+
+            cad = node.data
+            geom = cad.geometry
+            T = cad.transform_matrix
+
+            if cad.geometry_type == "mesh":
+                verts = np.asarray(geom["vertices"], dtype=np.float64)
+                edges = np.asarray(geom["edges"], dtype=np.uint32)
+            elif cad.geometry_type == "polyline":
+                verts = np.asarray(geom["vertices"], dtype=np.float64)
+                n = len(verts)
+                pairs = [[i, i + 1] for i in range(n - 1)]
+                if geom.get("closed", False) and n > 2:
+                    pairs.append([n - 1, 0])
+                if not pairs:
+                    continue
+                edges = np.array(pairs, dtype=np.uint32)
+            else:
+                continue
+
+            # Apply transform: world_verts = (verts @ R_S) + t
+            ones = np.ones((len(verts), 1), dtype=np.float64)
+            homo = np.hstack([verts, ones])            # (V, 4)
+            transformed = (T @ homo.T).T[:, :3]        # (V, 3)
+            transformed = transformed.astype(np.float32)
+
+            # Offset edge indices for the combined array
+            all_verts.append(transformed)
+            all_edges.append(edges + vertex_offset)
+            all_colors.append(
+                np.tile(cad.color, (len(transformed), 1))
+            )
+            vertex_offset += len(transformed)
+
+        if not all_verts:
+            return None, None, None
+
+        vertices = np.concatenate(all_verts, axis=0)
+        edges = np.concatenate(all_edges, axis=0)
+        colors = np.concatenate(all_colors, axis=0)
+        return vertices, edges, colors
 
     @staticmethod
     def _calculate_point_cloud_memory(point_cloud) -> str:

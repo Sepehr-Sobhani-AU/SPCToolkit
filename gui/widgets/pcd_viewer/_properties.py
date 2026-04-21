@@ -36,6 +36,16 @@ class ViewerPropertiesMixin:
         self._default_pan_y = 0.0
         self._default_pan_z = 0.0
 
+        # Internal constants for interaction scaling
+        self._ROTATION_SENSITIVITY_DIVISOR = 10
+        self._PAN_SENSITIVITY_DIVISOR = 10000
+        self._ZOOM_WHEEL_DIVISOR = 1000
+        self._AXIS_DISPLAY_DURATION_MS = 500
+        self._CAMERA_DISTANCE_PADDING = 1.2
+        self._MIN_ZOOM_WINDOW_SIZE_PX = 10
+        self._LOD_RATE_CHANGE_THRESHOLD = 0.05
+        self._PICKED_POINT_SIZE_MULTIPLIER = 5
+
     @property
     def point_size(self):
         """

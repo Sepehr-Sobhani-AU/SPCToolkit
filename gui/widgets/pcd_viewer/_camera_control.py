@@ -2,8 +2,6 @@ import logging
 import traceback
 import numpy as np
 from PyQt5.QtCore import QTimer
-from OpenGL.GL import glReadPixels, GL_DEPTH_COMPONENT, GL_FLOAT
-from OpenGL.GLU import gluUnProject
 
 from config.config import global_variables
 from application.lod_manager import LODManager
@@ -39,6 +37,16 @@ class CameraControlMixin:
         self.projection_matrix = np.identity(4)
         self.viewport = np.array([0, 0, self.width(), self.height()], dtype=np.int32)
 
+    def _show_axis_briefly(self):
+        """Show the axis symbol and schedule it to hide after a delay."""
+        self.show_axis = True
+        if self.axis_timer is not None:
+            self.axis_timer.stop()
+        self.axis_timer = QTimer(self)
+        self.axis_timer.setSingleShot(True)
+        self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
+        self.axis_timer.start(self._AXIS_DISPLAY_DURATION_MS)
+
     def update_rotation_center(self, mouse_pos):
         """
         Update the centre of rotation based on the given mouse position.
@@ -52,44 +60,8 @@ class CameraControlMixin:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
         """
 
-        # Ensure OpenGL context is current
-        self.makeCurrent()
-
-        # Use stored matrices
-        modelview = self.model_view_matrix
-        projection = self.projection_matrix
-        viewport = self.viewport
-
-        # Get the window coordinates
-        win_x = mouse_pos.x()
-        win_y = viewport[3] - mouse_pos.y()  # Invert Y coordinate
-
-        # Read the depth value at the mouse position
-        z_buffer = glReadPixels(int(win_x), int(win_y), 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT)
-        win_z = z_buffer[0][0]
-
-        # Handle cases where the depth value is 1.0 (background)
-        if win_z == 1.0:
-            # No depth information; do not update center
-            return
-
-        # Unproject the window coordinates to get the world coordinates
-        world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
-        click_point = np.array(world_coords[:3])
-
-        # Set a threshold to determine if a point is close enough
-        threshold = self.max_extent * self.picking_point_threshold_factor
-
-        # Find the closest point using KDTree for O(log n) performance
-        if self._kdtree is not None:
-            min_distance, min_distance_index = self._kdtree.query(click_point, k=1)
-        else:
-            # Fallback to brute-force if KDTree not available
-            distances = np.linalg.norm(self.points[:, :3] - click_point, axis=1)
-            min_distance_index = np.argmin(distances)
-            min_distance = distances[min_distance_index]
-
-        if min_distance < threshold:
+        min_distance_index, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
+        if min_distance_index is not None:
             # Save old center before updating
             old_center = self.center.copy()
             new_center = self.points[min_distance_index, :3].copy()
@@ -108,14 +80,8 @@ class CameraControlMixin:
             self.center = new_center
 
             # Show axis briefly at new center + repaint
-            self.show_axis = True
+            self._show_axis_briefly()
             self.update()
-            if self.axis_timer is not None:
-                self.axis_timer.stop()
-            self.axis_timer = QTimer(self)
-            self.axis_timer.setSingleShot(True)
-            self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
-            self.axis_timer.start(500)
 
     def reset_view(self):
         """
@@ -173,18 +139,22 @@ class CameraControlMixin:
         """
         logger.debug("zoom_to_extent() called")
 
-        # Check if points are available
-        if self.points is None or len(self.points) == 0:
-            logger.debug("  No points to zoom to")
+        # Choose the geometry source: prefer points, fall back to line vertices
+        if self.points is not None and len(self.points) > 0:
+            source = self.points[:, :3]
+        elif getattr(self, 'line_vertices', None) is not None and len(self.line_vertices) > 0:
+            source = self.line_vertices
+        else:
+            logger.debug("  No geometry to zoom to")
             return
 
-        logger.debug(f"  Processing {len(self.points)} points")
+        logger.debug(f"  Processing {len(source)} vertices")
 
         try:
-            # Calculate bounding box of visible points
+            # Calculate bounding box of visible geometry
             logger.debug("  Calculating bounding box...")
-            min_bounds = np.min(self.points[:, :3], axis=0)
-            max_bounds = np.max(self.points[:, :3], axis=0)
+            min_bounds = np.min(source, axis=0)
+            max_bounds = np.max(source, axis=0)
 
             # Calculate center, size, and maximum extent
             self.center = (min_bounds + max_bounds) / 2.0
@@ -201,7 +171,7 @@ class CameraControlMixin:
 
             # Calculate optimal camera distance based on FOV and bounding box
             half_fov_rad = np.radians(self.fov / 2)
-            self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * 1.2  # 20% padding
+            self.default_camera_distance = self.max_extent / (2 * np.tan(half_fov_rad)) * self._CAMERA_DISTANCE_PADDING
             self.camera_distance = self.default_camera_distance
 
             logger.debug(f"  Camera distance: {self.camera_distance}")
@@ -227,25 +197,14 @@ class CameraControlMixin:
             self.zoom_factor = 1.0
             self.default_zoom_factor = 1.0
 
-            # Show axis briefly for orientation
-            self.show_axis = True
-
             # Note: Do NOT reset _current_sample_rate here - it was set by DataManager
             # during render to respect the point budget. Resetting would cause
             # _on_zoom_changed to trigger an unnecessary (and potentially OOM) re-render.
 
-            # Update the view
+            # Show axis briefly for orientation and update view
+            self._show_axis_briefly()
             logger.debug("  Updating view...")
             self.update()
-
-            # Set a timer to hide the axis after a short time
-            if hasattr(self, 'axis_timer') and self.axis_timer is not None:
-                self.axis_timer.stop()
-
-            self.axis_timer = QTimer(self)
-            self.axis_timer.setSingleShot(True)
-            self.axis_timer.timeout.connect(self.hide_axis_after_zoom)
-            self.axis_timer.start(500)  # 500ms delay
 
             logger.debug("  zoom_to_extent() completed")
 
@@ -297,7 +256,7 @@ class CameraControlMixin:
         # IMPORTANT: Only re-render if DECREASING detail (zooming out)
         # Never increase detail dynamically - it risks OOM on large datasets
         # Users who want more detail should adjust point_budget or hide branches
-        if new_rate < self._current_sample_rate - 0.05:
+        if new_rate < self._current_sample_rate - self._LOD_RATE_CHANGE_THRESHOLD:
             logger.debug(f"LOD: {self._current_sample_rate:.1%} -> {new_rate:.1%} (zoom out)")
             self._current_sample_rate = new_rate
             main_window = global_variables.global_main_window
