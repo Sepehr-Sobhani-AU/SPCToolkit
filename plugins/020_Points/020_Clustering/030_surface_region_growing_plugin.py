@@ -14,6 +14,7 @@ Workflow:
 6. Returns a new Clusters branch: label 0 = grown surface, -1 = non-surface
 """
 
+import logging
 import threading
 import time
 import numpy as np
@@ -25,6 +26,8 @@ from PyQt5.QtWidgets import QMessageBox, QApplication
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.clusters import Clusters
+
+logger = logging.getLogger(__name__)
 
 
 class SurfaceRegionGrowingPlugin(ActionPlugin):
@@ -42,15 +45,6 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
                 "label": "Voxel Size",
                 "description": "Uniform voxel edge length in world units. "
                                "Should match approximate point spacing."
-            },
-            "neighbor_radius": {
-                "type": "int",
-                "default": 1,
-                "min": 1,
-                "max": 5,
-                "label": "Neighbor Radius (voxels)",
-                "description": "Chebyshev voxel radius to search for candidate points "
-                               "around each boundary voxel."
             },
             "distance_threshold": {
                 "type": "float",
@@ -93,14 +87,25 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
                 "default": 20.0,
                 "min": 0.0,
                 "max": 90.0,
-                "label": "Max Normal Deviation (deg)",
-                "description": "Maximum angle between a RANSAC plane's normal and the "
-                               "reference normal (mean of picked point and its K seed "
-                               "neighbors). 90° disables the gate."
+                "label": "Max Normal Angle (deg)",
+                "description": "Maximum angle (on |cos|) between (a) boundary-voxel and "
+                               "candidate-voxel planes, and (b) optionally the reference "
+                               "normal and each boundary plane. 90° disables the gate."
+            },
+            "use_ref_normal_gate": {
+                "type": "bool",
+                "default": True,
+                "label": "Gate by Reference Normal",
+                "description": "If enabled, boundary-voxel RANSAC planes must also "
+                               "satisfy the angle threshold against the seed-cluster "
+                               "reference normal."
             },
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
+        logger.info("SurfaceRegionGrowingPlugin.execute() called")
+        logger.debug(f"Params: {params}")
+
         controller = global_variables.global_application_controller
         viewer_widget = global_variables.global_pcd_viewer_widget
         tree_widget = global_variables.global_tree_structure_widget
@@ -108,10 +113,12 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         # --- Validate: exactly one branch selected ---
         selected_branches = controller.selected_branches
         if not selected_branches:
+            logger.warning("No branch selected")
             QMessageBox.warning(main_window, "No Branch Selected",
                                 "Please select a cluster_labels branch.")
             return
         if len(selected_branches) > 1:
+            logger.warning(f"Multiple branches selected: {len(selected_branches)}")
             QMessageBox.warning(main_window, "Multiple Branches",
                                 "Please select only ONE cluster_labels branch.")
             return
@@ -120,6 +127,10 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         node = controller.get_node(selected_uid)
 
         if node is None or node.data_type != "cluster_labels":
+            logger.warning(
+                f"Invalid branch: node={node}, "
+                f"data_type={getattr(node, 'data_type', None)}"
+            )
             QMessageBox.warning(main_window, "Invalid Branch",
                                 "Please select a cluster_labels branch "
                                 "(output of DBSCAN or similar).")
@@ -128,6 +139,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         # --- Validate: a point must be picked ---
         picked_indices = viewer_widget.picked_points_indices
         if not picked_indices:
+            logger.warning("No picked point in viewer")
             QMessageBox.warning(main_window, "No Point Selected",
                                 "Shift+click a point on the seed surface cluster "
                                 "in the viewer, then run this plugin.")
@@ -136,22 +148,29 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         # --- Determine seed cluster ID from picked point ---
         picked_idx = picked_indices[0]
         if picked_idx >= len(viewer_widget.points):
+            logger.warning(
+                f"Picked index {picked_idx} out of range "
+                f"(viewer has {len(viewer_widget.points)} points)"
+            )
             QMessageBox.warning(main_window, "Invalid Pick",
                                 "Picked point index is out of range. "
                                 "Please Shift+click again.")
             return
 
         picked_xyz = viewer_widget.points[picked_idx, :3].astype(np.float32)
+        logger.debug(f"Picked point idx={picked_idx} xyz={picked_xyz.tolist()}")
 
         try:
             clusters_pc = controller.reconstruct(selected_uid)
         except Exception as e:
+            logger.error(f"Failed to reconstruct clusters branch {selected_uid}: {e}")
             QMessageBox.critical(main_window, "Reconstruction Error",
                                  f"Failed to reconstruct clusters branch:\n{e}")
             return
 
         cluster_labels_attr = clusters_pc.get_attribute("cluster_labels")
         if cluster_labels_attr is None:
+            logger.warning("Reconstructed clusters branch has no cluster_labels attribute")
             QMessageBox.warning(main_window, "No Cluster Labels",
                                 "Reconstructed point cloud has no cluster_labels attribute.")
             return
@@ -161,8 +180,14 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         kd = cKDTree(clusters_pc.points)
         _, local_idx = kd.query(picked_xyz)
         seed_cluster_id = int(cluster_labels[local_idx])
+        seed_size = int((cluster_labels == seed_cluster_id).sum())
+        logger.info(
+            f"Seed cluster id={seed_cluster_id}, size={seed_size} points "
+            f"(local_idx={int(local_idx)})"
+        )
 
         if seed_cluster_id == -1:
+            logger.warning("Picked point is noise (label -1)")
             QMessageBox.warning(main_window, "Noise Point Selected",
                                 "The clicked point belongs to noise (label -1). "
                                 "Please Shift+click a non-noise cluster point.")
@@ -174,6 +199,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         # --- Reconstruct parent PointCloud ---
         parent_uid = node.parent_uid
         if parent_uid is None:
+            logger.warning("Clusters branch has no parent_uid")
             QMessageBox.warning(main_window, "No Parent",
                                 "The clusters branch has no parent PointCloud node.")
             return
@@ -181,6 +207,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         parent_uid_str = str(parent_uid)
         parent_node = controller.get_node(parent_uid_str)
         if parent_node is None:
+            logger.warning(f"Parent node not found for uid={parent_uid_str}")
             QMessageBox.warning(main_window, "Parent Not Found",
                                 "Could not find the parent PointCloud node.")
             return
@@ -188,15 +215,20 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         try:
             full_pc = controller.reconstruct(parent_uid_str)
         except Exception as e:
+            logger.error(f"Failed to reconstruct parent {parent_uid_str}: {e}")
             QMessageBox.critical(main_window, "Reconstruction Error",
                                  f"Failed to reconstruct parent point cloud:\n{e}")
             return
 
         full_points = full_pc.points.astype(np.float32)
         n_points = len(full_points)
+        logger.info(f"Parent point cloud: {n_points:,} points")
 
         # cluster_labels is aligned to the clusters_pc (same parent), same N
         if len(cluster_labels) != n_points:
+            logger.error(
+                f"Shape mismatch: labels={len(cluster_labels)}, parent={n_points}"
+            )
             QMessageBox.critical(main_window, "Shape Mismatch",
                                  f"Cluster labels ({len(cluster_labels)}) do not match "
                                  f"parent point count ({n_points}).")
@@ -209,6 +241,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         if parent_normals is None:
             parent_normals = getattr(full_pc, "normals", None)
         if parent_normals is None or len(parent_normals) == 0:
+            logger.warning("Parent point cloud has no normals")
             QMessageBox.warning(main_window, "No Normals",
                                 "Parent point cloud has no normals. Either import a "
                                 "cloud with embedded normals (e.g. PLY nx/ny/nz), or "
@@ -218,6 +251,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         anchor = np.asarray(parent_normals[local_idx], dtype=np.float32)
         anchor_n = np.linalg.norm(anchor)
         if anchor_n < 1e-10:
+            logger.warning(f"Picked point normal has zero length (norm={anchor_n})")
             QMessageBox.warning(main_window, "Invalid Normal",
                                 "Picked point has a zero-length normal.")
             return
@@ -244,14 +278,29 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
             ref_n = np.linalg.norm(ref_normal)
             ref_normal = anchor if ref_n < 1e-10 else (ref_normal / ref_n)
         ref_normal = ref_normal.astype(np.float32)
+        logger.info(
+            f"Reference normal: {ref_normal.tolist()} "
+            f"(from {len(seed_hits)} seed neighbors)"
+        )
 
         voxel_size = float(params["voxel_size"])
-        neighbor_radius = int(params["neighbor_radius"])
         distance_threshold = float(params["distance_threshold"])
         ransac_iterations = int(params["ransac_iterations"])
         ransac_inlier_threshold = float(params["ransac_inlier_threshold"])
         min_voxel_surface_points = int(params["min_voxel_surface_points"])
         max_normal_angle_deg = float(params["max_normal_angle_deg"])
+        use_ref_normal_gate = bool(params["use_ref_normal_gate"])
+
+        logger.info(
+            f"Starting region growing: "
+            f"voxel_size={voxel_size}, "
+            f"distance_threshold={distance_threshold}, "
+            f"ransac_iterations={ransac_iterations}, "
+            f"ransac_inlier_threshold={ransac_inlier_threshold}, "
+            f"min_voxel_surface_points={min_voxel_surface_points}, "
+            f"max_normal_angle_deg={max_normal_angle_deg}, "
+            f"use_ref_normal_gate={use_ref_normal_gate}"
+        )
 
         # --- Disable UI ---
         main_window.disable_menus()
@@ -267,25 +316,35 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         }
 
         def _grow():
+            t_start = time.time()
             try:
                 labels_out, stopped_early = _region_grow(
                     full_points,
                     cluster_labels,
                     seed_cluster_id,
                     voxel_size,
-                    neighbor_radius,
                     distance_threshold,
                     ransac_iterations,
                     ransac_inlier_threshold,
                     min_voxel_surface_points,
                     ref_normal,
                     max_normal_angle_deg,
+                    use_ref_normal_gate,
                 )
                 clusters = Clusters(labels_out)
                 clusters.set_random_color()
                 state['result'] = clusters
                 state['stopped_early'] = stopped_early
+                elapsed = time.time() - t_start
+                n_surface = int((labels_out == 0).sum())
+                logger.info(
+                    f"Region growing done in {elapsed:.2f}s: "
+                    f"surface={n_surface:,}/{len(labels_out):,} "
+                    f"({100.0 * n_surface / max(len(labels_out), 1):.2f}%), "
+                    f"stopped_early={stopped_early}"
+                )
             except Exception as e:
+                logger.exception(f"Region growing thread failed: {e}")
                 state['error'] = str(e)
             finally:
                 state['done'] = True
@@ -304,6 +363,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         main_window.hide_cancel_button()
 
         if state['error']:
+            logger.error(f"Region growing failed: {state['error']}")
             main_window.clear_progress()
             main_window.enable_menus()
             main_window.enable_tree()
@@ -339,7 +399,10 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         main_window.enable_menus()
         main_window.enable_tree()
 
+        logger.info(f"Result branch added: uid={result_uid}")
+
         if state['stopped_early']:
+            logger.info("Region growing was cancelled by user")
             QMessageBox.information(
                 main_window, "Cancelled",
                 "Region growing stopped early. Partial result saved as a new branch."
@@ -350,8 +413,19 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
 # Region growing implementation (GPU-resident voxel grid, batched RANSAC)
 # ---------------------------------------------------------------------------
 
-_SURFACE_POINTS_CAP = 512
-_BOUNDARY_CHUNK = 2048
+# Per candidate voxel, we retry RANSAC up to this many times when the
+# candidate-plane/boundary-plane angle gate fails. Implemented as
+# RETRIES × ransac_iterations total iterations with an angle-gate filter.
+_CANDIDATE_RANSAC_TRIES = 3
+
+# Max points per candidate voxel fed to RANSAC. The final surface-point
+# filter still uses ALL points in the voxel — this cap only limits the
+# point set RANSAC samples triples from and evaluates inliers against.
+_CANDIDATE_RANSAC_POINTS_CAP = 256
+
+_BOUNDARY_CHUNK = 1024
+# After flattening to (boundary, candidate) pairs, process this many per sub-batch.
+_CANDIDATE_CHUNK = 1024
 _REF_NORMAL_K = 30
 
 # 21-bit-per-axis packing: supports voxel grids with spans up to ~2M per axis.
@@ -381,13 +455,13 @@ def _region_grow(
     cluster_labels: np.ndarray,
     seed_cluster_id: int,
     voxel_size: float,
-    neighbor_radius: int,
     distance_threshold: float,
     ransac_iterations: int,
     ransac_inlier_threshold: float,
     min_voxel_surface_points: int,
     ref_normal: np.ndarray,
     max_normal_angle_deg: float,
+    use_ref_normal_gate: bool,
 ):
     """
     Grow the seed cluster across unassigned points using a GPU-resident voxel
@@ -409,8 +483,8 @@ def _region_grow(
     vk_min = voxel_keys_all.min(axis=0)
     vk_shifted_all = voxel_keys_all - vk_min  # non-negative
 
-    # Safety bound: leave room for neighbor-radius offsets staying in [0, 2^21).
-    span_limit = _BIT_AXIS_MAX - neighbor_radius
+    # Safety bound: leave room for ±1 neighbor offsets staying in [0, 2^21).
+    span_limit = _BIT_AXIS_MAX - 1
     if int(vk_shifted_all.max()) > span_limit:
         raise RuntimeError(
             f"Voxel grid span exceeds 21-bit packing limit "
@@ -444,6 +518,12 @@ def _region_grow(
     is_surface_voxel = voxel_surface_counts > 0
     is_unassigned_voxel = voxel_surface_counts < voxel_total_counts
 
+    logger.info(
+        f"Voxel grid: {V:,} voxels from {n:,} points, "
+        f"initial surface voxels={int(is_surface_voxel.sum()):,}, "
+        f"initial seed points={int(surface_mask_np.sum()):,}"
+    )
+
     # --- Upload to GPU (one-time) ---
     points_t = torch.from_numpy(points).to(device)
     voxel_point_starts_t = torch.from_numpy(voxel_point_starts).to(device)
@@ -456,7 +536,11 @@ def _region_grow(
     voxel_total_counts_t = torch.from_numpy(voxel_total_counts).to(device)
     is_surface_voxel_t = torch.from_numpy(is_surface_voxel).to(device)
     is_unassigned_voxel_t = torch.from_numpy(is_unassigned_voxel).to(device)
+    # Voxels that have already served as a boundary voxel — excluded from
+    # future candidate selection so we don't re-fit the same neighborhood.
+    is_processed_voxel_t = torch.zeros(V, dtype=torch.bool, device=device)
     ref_normal_t = torch.from_numpy(np.asarray(ref_normal, dtype=np.float32)).to(device)
+    vk_min_t = torch.from_numpy(np.asarray(vk_min, dtype=np.float64)).to(device).to(torch.float32)
     cos_threshold = float(np.cos(np.deg2rad(max_normal_angle_deg)))
 
     # --- Neighbor offset tables on GPU ---
@@ -468,21 +552,6 @@ def _region_grow(
          if not (dx == 0 and dy == 0 and dz == 0)],
         dtype=torch.int64, device=device,
     )
-    neigh_offsets_27 = torch.tensor(
-        [(dx, dy, dz)
-         for dx in (-1, 0, 1)
-         for dy in (-1, 0, 1)
-         for dz in (-1, 0, 1)],
-        dtype=torch.int64, device=device,
-    )
-    r = neighbor_radius
-    radius_offsets = torch.tensor(
-        [(dx, dy, dz)
-         for dx in range(-r, r + 1)
-         for dy in range(-r, r + 1)
-         for dz in range(-r, r + 1)],
-        dtype=torch.int64, device=device,
-    )
 
     cancel_event = global_variables.global_cancel_event
     stopped_early = False
@@ -491,27 +560,26 @@ def _region_grow(
     while True:
         if cancel_event.is_set():
             stopped_early = True
+            logger.info(f"Cancel requested at iteration {iteration}")
             break
 
-        # --- Find boundary voxels (vectorised on GPU) ---
-        surface_vidx = torch.nonzero(is_surface_voxel_t, as_tuple=False).squeeze(1)
+        # --- Find boundary voxels: unprocessed surface voxels with at least
+        #     one unassigned neighbor in the 26-neighborhood. ---
+        eligible = is_surface_voxel_t & ~is_processed_voxel_t
+        surface_vidx = torch.nonzero(eligible, as_tuple=False).squeeze(1)
         if surface_vidx.numel() == 0:
+            logger.info("No unprocessed surface voxels remain; terminating")
             break
 
-        neigh_keys = (
-            unique_voxel_keys_t[surface_vidx].unsqueeze(1)
-            + neigh_offsets_26.unsqueeze(0)
-        )  # (S, 26, 3)
-        in_range = ((neigh_keys >= 0) & (neigh_keys <= _BIT_AXIS_MAX)).all(dim=-1)
-        keys_safe = neigh_keys.clamp(min=0, max=_BIT_AXIS_MAX)
-        neigh_packed = _pack_keys_torch(keys_safe)
-        flat = neigh_packed.reshape(-1)
-        idx = torch.searchsorted(unique_packed_t, flat).clamp(max=V - 1)
-        hits = (unique_packed_t[idx] == flat) & in_range.reshape(-1)
-        valid_nb = hits & is_unassigned_voxel_t[idx]
-        boundary_vidx_t = torch.unique(idx[valid_nb])
+        nb_idx_all, nb_hits_all = _resolve_neighbors(
+            surface_vidx, unique_voxel_keys_t, unique_packed_t,
+            neigh_offsets_26, V,
+        )
+        has_unassigned_nb = (nb_hits_all & is_unassigned_voxel_t[nb_idx_all]).any(dim=1)
+        boundary_vidx_t = surface_vidx[has_unassigned_nb]
 
         if boundary_vidx_t.numel() == 0:
+            logger.info(f"No boundary voxels at iteration {iteration}; terminating")
             break
 
         newly_added_total = 0
@@ -528,16 +596,26 @@ def _region_grow(
                 points_t, surface_mask_t,
                 voxel_surface_counts_t, voxel_total_counts_t,
                 is_surface_voxel_t, is_unassigned_voxel_t,
-                neigh_offsets_27, radius_offsets,
+                is_processed_voxel_t,
+                neigh_offsets_26,
+                vk_min_t, voxel_size,
                 ransac_iterations, ransac_inlier_threshold, distance_threshold,
                 min_voxel_surface_points, ref_normal_t, cos_threshold,
+                use_ref_normal_gate,
             )
+            # Mark this chunk's boundary voxels as processed so they're not
+            # revisited on future iterations.
+            is_processed_voxel_t[chunk] = True
 
         if stopped_early:
             break
 
         iteration += 1
         total_surface = int(surface_mask_t.sum().item())
+        logger.info(
+            f"Iter {iteration}: boundary_voxels={B_total:,}, "
+            f"newly_added={newly_added_total:,}, total_surface={total_surface:,}"
+        )
         global_variables.global_progress = (
             None,
             f"Region growing — iter {iteration}, surface: {total_surface:,}, "
@@ -545,6 +623,7 @@ def _region_grow(
         )
 
         if newly_added_total == 0:
+            logger.info(f"Converged at iteration {iteration} (no new points added)")
             break
 
     surface_mask_final = surface_mask_t.cpu().numpy()
@@ -649,6 +728,92 @@ def _gather_points_compacted(
     return pts_out, abs_idx_out, counts
 
 
+def _gather_all_points_in_voxels(
+    vidx: torch.Tensor,
+    voxel_point_starts_t: torch.Tensor,
+    voxel_point_indices_t: torch.Tensor,
+    points_t: torch.Tensor,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """For each voxel in `vidx` (shape (C,)), gather ALL its points (no filter).
+
+    Returns:
+        pts      : (C, max_p, 3) float32 — padded with zeros beyond per-row count
+        abs_idx  : (C, max_p) int64     — absolute point indices; -1 in padded slots
+        counts   : (C,) int64           — per-voxel point count
+    """
+    C = int(vidx.numel())
+    starts = voxel_point_starts_t[vidx]          # (C,)
+    ends = voxel_point_starts_t[vidx + 1]        # (C,)
+    counts = ends - starts
+    if C == 0 or int(counts.max().item()) == 0:
+        empty_pts = torch.zeros(C, 0, 3, dtype=points_t.dtype, device=device)
+        empty_idx = torch.zeros(C, 0, dtype=torch.int64, device=device)
+        return empty_pts, empty_idx, counts.to(torch.int64)
+
+    max_p = int(counts.max().item())
+    col = torch.arange(max_p, device=device).unsqueeze(0)      # (1, max_p)
+    valid = col < counts.unsqueeze(1)                           # (C, max_p)
+    flat = (starts.unsqueeze(1) + col).clamp(
+        min=0, max=voxel_point_indices_t.numel() - 1
+    )
+    abs_idx = voxel_point_indices_t[flat]
+    abs_idx = torch.where(valid, abs_idx, torch.full_like(abs_idx, -1))
+    pts = points_t[abs_idx.clamp(min=0)]
+    pts = pts * valid.unsqueeze(-1).to(pts.dtype)
+    return pts, abs_idx, counts.to(torch.int64)
+
+
+def _batched_ransac(
+    pts: torch.Tensor,         # (N, max_p, 3) candidate points per row (zeros in padding)
+    counts: torch.Tensor,      # (N,) valid point count per row
+    iterations: int,
+    inlier_threshold: float,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Batched RANSAC over `iterations` trials per row.
+
+    Returns per-trial tensors (the caller picks best):
+        normals_unit : (N, I, 3)
+        d            : (N, I)
+        inliers      : (N, I) int64 — -1 for degenerate / out-of-range iterations
+        iter_valid   : (N, I) bool
+    """
+    N = int(pts.shape[0])
+    max_p = int(pts.shape[1])
+    I = iterations
+
+    counts_f = counts.clamp(min=1).to(torch.float32).view(N, 1, 1)
+    rand = torch.rand(N, I, 3, device=device)
+    max_idx = (counts - 1).clamp(min=0).view(N, 1, 1)
+    sample_idx = (rand * counts_f).long().clamp(max=max_idx)
+
+    gather_idx = sample_idx.unsqueeze(-1).expand(N, I, 3, 3)
+    pts_exp = pts.unsqueeze(1).expand(N, I, max_p, 3)
+    triples = torch.gather(pts_exp, 2, gather_idx)
+
+    p0 = triples[:, :, 0]
+    v1 = triples[:, :, 1] - p0
+    v2 = triples[:, :, 2] - p0
+    normals = torch.cross(v1, v2, dim=-1)
+    mag = torch.norm(normals, dim=-1, keepdim=True)
+    iter_valid = mag.squeeze(-1) > 1e-10
+    normals_unit = normals / mag.clamp(min=1e-10)
+    d = -(normals_unit * p0).sum(dim=-1)
+
+    dists = torch.einsum('npk,nik->npi', pts, normals_unit) + d.unsqueeze(1)
+    pts_valid = (
+        torch.arange(max_p, device=device).unsqueeze(0) < counts.unsqueeze(1)
+    ).unsqueeze(-1)
+    inliers = ((dists.abs() < inlier_threshold) & pts_valid).sum(dim=1)
+    inliers = torch.where(iter_valid, inliers, torch.full_like(inliers, -1))
+
+    # Enough valid points to even form a plane?
+    row_ok = counts >= 3
+    inliers = torch.where(row_ok.unsqueeze(1), inliers, torch.full_like(inliers, -1))
+    return normals_unit, d, inliers, iter_valid
+
+
 def _process_chunk_gpu(
     chunk: torch.Tensor,
     device: torch.device,
@@ -664,121 +829,202 @@ def _process_chunk_gpu(
     voxel_total_counts_t: torch.Tensor,
     is_surface_voxel_t: torch.Tensor,
     is_unassigned_voxel_t: torch.Tensor,
-    neigh_offsets_27: torch.Tensor,
-    radius_offsets: torch.Tensor,
+    is_processed_voxel_t: torch.Tensor,
+    neigh_offsets_26: torch.Tensor,
+    vk_min_t: torch.Tensor,
+    voxel_size: float,
     ransac_iterations: int,
     ransac_inlier_threshold: float,
     distance_threshold: float,
     min_voxel_surface_points: int,
     ref_normal_t: torch.Tensor,
     cos_threshold: float,
+    use_ref_normal_gate: bool,
 ) -> int:
     B = int(chunk.numel())
     if B == 0:
         return 0
-
-    # --- Surface points (self + 26 neighbors, surface-only, capped) ---
-    surf_vidx, surf_valid = _resolve_neighbors(
-        chunk, unique_voxel_keys_t, unique_packed_t, neigh_offsets_27, V
-    )
-    surf_padded_t, _, surf_cnt_t = _gather_points_compacted(
-        surf_vidx, surf_valid,
-        voxel_point_starts_t, voxel_point_indices_t, points_t, surface_mask_t,
-        take_surface=True, cap=_SURFACE_POINTS_CAP, device=device,
-    )
-
-    # --- Candidate points ((2r+1)^3 neighbors, unassigned-only, uncapped) ---
-    cand_vidx, cand_valid = _resolve_neighbors(
-        chunk, unique_voxel_keys_t, unique_packed_t, radius_offsets, V
-    )
-    cand_padded_t, cand_idx_t, cand_cnt_t = _gather_points_compacted(
-        cand_vidx, cand_valid,
-        voxel_point_starts_t, voxel_point_indices_t, points_t, surface_mask_t,
-        take_surface=False, cap=0, device=device,
-    )
-
-    if cand_cnt_t.numel() == 0 or int(cand_cnt_t.max().item()) == 0:
-        return 0
-
-    # --- Batched RANSAC (unchanged math, now fully on GPU) ---
     I = ransac_iterations
-    max_s = int(surf_padded_t.shape[1])
-    max_c = int(cand_padded_t.shape[1])
-    if max_s < 3:
+
+    # -------------------------------------------------------------------
+    # Step 1: Boundary-voxel RANSAC — surface points WITHIN each boundary
+    # voxel (no neighbor expansion).
+    # -------------------------------------------------------------------
+    b_self_vidx = chunk.view(B, 1)
+    b_self_valid = torch.ones(B, 1, dtype=torch.bool, device=device)
+    b_surf_pts, _, b_surf_cnt = _gather_points_compacted(
+        b_self_vidx, b_self_valid,
+        voxel_point_starts_t, voxel_point_indices_t, points_t, surface_mask_t,
+        take_surface=True, cap=0, device=device,
+    )
+    if b_surf_pts.shape[1] < 3:
         return 0
 
-    counts_float = surf_cnt_t.clamp(min=1).float().view(B, 1, 1)
-    rand = torch.rand(B, I, 3, device=device)
-    max_idx = (surf_cnt_t - 1).clamp(min=0).view(B, 1, 1)
-    sample_idx = (rand * counts_float).long().clamp(max=max_idx)
-
-    gather_idx = sample_idx.unsqueeze(-1).expand(B, I, 3, 3)
-    surf_exp = surf_padded_t.unsqueeze(1).expand(B, I, max_s, 3)
-    triples = torch.gather(surf_exp, 2, gather_idx)
-
-    p0 = triples[:, :, 0]
-    v1 = triples[:, :, 1] - p0
-    v2 = triples[:, :, 2] - p0
-    normals = torch.cross(v1, v2, dim=-1)
-    norms = torch.norm(normals, dim=-1, keepdim=True)
-    valid_iter = norms.squeeze(-1) > 1e-10
-    normals_unit = normals / norms.clamp(min=1e-10)
-    d = -(normals_unit * p0).sum(dim=-1)
-
-    dists = torch.einsum('bsk,bik->bsi', surf_padded_t, normals_unit) + d.unsqueeze(1)
-    dists = dists.abs()
-    pts_valid = (
-        torch.arange(max_s, device=device).unsqueeze(0) < surf_cnt_t.unsqueeze(1)
-    ).unsqueeze(-1)
-    inliers = ((dists < ransac_inlier_threshold) & pts_valid).sum(dim=1)
-    inliers = torch.where(valid_iter, inliers, torch.full_like(inliers, -1))
-
-    # Per-trial orientation gate (abs — plane normals have sign ambiguity).
-    normal_dots = (normals_unit * ref_normal_t.view(1, 1, 3)).sum(dim=-1).abs()
-    orientation_ok = normal_dots >= cos_threshold
-    inliers = torch.where(orientation_ok, inliers, torch.full_like(inliers, -1))
-
-    best_iter = inliers.argmax(dim=1)
-    best_count = inliers.gather(1, best_iter.unsqueeze(1)).squeeze(1)
-    best_normal = normals_unit.gather(
-        1, best_iter.view(B, 1, 1).expand(B, 1, 3)
-    ).squeeze(1)
-    best_d = d.gather(1, best_iter.unsqueeze(1)).squeeze(1)
-
-    valid_voxel = surf_cnt_t >= 3
-    voxel_has_plane = (best_count > 0) & valid_voxel
-
-    # --- Accept candidates ---
-    cand_validity = cand_idx_t >= 0
-    perp = (cand_padded_t * best_normal.unsqueeze(1)).sum(dim=-1) + best_d.unsqueeze(1)
-    accept = (
-        (perp.abs() < distance_threshold)
-        & cand_validity
-        & voxel_has_plane.unsqueeze(1)
+    b_normals, b_d_all, b_inliers, _ = _batched_ransac(
+        b_surf_pts, b_surf_cnt, I, ransac_inlier_threshold, device
     )
 
-    accepted = cand_idx_t[accept]  # (K,) absolute indices
+    # Skip voxels that don't meet the minimum surface-point count.
+    enough_pts = b_surf_cnt >= min_voxel_surface_points
+    b_inliers = torch.where(
+        enough_pts.unsqueeze(1), b_inliers, torch.full_like(b_inliers, -1)
+    )
+
+    # Optional reference-normal gate.
+    if use_ref_normal_gate:
+        ref_dot = (b_normals * ref_normal_t.view(1, 1, 3)).sum(dim=-1).abs()
+        ref_ok = ref_dot >= cos_threshold
+        b_inliers = torch.where(ref_ok, b_inliers, torch.full_like(b_inliers, -1))
+
+    best_b_iter = b_inliers.argmax(dim=1)
+    best_b_count = b_inliers.gather(1, best_b_iter.unsqueeze(1)).squeeze(1)
+    best_b_normal = b_normals.gather(
+        1, best_b_iter.view(B, 1, 1).expand(B, 1, 3)
+    ).squeeze(1)
+    best_b_d = b_d_all.gather(1, best_b_iter.unsqueeze(1)).squeeze(1)
+    boundary_has_plane = best_b_count > 0
+
+    if not bool(boundary_has_plane.any()):
+        return 0
+
+    # -------------------------------------------------------------------
+    # Step 2: Enumerate 26 neighbors of each boundary voxel; filter to
+    # unprocessed voxels that the boundary plane actually crosses.
+    # -------------------------------------------------------------------
+    nb_idx, nb_hits = _resolve_neighbors(
+        chunk, unique_voxel_keys_t, unique_packed_t, neigh_offsets_26, V,
+    )  # (B, 26)
+    nb_unprocessed = ~is_processed_voxel_t[nb_idx]
+    nb_available = nb_hits & nb_unprocessed
+
+    # Voxel centers in world coords: (shifted_key + vk_min + 0.5) * voxel_size.
+    nb_centers = (
+        unique_voxel_keys_t[nb_idx].to(torch.float32)
+        + vk_min_t.view(1, 1, 3)
+        + 0.5
+    ) * voxel_size
+    n_dot_c = (
+        nb_centers * best_b_normal.view(B, 1, 3)
+    ).sum(dim=-1) + best_b_d.view(B, 1)
+    # Exact plane/AABB test: a plane n·x + d = 0 crosses an axis-aligned
+    # cube of half-width h centered at c iff |n·c + d| ≤ h * (|nx|+|ny|+|nz|).
+    n_l1 = best_b_normal.abs().sum(dim=-1)  # (B,)
+    half_extent = 0.5 * voxel_size * n_l1   # (B,)
+    plane_crosses = n_dot_c.abs() < half_extent.view(B, 1)
+    is_cand_pair = (
+        nb_available & plane_crosses & boundary_has_plane.view(B, 1)
+    )
+
+    if not bool(is_cand_pair.any()):
+        return 0
+
+    # Flatten to (boundary, candidate) pairs and process in sub-batches to
+    # bound peak GPU memory (RANSAC tensors scale as C × max_p × 3·I).
+    bi_full, ki_full = torch.nonzero(is_cand_pair, as_tuple=True)
+    cand_vidx_full = nb_idx[bi_full, ki_full]
+    cand_b_normal_full = best_b_normal[bi_full]
+    cand_b_d_full = best_b_d[bi_full]
+    C_total = int(cand_vidx_full.numel())
+
+    accepted_chunks = []
+    total_iters = I * _CANDIDATE_RANSAC_TRIES
+
+    for c_start in range(0, C_total, _CANDIDATE_CHUNK):
+        c_end = min(c_start + _CANDIDATE_CHUNK, C_total)
+        cand_vidx = cand_vidx_full[c_start:c_end]
+        cand_b_normal = cand_b_normal_full[c_start:c_end]
+        cand_b_d = cand_b_d_full[c_start:c_end]
+        C = int(cand_vidx.numel())
+
+        # --- Step 3: gather ALL points in each candidate voxel ---
+        cand_all_pts, cand_all_idx, _cand_all_cnt = _gather_all_points_in_voxels(
+            cand_vidx, voxel_point_starts_t, voxel_point_indices_t, points_t, device,
+        )
+        if cand_all_pts.shape[1] == 0:
+            continue
+        max_p = int(cand_all_pts.shape[1])
+        cand_slot_valid = cand_all_idx >= 0
+
+        perp_b = (
+            cand_all_pts * cand_b_normal.view(C, 1, 3)
+        ).sum(dim=-1) + cand_b_d.view(C, 1)
+        is_cand_pt = (perp_b.abs() < distance_threshold) & cand_slot_valid
+
+        # Compact candidate points to the left and cap for RANSAC.
+        order = (~is_cand_pt).to(torch.int64).argsort(dim=1, stable=True)
+        pts_sorted = cand_all_pts.gather(
+            1, order.unsqueeze(-1).expand(C, max_p, 3)
+        )
+        cand_pt_cnt = is_cand_pt.sum(dim=1).clamp(max=_CANDIDATE_RANSAC_POINTS_CAP)
+        max_cand = int(cand_pt_cnt.max().item()) if C > 0 else 0
+        if max_cand < 3:
+            continue
+        cand_pts = pts_sorted[:, :max_cand, :]
+        cand_valid_pad = (
+            torch.arange(max_cand, device=device).unsqueeze(0)
+            < cand_pt_cnt.unsqueeze(1)
+        )
+        cand_pts = cand_pts * cand_valid_pad.unsqueeze(-1).to(cand_pts.dtype)
+
+        # --- Step 4: candidate-voxel RANSAC with angle gate ---
+        c_normals, c_d_all, c_inliers, _ = _batched_ransac(
+            cand_pts, cand_pt_cnt, total_iters, ransac_inlier_threshold, device,
+        )
+        ang_dot = (c_normals * cand_b_normal.view(C, 1, 3)).sum(dim=-1).abs()
+        angle_ok = ang_dot >= cos_threshold
+        c_inliers = torch.where(
+            angle_ok, c_inliers, torch.full_like(c_inliers, -1)
+        )
+
+        best_c_iter = c_inliers.argmax(dim=1)
+        best_c_count = c_inliers.gather(1, best_c_iter.unsqueeze(1)).squeeze(1)
+        best_c_normal = c_normals.gather(
+            1, best_c_iter.view(C, 1, 1).expand(C, 1, 3)
+        ).squeeze(1)
+        best_c_d = c_d_all.gather(1, best_c_iter.unsqueeze(1)).squeeze(1)
+        candidate_has_plane = best_c_count > 0
+        if not bool(candidate_has_plane.any()):
+            continue
+
+        # --- Step 5: surface points = ALL points in the candidate voxel
+        # within distance_threshold of the candidate plane ---
+        perp_c = (
+            cand_all_pts * best_c_normal.view(C, 1, 3)
+        ).sum(dim=-1) + best_c_d.view(C, 1)
+        is_surface_pt = (
+            (perp_c.abs() < distance_threshold)
+            & cand_slot_valid
+            & candidate_has_plane.view(C, 1)
+        )
+        accepted_chunks.append(cand_all_idx[is_surface_pt])
+
+        # Free large intermediates before the next sub-batch.
+        del cand_all_pts, cand_all_idx, cand_slot_valid, perp_b, is_cand_pt
+        del pts_sorted, cand_pts, c_normals, c_d_all, c_inliers, perp_c
+
+    if not accepted_chunks:
+        return 0
+    accepted = torch.cat(accepted_chunks)
     if accepted.numel() == 0:
         return 0
 
     accepted_unique = torch.unique(accepted)
-    newly_added_mask = ~surface_mask_t[accepted_unique]
-    newly_added = accepted_unique[newly_added_mask]
-    if newly_added.numel() == 0:
+    newly = accepted_unique[~surface_mask_t[accepted_unique]]
+    if newly.numel() == 0:
         return 0
 
     # --- Commit to GPU state ---
-    surface_mask_t[newly_added] = True
-    added_voxels = point_voxel_idx_t[newly_added]
+    surface_mask_t[newly] = True
+    added_voxels = point_voxel_idx_t[newly]
     voxel_surface_counts_t.scatter_add_(
-        0, added_voxels, torch.ones_like(newly_added)
+        0, added_voxels, torch.ones_like(newly)
     )
     changed_voxels = torch.unique(added_voxels)
-    is_surface_voxel_t[changed_voxels] = is_surface_voxel_t[changed_voxels] | (
-        voxel_surface_counts_t[changed_voxels] >= min_voxel_surface_points
-    )
+    # A voxel is a "surface voxel" (and hence a future boundary candidate)
+    # as soon as it contains any surface point.
+    is_surface_voxel_t[changed_voxels] = True
     is_unassigned_voxel_t[changed_voxels] = (
         voxel_surface_counts_t[changed_voxels] < voxel_total_counts_t[changed_voxels]
     )
 
-    return int(newly_added.numel())
+    return int(newly.numel())
