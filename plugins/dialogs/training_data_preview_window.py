@@ -249,7 +249,8 @@ class DataPreviewWindow(QDialog):
                 item_path = os.path.join(self.current_directory, item)
                 if os.path.isdir(item_path):
                     # Check if directory contains .npy or .npz files
-                    data_files = [f for f in os.listdir(item_path) if f.endswith('.npy') or f.endswith('.npz')]
+                    data_files = [f for f in os.listdir(item_path)
+                                  if f.endswith(('.npy', '.npz', '.obj'))]
                     if data_files:
                         classes.append(item)
         except Exception as e:
@@ -266,7 +267,7 @@ class DataPreviewWindow(QDialog):
             # Check for flat layout: data files directly in the directory
             try:
                 root_files = [f for f in os.listdir(self.current_directory)
-                              if f.endswith('.npy') or f.endswith('.npz')]
+                              if f.endswith(('.npy', '.npz', '.obj'))]
             except Exception:
                 root_files = []
 
@@ -288,7 +289,7 @@ class DataPreviewWindow(QDialog):
                 QMessageBox.warning(
                     self,
                     "No Data Found",
-                    f"No .npy/.npz files found in:\n{self.current_directory}"
+                    f"No .npy/.npz/.obj files found in:\n{self.current_directory}"
                 )
 
     def _update_color_modes(self):
@@ -335,7 +336,8 @@ class DataPreviewWindow(QDialog):
 
         # Scan for .npy and .npz files
         try:
-            files = [f for f in os.listdir(class_dir) if f.endswith('.npy') or f.endswith('.npz')]
+            files = [f for f in os.listdir(class_dir)
+                     if f.endswith(('.npy', '.npz', '.obj'))]
             files.sort()  # Sort files
 
             # Update file list
@@ -376,29 +378,88 @@ class DataPreviewWindow(QDialog):
         # Load and visualize
         self._load_and_visualize(filepath)
 
+    def _load_obj_geometry(self, filepath: str):
+        """
+        Parse OBJ vertices and faces, returning vertices and edge indices.
+
+        Faces of any arity are converted to their boundary edges and edges are
+        deduplicated so shared edges are drawn once.
+
+        Returns:
+            (vertices: Nx3 float32, edges: Mx2 uint32)
+        """
+        vertices = []
+        edges = set()
+        with open(filepath, 'r') as f:
+            for line in f:
+                if line.startswith('v '):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        vertices.append((float(parts[1]),
+                                         float(parts[2]),
+                                         float(parts[3])))
+                elif line.startswith('f '):
+                    parts = line.split()[1:]
+                    # OBJ face tokens may be "v", "v/vt", "v//vn", or "v/vt/vn".
+                    # We only need the vertex index (first field, 1-based).
+                    face_idx = []
+                    for tok in parts:
+                        try:
+                            face_idx.append(int(tok.split('/', 1)[0]) - 1)
+                        except ValueError:
+                            face_idx = []
+                            break
+                    n = len(face_idx)
+                    if n >= 2:
+                        for i in range(n):
+                            a = face_idx[i]
+                            b = face_idx[(i + 1) % n]
+                            if a == b:
+                                continue
+                            edges.add((a, b) if a < b else (b, a))
+
+        if not vertices:
+            raise ValueError("No vertices found in .obj file")
+        if not edges:
+            raise ValueError("No faces/edges found in .obj file")
+
+        verts = np.asarray(vertices, dtype=np.float32)
+        edge_arr = np.asarray(sorted(edges), dtype=np.uint32)
+        return verts, edge_arr
+
     def _load_and_visualize(self, filepath: str):
         """
         Load sample data and visualize in viewer.
 
         Args:
-            filepath: Path to .npy file
+            filepath: Path to .npy, .npz, or .obj file
         """
         try:
-            # Load data (.npy returns array directly, .npz returns dict-like object)
-            loaded = np.load(filepath)
+            ext = os.path.splitext(filepath)[1].lower()
             self.current_labels = None
-            if isinstance(loaded, np.ndarray):
-                self.current_sample_data = loaded
+            if ext == '.obj':
+                vertices, edges = self._load_obj_geometry(filepath)
+                self.current_sample_data = None
+                self.color_combo.setEnabled(False)
+                self.viewer._clear_display()
+                self.viewer.set_lines(vertices, edges)
+                self.viewer.zoom_to_extent(preserve_rotation=True)
+                return
             else:
-                # .npz file: check for features/labels keys (segmentation format)
-                keys = list(loaded.keys())
-                if 'features' in keys:
-                    self.current_sample_data = loaded['features']
-                    if 'labels' in keys:
-                        self.current_labels = loaded['labels']
+                # .npy returns array directly; .npz returns dict-like object
+                loaded = np.load(filepath)
+                if isinstance(loaded, np.ndarray):
+                    self.current_sample_data = loaded
                 else:
-                    self.current_sample_data = loaded[keys[0]]
-                loaded.close()
+                    # .npz file: check for features/labels keys (segmentation format)
+                    keys = list(loaded.keys())
+                    if 'features' in keys:
+                        self.current_sample_data = loaded['features']
+                        if 'labels' in keys:
+                            self.current_labels = loaded['labels']
+                    else:
+                        self.current_sample_data = loaded[keys[0]]
+                    loaded.close()
 
             # Detect optional color modes based on loaded data
             self._detect_and_update_rgb_option()
