@@ -31,8 +31,17 @@ from typing import Any, Dict
 import numpy as np
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QMessageBox
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter as _np_gaussian_filter
 from scipy.spatial import cKDTree
+
+try:
+    import cupy as _cp
+    from cupyx.scipy.ndimage import gaussian_filter as _cp_gaussian_filter
+    _HAS_CUPY = True
+except Exception:  # pragma: no cover - CuPy is optional
+    _cp = None
+    _cp_gaussian_filter = None
+    _HAS_CUPY = False
 
 from config.config import global_variables
 from core.entities.cad_object import CADObject
@@ -330,16 +339,31 @@ def _drape(
     min_points_per_cell: int,
     cancel_event: threading.Event,
 ):
-    """Return (vertices, faces, edges, aabb_dims) or None if cancelled."""
+    """Return (vertices, faces, edges, aabb_dims) or None if cancelled.
+
+    Runs on GPU via CuPy when available, otherwise NumPy. Arrays stay on the
+    device from projection through edge dedup; only the final mesh
+    (vertices/faces/edges/dims) is copied back to host for CADObject.
+    """
     t0 = time.time()
+
+    if cell_size <= 0:
+        raise ValueError("cell_size must be positive.")
+
+    xp = _cp if _HAS_CUPY else np
+    gaussian = _cp_gaussian_filter if _HAS_CUPY else _np_gaussian_filter
+    backend = "GPU (CuPy)" if _HAS_CUPY else "CPU (NumPy)"
+
+    points_x = xp.asarray(points, dtype=xp.float32)
+    normals_x = xp.asarray(normals, dtype=xp.float32)
 
     # --- Mean normal and orthonormal (u, v, n) frame ---
     global_variables.global_progress = (None, "Building frame...")
     if cancel_event.is_set():
         return None
 
-    n_mean = normals.mean(axis=0).astype(np.float64)
-    nrm = np.linalg.norm(n_mean)
+    n_mean = normals_x.mean(axis=0).astype(xp.float64)
+    nrm = float(xp.linalg.norm(n_mean))
     if nrm < 1e-6:
         raise RuntimeError(
             "Mean normal is ~0 (normals cancel out). Re-run normal estimation "
@@ -347,20 +371,21 @@ def _drape(
         )
     n_axis = n_mean / nrm
 
-    # Pick a reference axis not parallel to n_axis, build u, v.
-    ref = np.array([0.0, 0.0, 1.0]) if abs(n_axis[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-    u_axis = np.cross(n_axis, ref)
-    u_axis /= np.linalg.norm(u_axis)
-    v_axis = np.cross(n_axis, u_axis)
-
-    basis = np.stack([u_axis, v_axis, n_axis], axis=1)  # (3, 3)
+    # Reference axis not parallel to n_axis; build u, v.
+    nz = float(n_axis[2])
+    ref = xp.array([0.0, 0.0, 1.0], dtype=xp.float64) if abs(nz) < 0.9 \
+        else xp.array([1.0, 0.0, 0.0], dtype=xp.float64)
+    u_axis = xp.cross(n_axis, ref)
+    u_axis = u_axis / xp.linalg.norm(u_axis)
+    v_axis = xp.cross(n_axis, u_axis)
+    basis = xp.stack([u_axis, v_axis, n_axis], axis=1)  # (3, 3)
 
     # --- Project points ---
     global_variables.global_progress = (None, "Projecting points...")
     if cancel_event.is_set():
         return None
 
-    pts64 = points.astype(np.float64)
+    pts64 = points_x.astype(xp.float64)
     centroid = pts64.mean(axis=0)
     uvw = (pts64 - centroid) @ basis  # (N, 3)
 
@@ -369,13 +394,11 @@ def _drape(
     if cancel_event.is_set():
         return None
 
-    if cell_size <= 0:
-        raise ValueError("cell_size must be positive.")
-
     uv_min = uvw[:, :2].min(axis=0)
     uv_max = uvw[:, :2].max(axis=0)
-    cells_per_axis = np.ceil((uv_max - uv_min) / cell_size).astype(np.int64) + 1
-    nu, nv = int(cells_per_axis[0]), int(cells_per_axis[1])
+    extent = uv_max - uv_min
+    nu = int(xp.ceil(extent[0] / cell_size)) + 1
+    nv = int(xp.ceil(extent[1] / cell_size)) + 1
     if nu < 1 or nv < 1:
         raise RuntimeError("Degenerate grid extent.")
     if nu * nv > 50_000_000:
@@ -384,8 +407,8 @@ def _drape(
             f"Increase cell_size."
         )
 
-    iu = np.clip(((uvw[:, 0] - uv_min[0]) / cell_size).astype(np.int64), 0, nu - 1)
-    iv = np.clip(((uvw[:, 1] - uv_min[1]) / cell_size).astype(np.int64), 0, nv - 1)
+    iu = xp.clip(((uvw[:, 0] - uv_min[0]) / cell_size).astype(xp.int64), 0, nu - 1)
+    iv = xp.clip(((uvw[:, 1] - uv_min[1]) / cell_size).astype(xp.int64), 0, nv - 1)
     flat = iu * nv + iv
     w = uvw[:, 2]
 
@@ -394,12 +417,10 @@ def _drape(
     if cancel_event.is_set():
         return None
 
-    # Sort w within each cell (lex sort by cell id, then w) so the median of
-    # each contiguous segment is read directly by index.
-    order = np.lexsort((w, flat))
+    order = xp.lexsort(xp.stack([w, flat]))
     flat_sorted = flat[order]
     w_sorted = w[order]
-    unique_cells, starts, counts = np.unique(
+    unique_cells, starts, counts = xp.unique(
         flat_sorted, return_index=True, return_counts=True
     )
 
@@ -408,20 +429,19 @@ def _drape(
     starts = starts[keep]
     counts = counts[keep]
 
-    # Vectorised median: for each segment, average the two middle elements
-    # (equals the single middle for odd counts since (c-1)//2 == c//2).
+    # Average the two middle elements of each segment (works for even/odd).
     lo = starts + (counts - 1) // 2
     hi = starts + counts // 2
     medians = 0.5 * (w_sorted[lo] + w_sorted[hi])
 
-    height = np.zeros((nu, nv), dtype=np.float64)
-    populated = np.zeros((nu, nv), dtype=bool)
+    height = xp.zeros((nu, nv), dtype=xp.float64)
+    populated = xp.zeros((nu, nv), dtype=bool)
     ci = unique_cells // nv
     cj = unique_cells % nv
     height[ci, cj] = medians
     populated[ci, cj] = True
 
-    if not populated.any():
+    if not bool(populated.any()):
         raise RuntimeError(
             f"No cells met min_points_per_cell={min_points_per_cell}. "
             f"Try lowering the threshold or increasing cell_size."
@@ -432,27 +452,24 @@ def _drape(
         global_variables.global_progress = (None, "Smoothing...")
         if cancel_event.is_set():
             return None
-        mask_f = populated.astype(np.float64)
-        num = gaussian_filter(height * mask_f, sigma=smoothing_sigma, mode="constant")
-        den = gaussian_filter(mask_f, sigma=smoothing_sigma, mode="constant")
-        smoothed = np.where(den > 1e-9, num / np.maximum(den, 1e-9), height)
-        height = np.where(populated, smoothed, height)
+        mask_f = populated.astype(xp.float64)
+        num = gaussian(height * mask_f, sigma=smoothing_sigma, mode="constant")
+        den = gaussian(mask_f, sigma=smoothing_sigma, mode="constant")
+        smoothed = xp.where(den > 1e-9, num / xp.maximum(den, 1e-9), height)
+        height = xp.where(populated, smoothed, height)
 
     # --- Corner heights = mean of up-to-4 adjacent populated cells ---
     global_variables.global_progress = (None, "Building corners...")
     if cancel_event.is_set():
         return None
 
-    cu, cv = nu + 1, nv + 1  # corner grid dims
-    # For each corner (i, j), adjacent cells are at (i-1, j-1), (i, j-1),
-    # (i-1, j), (i, j). Sum heights and counts from each shifted cell slab.
-    corner_sum = np.zeros((cu, cv), dtype=np.float64)
-    corner_cnt = np.zeros((cu, cv), dtype=np.int32)
-    h_pop = np.where(populated, height, 0.0)
-    p_int = populated.astype(np.int32)
+    cu, cv = nu + 1, nv + 1
+    corner_sum = xp.zeros((cu, cv), dtype=xp.float64)
+    corner_cnt = xp.zeros((cu, cv), dtype=xp.int32)
+    h_pop = xp.where(populated, height, 0.0)
+    p_int = populated.astype(xp.int32)
 
-    # offset (di, dj) in {0, 1} maps cell (i, j) -> corner (i + (1 - di), j + (1 - dj))?
-    # Simpler: each cell (i, j) contributes to corners (i, j), (i+1, j), (i, j+1), (i+1, j+1).
+    # Each cell (i, j) contributes to corners (i, j), (i+1, j), (i, j+1), (i+1, j+1).
     corner_sum[0:nu,     0:nv    ] += h_pop
     corner_sum[1:nu + 1, 0:nv    ] += h_pop
     corner_sum[0:nu,     1:nv + 1] += h_pop
@@ -463,12 +480,8 @@ def _drape(
     corner_cnt[1:nu + 1, 1:nv + 1] += p_int
 
     corner_valid = corner_cnt > 0
-    corner_height = np.where(corner_valid, corner_sum / np.maximum(corner_cnt, 1), 0.0)
+    corner_height = xp.where(corner_valid, corner_sum / xp.maximum(corner_cnt, 1), 0.0)
 
-    # A quad is emitted if its cell is populated AND all 4 corners are valid.
-    # By construction any corner of a populated cell has that cell as one
-    # of its contributors, so this is always satisfied — keep the check for
-    # clarity.
     quad_mask = (
         populated
         & corner_valid[0:nu,     0:nv    ]
@@ -488,53 +501,67 @@ def _drape(
     if cancel_event.is_set():
         return None
 
-    used_corner = np.zeros((cu, cv), dtype=bool)
-    qi, qj = np.nonzero(quad_mask)
+    used_corner = xp.zeros((cu, cv), dtype=bool)
+    qi, qj = xp.nonzero(quad_mask)
     used_corner[qi,     qj    ] = True
     used_corner[qi + 1, qj    ] = True
     used_corner[qi,     qj + 1] = True
     used_corner[qi + 1, qj + 1] = True
 
-    # Assign vertex indices.
-    vertex_index = -np.ones((cu, cv), dtype=np.int64)
-    uc_i, uc_j = np.nonzero(used_corner)
-    vertex_index[uc_i, uc_j] = np.arange(len(uc_i))
+    vertex_index = -xp.ones((cu, cv), dtype=xp.int64)
+    uc_i, uc_j = xp.nonzero(used_corner)
+    vertex_index[uc_i, uc_j] = xp.arange(uc_i.shape[0], dtype=xp.int64)
 
-    # uv coords of each used corner (corners are at cell edges).
-    corner_u = uv_min[0] + uc_i.astype(np.float64) * cell_size
-    corner_v = uv_min[1] + uc_j.astype(np.float64) * cell_size
+    corner_u = uv_min[0] + uc_i.astype(xp.float64) * cell_size
+    corner_v = uv_min[1] + uc_j.astype(xp.float64) * cell_size
     corner_w = corner_height[uc_i, uc_j]
 
-    # Lift back to world.
-    uvw_corners = np.stack([corner_u, corner_v, corner_w], axis=1)  # (V, 3)
+    uvw_corners = xp.stack([corner_u, corner_v, corner_w], axis=1)
     vertices_world = centroid + uvw_corners @ basis.T
-    vertices = vertices_world.astype(np.float32)
+    vertices_dev = vertices_world.astype(xp.float32)
 
     # --- Build quad faces ---
     v00 = vertex_index[qi,     qj    ]
     v10 = vertex_index[qi + 1, qj    ]
     v11 = vertex_index[qi + 1, qj + 1]
     v01 = vertex_index[qi,     qj + 1]
-    faces = np.stack([v00, v10, v11, v01], axis=1).astype(np.int64)
-    faces_list = faces.tolist()
+    faces_dev = xp.stack([v00, v10, v11, v01], axis=1).astype(xp.int64)
 
-    # --- Build edges (dedup across shared cell boundaries) ---
-    e1 = np.stack([v00, v10], axis=1)
-    e2 = np.stack([v10, v11], axis=1)
-    e3 = np.stack([v11, v01], axis=1)
-    e4 = np.stack([v01, v00], axis=1)
-    all_edges = np.concatenate([e1, e2, e3, e4], axis=0)
-    all_edges = np.sort(all_edges, axis=1)
-    edges = np.unique(all_edges, axis=0).astype(np.int32)
+    # --- Build edges (dedup via single-int key min*V + max) ---
+    e1 = xp.stack([v00, v10], axis=1)
+    e2 = xp.stack([v10, v11], axis=1)
+    e3 = xp.stack([v11, v01], axis=1)
+    e4 = xp.stack([v01, v00], axis=1)
+    all_edges = xp.concatenate([e1, e2, e3, e4], axis=0)
+    e_min = xp.minimum(all_edges[:, 0], all_edges[:, 1])
+    e_max = xp.maximum(all_edges[:, 0], all_edges[:, 1])
+    n_verts = int(vertices_dev.shape[0])
+    key = e_min.astype(xp.int64) * xp.int64(n_verts) + e_max.astype(xp.int64)
+    unique_keys = xp.unique(key)
+    edges_dev = xp.stack([unique_keys // xp.int64(n_verts),
+                          unique_keys %  xp.int64(n_verts)], axis=1).astype(xp.int32)
 
     # --- AABB dimensions ---
-    aabb_min = vertices.min(axis=0)
-    aabb_max = vertices.max(axis=0)
-    aabb_dims = (aabb_max - aabb_min).astype(np.float32)
+    aabb_min = vertices_dev.min(axis=0)
+    aabb_max = vertices_dev.max(axis=0)
+    aabb_dims_dev = (aabb_max - aabb_min).astype(xp.float32)
+
+    # --- Copy back to host (CADObject expects numpy) ---
+    if _HAS_CUPY:
+        vertices = xp.asnumpy(vertices_dev)
+        faces_np = xp.asnumpy(faces_dev)
+        edges = xp.asnumpy(edges_dev)
+        aabb_dims = xp.asnumpy(aabb_dims_dev)
+    else:
+        vertices = vertices_dev
+        faces_np = faces_dev
+        edges = edges_dev
+        aabb_dims = aabb_dims_dev
+    faces_list = faces_np.tolist()
 
     dt = time.time() - t0
     logger.info(
-        f"Mesh drape: {len(points):,} pts -> {nu}x{nv} grid, "
+        f"Mesh drape [{backend}]: {len(points):,} pts -> {nu}x{nv} grid, "
         f"{n_quads:,} quads, {len(vertices):,} verts, "
         f"{len(edges):,} edges in {dt:.2f}s"
     )
