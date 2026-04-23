@@ -12,8 +12,8 @@ from OpenGL.GL import (
     glGetIntegerv, GL_VIEWPORT,
     glPointSize, glEnableClientState, glDisableClientState,
     GL_VERTEX_ARRAY, GL_COLOR_ARRAY,
-    glVertexPointer, glColorPointer, glDrawArrays,
-    GL_FLOAT, GL_POINTS,
+    glVertexPointer, glColorPointer, glDrawArrays, glDrawElements,
+    GL_FLOAT, GL_POINTS, GL_UNSIGNED_INT,
     glColor3f, glBegin, glEnd, glVertex3f,
     GL_LINES, glLineWidth,
     glPushMatrix, glPopMatrix,
@@ -176,35 +176,33 @@ class GLRenderingMixin:
 
     def render_lines(self):
         """
-        Render stored line geometry as GL_LINES.
+        Render stored line geometry as GL_LINES using client-side vertex arrays.
 
-        Supports optional per-vertex colors via self.line_colors (Nx3 float32).
-        Falls back to uniform gray when no colors are set.
-
-        Uses immediate-mode drawing (matches the axis-symbol pattern). Line
-        count is typically in the thousands for previewed meshes, so per-frame
-        cost is acceptable without a dedicated VBO/IBO path.
+        One glDrawElements call walks the index buffer in C — no Python
+        iteration — so dense wireframes (drape meshes with tens of thousands of
+        edges) stay interactive during navigation.
         """
         if self.line_vertices is None or self.line_indices is None:
             return
 
         glLineWidth(1.0)
-        verts = self.line_vertices
-        colors = self.line_colors
 
-        glBegin(GL_LINES)
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glVertexPointer(3, GL_FLOAT, 0, self.line_vertices)
+
+        colors = self.line_colors
         if colors is not None:
-            for idx in self.line_indices:
-                c = colors[idx]
-                glColor3f(c[0], c[1], c[2])
-                v = verts[idx]
-                glVertex3f(v[0], v[1], v[2])
+            glEnableClientState(GL_COLOR_ARRAY)
+            glColorPointer(3, GL_FLOAT, 0, colors)
         else:
             glColor3f(0.85, 0.85, 0.85)
-            for idx in self.line_indices:
-                v = verts[idx]
-                glVertex3f(v[0], v[1], v[2])
-        glEnd()
+
+        glDrawElements(GL_LINES, self.line_indices.size, GL_UNSIGNED_INT,
+                       self.line_indices)
+
+        if colors is not None:
+            glDisableClientState(GL_COLOR_ARRAY)
+        glDisableClientState(GL_VERTEX_ARRAY)
 
     def render_picked_points(self):
         """

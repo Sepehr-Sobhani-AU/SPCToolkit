@@ -83,6 +83,16 @@ class SurfaceFitPlugin(ActionPlugin):
                 "description": "Alpha-shape edge-length filter for the uv hull. "
                                "0 uses 4× median nearest-neighbour uv spacing.",
             },
+            "max_fit_points": {
+                "type": "int",
+                "default": 200_000,
+                "min": 1_000,
+                "max": 5_000_000,
+                "label": "Max Fit Points",
+                "description": "Max points used for polynomial fit and uv "
+                               "triangulation. Large clusters are downsampled "
+                               "via uniform uv-grid binning.",
+            },
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
@@ -172,6 +182,7 @@ class SurfaceFitPlugin(ActionPlugin):
         grid_resolution = int(params["grid_resolution"])
         distance_threshold = float(params["distance_threshold"])
         alpha_param = float(params["alpha"])
+        max_fit_points = int(params["max_fit_points"])
 
         main_window.disable_menus()
         main_window.disable_tree()
@@ -191,6 +202,7 @@ class SurfaceFitPlugin(ActionPlugin):
                     grid_resolution,
                     distance_threshold,
                     alpha_param,
+                    max_fit_points,
                     cancel_event,
                 )
             except Exception as e:
@@ -292,6 +304,7 @@ def _fit_and_triangulate(
     grid_resolution: int,
     distance_threshold: float,
     alpha_param: float,
+    max_fit_points: int,
     cancel_event: threading.Event,
 ):
     """Fit polynomial surface, return (vertices, faces, edges, aabb_dims).
@@ -321,6 +334,38 @@ def _fit_and_triangulate(
     # Reorder so columns are (u_axis, v_axis, w_axis) with w_axis = smallest eig.
     axes = torch.stack([eigvecs[:, 2], eigvecs[:, 1], eigvecs[:, 0]], dim=1)
     uvw = centered @ axes
+
+    # --- Downsample for fit + triangulation ---
+    # Only the fit and the alpha-shape hull use this subset; the evaluation
+    # grid and world-transform still use the full-resolution axes/centroid.
+    n_full = uvw.shape[0]
+    if n_full > max_fit_points:
+        global_variables.global_progress = (None, "Downsampling...")
+        if cancel_event.is_set():
+            return None
+
+        u_all = uvw[:, 0]
+        v_all = uvw[:, 1]
+        u_min_t = u_all.min()
+        v_min_t = v_all.min()
+        uv_area = float(
+            (u_all.max() - u_min_t).item() * (v_all.max() - v_min_t).item()
+        )
+        bin_size = float(np.sqrt(max(uv_area, 1e-12) / max_fit_points))
+        cell_u = torch.floor((u_all - u_min_t) / bin_size).to(torch.int64)
+        cell_v = torch.floor((v_all - v_min_t) / bin_size).to(torch.int64)
+        n_cv = int(cell_v.max().item()) + 1
+        cell_id = cell_u * n_cv + cell_v
+        # Keep one point per cell: sort by cell_id, keep first occurrence.
+        sort_ids, perm = torch.sort(cell_id, stable=True)
+        diffs = torch.ones_like(sort_ids, dtype=torch.bool)
+        diffs[1:] = sort_ids[1:] != sort_ids[:-1]
+        uvw = uvw[perm[diffs]]
+        logger.info(
+            f"Subsampled {n_full:,} → {uvw.shape[0]:,} "
+            f"(bin={bin_size:.6f})"
+        )
+
     u = uvw[:, 0]
     v = uvw[:, 1]
     w = uvw[:, 2]
