@@ -18,6 +18,10 @@ from application.lod_manager import LODManager
 
 logger = logging.getLogger(__name__)
 
+# Renderable vector-feature node types. "cad_object" is the pre-rename string
+# kept for backwards compatibility with .pcdtk projects saved before 2026-05-17.
+_VECTOR_FEATURE_TYPES = ("vector_feature", "cad_object")
+
 
 class RenderingCoordinator:
     """
@@ -42,6 +46,22 @@ class RenderingCoordinator:
 
         # Per-branch index ranges in the combined vertex array: uid -> (start, end)
         self.branch_offsets: Dict[str, tuple] = {}
+
+        # Per-branch cached Nx6 vertex slices (post-LOD). Reused across
+        # visibility toggles so a toggle becomes O(toggled branch) instead
+        # of O(all visible points). Cleared on sample-rate change.
+        self._branch_vertex_cache: Dict[str, np.ndarray] = {}
+        self._branch_cache_sample_rate: Optional[float] = None
+
+    def invalidate_branch(self, uid) -> None:
+        """Drop cached vertex slice for a branch (call when its data changes)."""
+        key = str(uid)
+        self._branch_vertex_cache.pop(key, None)
+
+    def invalidate_all(self) -> None:
+        """Drop all cached vertex slices."""
+        self._branch_vertex_cache.clear()
+        self._branch_cache_sample_rate = None
 
     @property
     def current_sample_rate(self) -> float:
@@ -123,6 +143,11 @@ class RenderingCoordinator:
 
         self._current_sample_rate = sample_rate
 
+        # LOD change invalidates per-branch vertex cache (subsample bound to rate).
+        if self._branch_cache_sample_rate != sample_rate:
+            self._branch_vertex_cache.clear()
+            self._branch_cache_sample_rate = sample_rate
+
         # Debug memory estimate
         points_to_check = int(total_points * sample_rate) if sample_rate < 1.0 else total_points
         estimates = MemoryManager.estimate_render_memory(points_to_check, cached=all_cached)
@@ -131,20 +156,13 @@ class RenderingCoordinator:
             f"RAM={estimates['ram_mb']}MB, VRAM={estimates['vram_mb']}MB"
         )
 
-        # Pre-allocate vertex array
-        if sample_rate < 1.0:
-            base_size = int(total_points * sample_rate)
-            buffer_size = max(int(base_size * 0.2), 100000)
-            alloc_size = min(total_points, base_size + buffer_size)
-        else:
-            alloc_size = total_points
-        vertices = np.empty((alloc_size, 6), dtype=np.float32)
-        offset = 0
-
         # Per-node metadata for GUI updates
         node_metadata = {}
 
-        # Process each visible branch
+        # Build (or reuse) per-branch Nx6 slices, then concatenate.
+        per_branch_slices: List[np.ndarray] = []
+        per_branch_uids: List[str] = []
+
         for uid_idx, uid in enumerate(uids_to_show):
             logger.debug(f"Processing branch {uid_idx + 1}/{len(uids_to_show)}: {uid[:8]}...")
             try:
@@ -153,8 +171,19 @@ class RenderingCoordinator:
                     logger.warning(f"Node not found: {uid}")
                     continue
 
-                # CAD objects render as line geometry, not points
-                if node.data_type == "cad_object":
+                # Vector features render as line geometry, not points
+                if node.data_type in _VECTOR_FEATURE_TYPES:
+                    continue
+
+                cached_slice = self._branch_vertex_cache.get(uid)
+                if cached_slice is not None:
+                    node_metadata[uid] = {
+                        'memory_usage': getattr(node, 'memory_size', 0),
+                        'newly_cached': False,
+                        'is_cached': node.is_cached,
+                    }
+                    per_branch_slices.append(cached_slice)
+                    per_branch_uids.append(uid)
                     continue
 
                 # Reconstruct (uses cache if available)
@@ -183,43 +212,53 @@ class RenderingCoordinator:
                 if sample_rate < 1.0:
                     indices = LODManager.subsample_indices(n, sample_rate)
                     if indices is not None:
-                        n_to_add = len(indices)
                         pts = point_cloud.points[indices]
                         clrs = point_cloud.colors[indices] if point_cloud.colors is not None else None
-                        logger.debug(f"LOD subsampled: {n:,} -> {n_to_add:,}")
+                        logger.debug(f"LOD subsampled: {n:,} -> {len(indices):,}")
                     else:
-                        n_to_add = n
                         pts = point_cloud.points
                         clrs = point_cloud.colors
                 else:
-                    n_to_add = n
                     pts = point_cloud.points
                     clrs = point_cloud.colors
 
-                # Resize buffer if needed
-                if offset + n_to_add > len(vertices):
-                    new_size = int((offset + n_to_add) * 1.2) + 100000
-                    logger.warning(f"Resizing vertex buffer: {len(vertices):,} -> {new_size:,}")
-                    new_vertices = np.empty((new_size, 6), dtype=np.float32)
-                    new_vertices[:offset] = vertices[:offset]
-                    vertices = new_vertices
-                    del new_vertices
-
-                vertices[offset:offset + n_to_add, :3] = pts
+                slice_n = len(pts)
+                branch_slice = np.empty((slice_n, 6), dtype=np.float32)
+                branch_slice[:, :3] = pts
                 if clrs is not None:
-                    vertices[offset:offset + n_to_add, 3:] = clrs
+                    branch_slice[:, 3:] = clrs
                 else:
-                    vertices[offset:offset + n_to_add, 3:] = 1.0  # White
-                offset += n_to_add
-                self.branch_offsets[uid] = (offset - n_to_add, offset)
+                    branch_slice[:, 3:] = 1.0  # White
+
+                self._branch_vertex_cache[uid] = branch_slice
+                per_branch_slices.append(branch_slice)
+                per_branch_uids.append(uid)
 
             except Exception as e:
                 logger.error(f"Error processing branch {uid}: {e}")
                 logger.error(traceback.format_exc())
                 continue
 
+        # Drop cache entries for branches no longer visible (bound memory).
+        visible_set = set(uids_to_show)
+        for stale_uid in [k for k in self._branch_vertex_cache if k not in visible_set]:
+            self._branch_vertex_cache.pop(stale_uid, None)
+
+        self._last_node_metadata = node_metadata
+
+        if not per_branch_slices:
+            return None
+
+        # Concatenate and rebuild branch_offsets from slice lengths.
+        vertices = np.concatenate(per_branch_slices, axis=0)
+        offset = 0
+        for uid, sl in zip(per_branch_uids, per_branch_slices):
+            n = len(sl)
+            self.branch_offsets[uid] = (offset, offset + n)
+            offset += n
+
         logger.info(f"Rendering {offset:,} points (LOD: {sample_rate:.1%})")
-        return vertices[:offset]
+        return vertices
 
     def get_node_metadata(self) -> dict:
         """Get per-node metadata from the last prepare_vertices() call."""
@@ -238,17 +277,19 @@ class RenderingCoordinator:
                 return len(node.data.points)
         if node.data_type in ("class_reference", "container"):
             return 100000
-        if node.data_type == "cad_object":
+        if node.data_type in _VECTOR_FEATURE_TYPES:
             return 0
         return 0
 
     def prepare_mesh_lines(self, visibility_status: dict):
         """
-        Collect wireframe/polyline data from visible CADObject nodes.
+        Collect wireframe/polyline data from visible VectorFeature nodes.
 
-        Scans visible nodes for ``data_type == "cad_object"``, reads their
-        geometry, applies each object's transform_matrix, and assembles the
-        result into arrays suitable for ``PCDViewerWidget.set_lines()``.
+        Scans visible nodes for ``data_type in ("vector_feature", "cad_object")``,
+        reads their geometry, applies each object's transform_matrix, and
+        assembles the result into arrays suitable for ``PCDViewerWidget.set_lines()``.
+        (The "cad_object" string is accepted for back-compat with pre-2026-05-17
+        projects.)
 
         Returns:
             Tuple of (vertices, edges, colors) or (None, None, None) when
@@ -270,12 +311,12 @@ class RenderingCoordinator:
                 node = self.data_nodes.get_node(uuid.UUID(uid))
             except (ValueError, AttributeError):
                 continue
-            if node is None or node.data_type != "cad_object":
+            if node is None or node.data_type not in _VECTOR_FEATURE_TYPES:
                 continue
 
-            cad = node.data
-            geom = cad.geometry
-            T = cad.transform_matrix
+            feature = node.data
+            geom = feature.geometry
+            T = feature.transform_matrix
 
             if cad.geometry_type == "mesh":
                 verts = np.asarray(geom["vertices"], dtype=np.float64)

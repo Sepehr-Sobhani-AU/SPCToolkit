@@ -5,6 +5,7 @@ from config.config import global_variables
 
 
 class ZoomToExtentPlugin(ActionPlugin):
+    """Frame the camera so the full visible point cloud fills the viewport."""
 
     def get_name(self) -> str:
         return "zoom_to_extent"

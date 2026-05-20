@@ -17,7 +17,7 @@ Drapes a 2.5D rectangular mesh over a point cloud surface:
 5. Shared-corner vertex heights = mean of adjacent populated cell medians;
    emit one quad per populated cell whose 4 corners are all valid.
 6. Optional Gaussian smoothing on the height grid (empty-cell aware).
-7. Output a CADObject (geometry_type='mesh') as a child node, rendered as a
+7. Output a VectorFeature (geometry_type='mesh') as a child node, rendered as a
    rectangular wireframe by the existing mesh-lines path.
 """
 
@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover - CuPy is optional
     _HAS_CUPY = False
 
 from config.config import global_variables
-from core.entities.cad_object import CADObject
+from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
 from plugins.interfaces import ActionPlugin
 
@@ -280,7 +280,7 @@ class MeshDrapePlugin(ActionPlugin):
             parent_uuid = uuid.UUID(selected_uid)
             node_name = f"drape_{scope_tag}_cs{cell_size:g}"
 
-            cad_obj = CADObject(
+            cad_obj = VectorFeature(
                 symbol_type=node_name,
                 geometry_type="mesh",
                 geometry={
@@ -299,7 +299,7 @@ class MeshDrapePlugin(ActionPlugin):
                 cad_node = DataNode(
                     params=node_name,
                     data=cad_obj,
-                    data_type="cad_object",
+                    data_type="vector_feature",
                     parent_uid=parent_uuid,
                     depends_on=[parent_uuid],
                     tags=["cad", "mesh_drape"],
@@ -343,7 +343,7 @@ def _drape(
 
     Runs on GPU via CuPy when available, otherwise NumPy. Arrays stay on the
     device from projection through edge dedup; only the final mesh
-    (vertices/faces/edges/dims) is copied back to host for CADObject.
+    (vertices/faces/edges/dims) is copied back to host for VectorFeature.
     """
     t0 = time.time()
 
@@ -546,7 +546,7 @@ def _drape(
     aabb_max = vertices_dev.max(axis=0)
     aabb_dims_dev = (aabb_max - aabb_min).astype(xp.float32)
 
-    # --- Copy back to host (CADObject expects numpy) ---
+    # --- Copy back to host (VectorFeature expects numpy) ---
     if _HAS_CUPY:
         vertices = xp.asnumpy(vertices_dev)
         faces_np = xp.asnumpy(faces_dev)

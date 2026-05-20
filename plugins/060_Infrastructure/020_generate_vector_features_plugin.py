@@ -1,9 +1,11 @@
 """
-Generate CAD Objects Plugin
+Generate Vector Features Plugin
 
-Creates CAD object branches for classified clusters. For each class (e.g. Pole,
-Tree, Kerb Edge) a container is created, and under it one CADObject node per
-cluster instance, fitted to the cluster's oriented bounding box.
+Creates vector-feature branches for classified clusters. For each class
+(e.g. Pole, Tree, Kerb Edge) a container is created, and under it one
+VectorFeature node per cluster instance, fitted to the cluster's oriented
+bounding box. The output is render-only viewport geometry; DXF export will
+read these later via their cluster_reference.
 
 Geometry types:
 - "mesh"     — bounding-box wireframe fitted to the cluster OBB.
@@ -27,7 +29,7 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.entities.cad_object import CADObject
+from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,7 @@ _CLASS_COLORS = [
 
 # ── Dialog ───────────────────────────────────────────────────────────────
 
-class CADClassDialog(QDialog):
+class FeatureClassDialog(QDialog):
     """Let the user choose geometry type per class."""
 
     def __init__(self, parent, class_info: List[Tuple[str, int]]):
@@ -235,16 +237,16 @@ def _build_polyline_geometry(points: np.ndarray):
 
 # ── Plugin ───────────────────────────────────────────────────────────────
 
-class GenerateCADObjectsPlugin(ActionPlugin):
+class GenerateVectorFeaturesPlugin(ActionPlugin):
     """
-    Generate CAD object branches for classified clusters.
+    Generate vector-feature branches for classified clusters.
 
-    Creates one container per class, with individual CADObject children
-    for each cluster instance.
+    Creates one container per class, with individual VectorFeature children
+    for each cluster instance (render-only viewport geometry).
     """
 
     def get_name(self) -> str:
-        return "generate_cad_objects"
+        return "generate_vector_features"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {}
@@ -294,7 +296,7 @@ class GenerateCADObjectsPlugin(ActionPlugin):
         )
 
         # ── Show dialog ──────────────────────────────────────────────
-        dialog = CADClassDialog(main_window, class_info)
+        dialog = FeatureClassDialog(main_window, class_info)
         if dialog.exec_() != QDialog.Accepted:
             return
 
@@ -349,7 +351,7 @@ class GenerateCADObjectsPlugin(ActionPlugin):
                         continue
 
                     try:
-                        cad_obj = _make_cad_object(
+                        feature = _make_vector_feature(
                             cluster_pts, class_name, geom_type,
                             color, parent_uuid,
                         )
@@ -362,8 +364,8 @@ class GenerateCADObjectsPlugin(ActionPlugin):
                     node_name = f"{class_name}_{seq:03d}"
                     cad_node = DataNode(
                         params=node_name,
-                        data=cad_obj,
-                        data_type="cad_object",
+                        data=feature,
+                        data_type="vector_feature",
                         parent_uid=container_uid,
                         depends_on=[parent_uuid],
                         tags=["cad", class_name],
@@ -403,8 +405,8 @@ class GenerateCADObjectsPlugin(ActionPlugin):
 
 # ── Factory ──────────────────────────────────────────────────────────────
 
-def _make_cad_object(cluster_pts, class_name, geom_type, color, parent_uid):
-    """Build a CADObject for one cluster."""
+def _make_vector_feature(cluster_pts, class_name, geom_type, color, parent_uid):
+    """Build a VectorFeature for one cluster."""
 
     if geom_type == "mesh":
         center, R, extent, h_idx = _compute_obb(cluster_pts)
@@ -415,7 +417,7 @@ def _make_cad_object(cluster_pts, class_name, geom_type, color, parent_uid):
             "faces": [list(f) for f in _BOX_FACES],
             "edges": _BOX_EDGES.copy(),
         }
-        return CADObject(
+        return VectorFeature(
             symbol_type=class_name,
             geometry_type="mesh",
             geometry=geometry,
@@ -438,7 +440,7 @@ def _make_cad_object(cluster_pts, class_name, geom_type, color, parent_uid):
             "vertices": verts,
             "closed": closed,
         }
-        return CADObject(
+        return VectorFeature(
             symbol_type=class_name,
             geometry_type="polyline",
             geometry=geometry,

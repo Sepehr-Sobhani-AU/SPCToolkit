@@ -38,7 +38,11 @@ def _get_eigenvalue_utils():
 
 class PointCloud:
     """
-    Initialize a Clusters object.
+    Container for a 3D point cloud and its optional per-point attributes.
+
+    Holds the (n, 3) point coordinates plus optional colors, normals,
+    intensity, distance-to-ground, and a free-form `attributes` dict for
+    custom per-point arrays. Computes an oriented bounding box lazily.
 
     Required Parameters:
     - points (np.ndarray): A numpy array (n, 3) of points in the format [[x1, y1, z1],

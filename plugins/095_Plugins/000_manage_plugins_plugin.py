@@ -148,6 +148,8 @@ class ManagePluginsDialog(QtWidgets.QDialog):
 
 
 class ManagePluginsPlugin(ActionPlugin):
+    """Open the Manage Plugins dialog (view loaded plugins, reload, unload, scan)."""
+
     def get_name(self) -> str:
         return "manage_plugins"
 

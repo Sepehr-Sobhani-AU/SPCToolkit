@@ -19,7 +19,7 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.entities.cad_object import CADObject
+from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
 
 logger = logging.getLogger(__name__)
@@ -280,7 +280,7 @@ class ClusterBoundaryPlugin(ActionPlugin):
                 aabb_max = np.max(hull_verts, axis=0)
                 dims = (aabb_max - aabb_min).astype(np.float32)
 
-                cad_obj = CADObject(
+                cad_obj = VectorFeature(
                     symbol_type=name,
                     geometry_type="polyline",
                     geometry={
@@ -297,7 +297,7 @@ class ClusterBoundaryPlugin(ActionPlugin):
                 cad_node = DataNode(
                     params=node_name,
                     data=cad_obj,
-                    data_type="cad_object",
+                    data_type="vector_feature",
                     parent_uid=container_uid,
                     depends_on=[parent_uuid],
                     tags=["cad", "boundary"],

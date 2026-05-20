@@ -2,7 +2,7 @@
 Surface Fit Plugin
 
 Fits a bivariate polynomial surface to a single cluster picked in the viewer
-and emits the result as a `cad_object` mesh node so the existing
+and emits the result as a `vector_feature` mesh node so the existing
 `prepare_mesh_lines` → `set_lines` path renders it as a wireframe overlay.
 
 Workflow:
@@ -14,7 +14,7 @@ Workflow:
 4. Delaunay-triangulates the uv scatter, drops triangles whose longest edge
    exceeds `alpha` (alpha-shape), samples a regular uv grid clipped to the
    resulting hull, evaluates the polynomial, and transforms back to world.
-5. Produces a CADObject (geometry_type="mesh") child node under the selected
+5. Produces a VectorFeature (geometry_type="mesh") child node under the selected
    cluster_labels branch; rendered as a cyan wireframe.
 """
 
@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import QMessageBox
 from scipy.spatial import Delaunay, cKDTree
 
 from config.config import global_variables
-from core.entities.cad_object import CADObject
+from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
 from plugins.interfaces import ActionPlugin
 
@@ -250,7 +250,7 @@ class SurfaceFitPlugin(ActionPlugin):
             parent_uuid = uuid.UUID(selected_uid)
             node_name = f"cluster_{seed_cluster_id}_surface_d{degree}"
 
-            cad_obj = CADObject(
+            cad_obj = VectorFeature(
                 symbol_type=node_name,
                 geometry_type="mesh",
                 geometry={
@@ -269,7 +269,7 @@ class SurfaceFitPlugin(ActionPlugin):
                 cad_node = DataNode(
                     params=node_name,
                     data=cad_obj,
-                    data_type="cad_object",
+                    data_type="vector_feature",
                     parent_uid=parent_uuid,
                     depends_on=[parent_uuid],
                     tags=["cad", "surface_fit"],
