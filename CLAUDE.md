@@ -2,9 +2,36 @@
 
 Guidance for Claude Code when working with this repository. For full architecture details (data flows, threading, reconstruction, component diagrams), see **ARCHITECTURE.md**.
 
+## Stage gate (read before proposing implementation work)
+
+This project keeps **Definition** (strategy, scope, priorities) and
+**Construction** (writing plugins / code) in separate sessions. Before
+suggesting any implementation, read these files and respect them:
+
+- **`PROJECT.md`** — purpose, scope, current priority order. The single
+  source of truth for *what* we're building and *what's next*.
+- **`DECISIONS.md`** — dated log of non-obvious calls and *why* they were
+  made. Cite the relevant entry when an in-progress task touches one.
+
+Rules:
+1. If a user request is outside `PROJECT.md`'s in-scope list, or contradicts
+   the "Current priority order" section, flag it before acting. Don't quietly
+   broaden scope.
+2. Strategy / scope / priority changes belong in a Definition session — do
+   not edit `PROJECT.md`'s scope or priority sections from a Construction
+   session without explicit user direction.
+3. When a Definition-level decision is made (priority shift, scope change,
+   deferred item, locked technical choice), append a dated entry to
+   `DECISIONS.md`.
+
 ## Project Overview
 
 SPCToolkit is a PyQt5-based point cloud processing application with a plugin-based architecture. It provides interactive 3D visualization and analysis of point cloud data through a tree-based hierarchical data management system.
+
+## Plugin Development
+
+- This is a point cloud processing project (Python). Follow existing codebase patterns when adding plugins: use backend abstraction (CPU/GPU), register plugins properly, and batch expensive operations (KNN, eigendecomposition) to avoid OOM.
+- When implementing new plugins, review 1-2 similar existing plugins first to match conventions.
 
 ## Running & Testing
 
@@ -64,6 +91,17 @@ class MyManager:
 - Use PyTorch with GPU (CUDA) for ML operations
 - Use Open3D GPU methods when available
 - If GPU fails, report the error — do not silently fall back to CPU
+
+### Memory & Performance
+
+- Always batch/chunk operations over large point clouds (KNN queries, eigendecomposition, candidate processing) to prevent OOM on 10M+ point inputs.
+- Guard GPU backends against tiny batches (e.g., batches smaller than min_cluster_size for HDBSCAN).
+
+### Workflow Preferences
+
+- Prefer replacing libraries directly over adding fallback layers (e.g., use plyfile instead of wrapping Open3D with a fallback).
+- Do NOT use ExitPlanMode for writing/content tasks (LinkedIn posts, documentation drafts) — only for code planning.
+- When committing, split messy working trees into logical, scoped commits rather than one broad commit.
 
 ### Background Threading
 

@@ -77,6 +77,17 @@ A drafter can:
 
 If steps 1–4 work for one full real-world dataset, the architecture is proven.
 
+## Current priority order (2026-05-20)
+1. **Extraction first.** Round out vector-feature extraction from clusters
+   (blocks, lines, surfaces) until a real cluster set produces believable
+   VectorFeatures end-to-end. This is the missing capability today.
+2. **DXF export after.** The DXF wrapper is deferred until extraction is
+   solid. Designing the export schema against imagined outputs risks locking
+   in a contract that doesn't match what the producers actually emit; once
+   the producers are real, the required metadata becomes obvious from the
+   patterns instead of guessed.
+3. **Verticals (outdoor / indoor demos) and hardening** come after both.
+
 ## Non-goals for code style
 This file does not describe code conventions. See `CLAUDE.md` for those
 (singleton over signals, GPU-first, batching, plugin templates).
