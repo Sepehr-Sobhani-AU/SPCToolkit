@@ -37,6 +37,12 @@ DXF with metadata → AutoCAD (symbols, dimensions, sheet, title block) → clie
 - Single-user desktop application
 - Ordinary hardware target (8–32 GB RAM, single consumer GPU)
 - AI/ML-assisted classification and segmentation
+- **Pipeline capture & replay** — each plugin step (plugin + parameters +
+  parent branch) is recorded on every branch, so a full sequence from root
+  point cloud to an outcome branch can be saved as a reusable tool and re-run
+  on a new cloud. Replay is semi-automated: it pauses at interactive steps
+  (e.g. manual cluster selection). Supporting infrastructure for higher-level
+  automation — not a milestone.
 
 ## Out of scope (next 12 months)
 - Replacing AutoCAD/Revit (no symbol library, no dimensioning, no sheet layout, no title blocks)
@@ -77,16 +83,24 @@ A drafter can:
 
 If steps 1–4 work for one full real-world dataset, the architecture is proven.
 
-## Current priority order (2026-05-20)
-1. **Extraction first.** Round out vector-feature extraction from clusters
-   (blocks, lines, surfaces) until a real cluster set produces believable
-   VectorFeatures end-to-end. This is the missing capability today.
+## Current priority order (2026-05-20, refined 2026-05-21)
+1. **A solid set of basic plugins first.** Round out the core analysis plugins
+   for feature classification, segmentation, and vectorising — the "Lego
+   blocks" — until a real cluster set produces believable VectorFeatures
+   end-to-end. Plugins are not built speculatively: define a concrete scenario,
+   attempt it with existing plugins, and only create or update a plugin when a
+   real gap is demonstrated.
 2. **DXF export after.** The DXF wrapper is deferred until extraction is
    solid. Designing the export schema against imagined outputs risks locking
    in a contract that doesn't match what the producers actually emit; once
    the producers are real, the required metadata becomes obvious from the
    patterns instead of guessed.
 3. **Verticals (outdoor / indoor demos) and hardening** come after both.
+
+**Pipeline capture & replay** is cross-cutting infrastructure, not a ranked
+milestone. The per-step metadata it needs is already recorded on every branch;
+the feature itself is built opportunistically once the basic plugin set is
+solid — it is low priority today.
 
 ## Non-goals for code style
 This file does not describe code conventions. See `CLAUDE.md` for those

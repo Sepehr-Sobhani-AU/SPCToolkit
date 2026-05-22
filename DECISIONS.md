@@ -6,6 +6,22 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-05-21 — Pipeline capture & replay is scoped-in infrastructure, not a milestone
+Every plugin step (plugin name + parameters + parent branch) is deliberately
+recorded on each branch so a sequence from root cloud to outcome can later be
+saved as a reusable tool and replayed on a new cloud — this was the original
+design intent behind the per-step metadata. It is in scope but unranked, built
+opportunistically once the basic plugin set is solid, not now. Replay is
+semi-automated: it pauses at interactive steps (e.g. manual cluster selection),
+so it is a guided pipeline, not an unattended batch file.
+
+## 2026-05-21 — Scenario-driven plugin development
+Plugins (the "Lego blocks") are not built speculatively or in bulk. The method:
+define a concrete scenario (e.g. ground/non-ground segmentation), attempt it
+with existing plugins, and only create or update a plugin when that scenario
+demonstrates a real gap. Keeps every plugin justified by a real workflow and
+avoids a sprawl of unused plugins.
+
 ## 2026-05-20 — Extraction before DXF export
 DXF export (formerly M1) is deferred until vector-feature extraction from
 clusters is solid on real data. Designing an export wrapper before
