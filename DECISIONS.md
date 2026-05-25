@@ -6,6 +6,9 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-05-26 — RANSAC is a single-cloud contract; iteration is orchestration on top
+The current code has two disconnected RANSAC paths (CPU line engine and a GPU plane-RANSAC fused inside the surface-region-growing plugin), and adding cylinder/cone primitives would compound the duplication. The locked design: a `core/services/ransac/` layer with a single canonical contract `fit(points, model_type, threshold, normals=None) -> (model, inlier_mask)`, refit logic owned by each model (line, plane, cylinder, cone), pluggable sampler/scorer, and an optional batched `fit_many` fast-path for performance-sensitive orchestrators. Region growing, multi-model extraction, and curve-as-line-segments are orchestrators that *call* RANSAC, not variants of it — splines/arcs/catenaries are deliberately out of scope as primitives. Full design captured in `core/services/RANSAC.md`.
+
 ## 2026-05-21 — Pipeline capture & replay is scoped-in infrastructure, not a milestone
 Every plugin step (plugin name + parameters + parent branch) is deliberately
 recorded on each branch so a sequence from root cloud to outcome can later be
