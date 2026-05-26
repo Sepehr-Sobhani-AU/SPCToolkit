@@ -8,12 +8,14 @@ The RANSAC infrastructure lives at `core/services/ransac/`. It implements the de
 
 ### Primitives and backends
 
-| Primitive | CPU `fit` | GPU `fit` (≥50k pts) | Batched `fit_many` |
-|-----------|-----------|----------------------|---------------------|
-| Line      | ✓ (Phase A) | ✓ (Phase B)        | ✓ (Phase B)        |
-| Plane     | ✓ (Phase A) | ✓ (Phase B)        | ✓ (Phase B)        |
-| Cylinder  | — (Phase C) | — (Phase C/D?)     | —                  |
-| Cone      | — (Phase C) | — (Phase C/D?)     | —                  |
+| Primitive | CPU `fit` | GPU `fit` (≥50k pts) | Batched `fit_many` | Normals     |
+|-----------|-----------|----------------------|---------------------|-------------|
+| Line      | ✓ (Phase A) | ✓ (Phase B)        | ✓ (Phase B)        | optional    |
+| Plane     | ✓ (Phase A) | ✓ (Phase B)        | ✓ (Phase B)        | optional    |
+| Cylinder  | ✓ (Phase C) | — (future)         | CPU fallback        | **required** |
+| Cone      | ✓ (Phase C) | — (future)         | CPU fallback        | **required** |
+
+Cylinder and cone refit is iterative (Levenberg–Marquardt via `scipy.optimize.least_squares`), which doesn't vectorise across rows on GPU. A batched GPU hot loop with CPU per-row refit is plausible but not built — added if a real workload demands it. Until then, `fit_many` for these two primitives uses the sequential CPU fallback automatically because they set `supports_gpu = False`.
 
 ### Public API
 
@@ -60,6 +62,8 @@ core/services/ransac/
         __init__.py
         line.py        # LineModel (CPU + GPU batched)
         plane.py       # PlaneModel (CPU + GPU batched)
+        cylinder.py    # CylinderModel (CPU; LM refit via scipy)
+        cone.py        # ConeModel (CPU; LM refit via scipy)
 ```
 
 Each primitive carries both the CPU single-cloud methods (`fit_minimal`, `distances`, `refit`) and optional batched GPU classmethods (`fit_minimal_batched_gpu`, `distances_batched_gpu`, `refit_batched_gpu`, `unpack_to_model`). Primitives that implement the GPU classmethods set `supports_gpu = True`. Refit lives on the model — SVD via `np.linalg.svd` on CPU and `torch.linalg.svd` on GPU.

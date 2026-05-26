@@ -15,6 +15,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from .base import RansacModel, Sampler, Scorer
+from .primitives.cone import ConeModel
+from .primitives.cylinder import CylinderModel
 from .primitives.line import LineModel
 from .primitives.plane import PlaneModel
 from .samplers import UniformSampler
@@ -24,6 +26,8 @@ from .scorers import MSACScorer
 _MODEL_REGISTRY: dict[str, type[RansacModel]] = {
     "line": LineModel,
     "plane": PlaneModel,
+    "cylinder": CylinderModel,
+    "cone": ConeModel,
 }
 
 # For backend="auto" with a single cloud, only switch to GPU when the

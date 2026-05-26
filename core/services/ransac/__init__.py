@@ -6,6 +6,8 @@ scorers. See ``core/services/RANSAC.md`` for the full design.
 
 from .base import RansacModel, Sampler, Scorer
 from .engine import fit, fit_many, register_model
+from .primitives.cone import ConeModel
+from .primitives.cylinder import CylinderModel
 from .primitives.line import LineModel
 from .primitives.plane import PlaneModel
 from .samplers import UniformSampler
@@ -20,6 +22,8 @@ __all__ = [
     "Scorer",
     "LineModel",
     "PlaneModel",
+    "CylinderModel",
+    "ConeModel",
     "UniformSampler",
     "MSACScorer",
     "InlierCountScorer",
