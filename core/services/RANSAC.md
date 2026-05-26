@@ -1,53 +1,77 @@
 # RANSAC Module
 
-This file documents both the **current state** of RANSAC in the codebase and the **proposed infrastructure design** discussed for consolidating it. The proposed design has not been ratified in a Definition session yet — it is captured here as design intent, not a committed plan.
+The RANSAC infrastructure lives at `core/services/ransac/`. It implements the design ratified in `DECISIONS.md` 2026-05-26: a single-cloud `fit()` contract, model-owned refit, pluggable sampler/scorer, and an extensible primitive set. The longer-form design (layered architecture, four-primitive scope, future direction) is in Part 2 below; Part 1 captures what is built right now.
 
 ---
 
 ## Part 1 — Current state
 
-The project today contains two disconnected RANSAC implementations:
+### Primitives and backends
 
-1. A small CPU engine in `core/services/ransac.py` (NumPy, line model only).
-2. A bespoke batched GPU plane-RANSAC fused into the surface-region-growing plugin (PyTorch/CUDA).
+| Primitive | CPU `fit` | GPU `fit` (≥50k pts) | Batched `fit_many` |
+|-----------|-----------|----------------------|---------------------|
+| Line      | ✓ (Phase A) | ✓ (Phase B)        | ✓ (Phase B)        |
+| Plane     | ✓ (Phase A) | ✓ (Phase B)        | ✓ (Phase B)        |
+| Cylinder  | — (Phase C) | — (Phase C/D?)     | —                  |
+| Cone      | — (Phase C) | — (Phase C/D?)     | —                  |
 
-```mermaid
-graph TB
-    subgraph Core["core/services/ (current)"]
-        ABC["RANSACModel ABC<br/>• min_samples()<br/>• fit(points)<br/>• distances(points)"]
-        LM["LineModel3D<br/>(only concrete model)"]
-        RUN["RANSAC.run()<br/>• random sampling loop<br/>• SVD refit (line-shaped)<br/>• re-evaluate inliers"]
-        TRACER["power_line_tracer.py<br/>PowerLineTracer"]
-        ABC -.implements.-> LM
-        RUN -->|uses| ABC
-        TRACER -->|RANSAC.run + LineModel3D| RUN
-    end
+### Public API
 
-    subgraph Plugins["plugins/ (current)"]
-        PL["power_line_detection_plugin"]
-        SRG["surface_region_growing_plugin"]
-        BATCHED["_batched_ransac (PyTorch/CUDA)<br/>Plane only, batched per voxel<br/>No refit"]
-        SRG -.contains.-> BATCHED
-    end
+```python
+from core.services.ransac import fit, fit_many
 
-    PL -->|delegates tracing| TRACER
+model, inlier_mask = fit(
+    points,                 # (N, 3) np.ndarray
+    model_type,             # "line" | "plane"
+    threshold,
+    normals=None,
+    max_iterations=1000,
+    min_inlier_ratio=0.3,
+    sampler=None,           # CPU only
+    scorer=None,            # CPU only
+    seed=None,
+    backend="auto",         # "auto" | "cpu" | "gpu"
+)
 
-    classDef cpu fill:#fef3c7,stroke:#d97706,color:#000
-    classDef gpu fill:#dbeafe,stroke:#2563eb,color:#000
-    classDef plugin fill:#dcfce7,stroke:#16a34a,color:#000
-
-    class ABC,LM,RUN,TRACER cpu
-    class BATCHED gpu
-    class PL,SRG plugin
+models, masks = fit_many(
+    points_list,            # list[np.ndarray (N_b, 3)] of length B
+    model_type,
+    threshold,
+    normals_list=None,
+    max_iterations=1000,
+    min_inlier_ratio=0.3,
+    seed=None,
+    backend="auto",
+)
 ```
 
-**Known structural issues with the current code:**
+`backend="auto"` picks GPU when CUDA is available *and* (for `fit`) the input is large enough to amortise host↔device transfer — currently `N ≥ 50_000`. `fit_many` always prefers GPU when available, since the parallelism wins regardless of row size. `fit_many` falls back to a sequential CPU loop when CUDA is unavailable.
 
-- The `RANSACModel` ABC advertises generality but `RANSAC.run()`'s SVD refit hard-codes line geometry — no other primitive can slot in without rewriting the engine.
-- `_batched_ransac` is a reusable primitive trapped inside a 1000-line plugin file; any future plane-fitting consumer would have to import from a plugin or duplicate the code.
-- The CPU engine cannot satisfy the project's "maximize GPU usage" rule, so the canonical implementation is structurally non-compliant for any non-trivial workload.
-- `_batched_ransac` skips inlier-refit entirely — every accepted plane is defined by 3 random points, never refined.
-- No shared plane primitive exists in `core/services/`, despite plane fitting being the most common RANSAC use case in point clouds.
+### Package layout
+
+```
+core/services/ransac/
+    __init__.py
+    engine.py          # fit, fit_many, backend dispatch, GPU loop
+    base.py            # RansacModel / Sampler / Scorer ABCs
+    samplers.py        # UniformSampler
+    scorers.py         # MSACScorer (default), InlierCountScorer
+    primitives/
+        __init__.py
+        line.py        # LineModel (CPU + GPU batched)
+        plane.py       # PlaneModel (CPU + GPU batched)
+```
+
+Each primitive carries both the CPU single-cloud methods (`fit_minimal`, `distances`, `refit`) and optional batched GPU classmethods (`fit_minimal_batched_gpu`, `distances_batched_gpu`, `refit_batched_gpu`, `unpack_to_model`). Primitives that implement the GPU classmethods set `supports_gpu = True`. Refit lives on the model — SVD via `np.linalg.svd` on CPU and `torch.linalg.svd` on GPU.
+
+### Tests
+
+`unit_test/ransac/` — plain Python scripts:
+
+- `test_line_fit.py`, `test_plane_fit.py` — Phase A CPU.
+- `test_fit_many.py` — runs on whichever backend is available; covers recovery, mixed pass/fail, empty input.
+- `test_gpu_fit_line.py`, `test_gpu_fit_plane.py` — GPU-only, skip cleanly when CUDA is unavailable.
+- `test_cpu_gpu_parity.py` — same input on both backends recovers the same geometry within numerical tolerance.
 
 ---
 
