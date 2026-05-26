@@ -81,7 +81,7 @@ graph TB
         SCORER["Scorer (pluggable)<br/>• MSAC (default)<br/>• inlier-count<br/>• LO refinement"]
     end
 
-    subgraph Models["core/services/ransac/models/"]
+    subgraph Models["core/services/ransac/primitives/"]
         LINE["LineModel<br/>min=2 pts<br/>refit: SVD (1st PC)"]
         PLANE["PlaneModel<br/>min=3 pts (or 1 pt + normal)<br/>refit: SVD (3rd PC)"]
         CYL["CylinderModel<br/>min=2 pts + 2 normals<br/>refit: iterative (LM)"]
@@ -130,7 +130,7 @@ graph TB
 | **Orchestrator** | Where points come from, how to iterate (region growth, multi-model loop, curve-as-segments), bookkeeping | How a single fit is computed |
 | **Engine** | `fit` contract: given points, find best model + inliers | What the points represent, what happens next |
 | **Model** | Minimal-sample fit, distance function, **refit on inliers**, degeneracy check | Sampling strategy, scoring strategy |
-| **Backend** | NumPy or Torch tensor ops | Geometry; receives operations from models/engine |
+| **Backend** | NumPy or Torch tensor ops | Geometry; receives operations from primitives/engine |
 
 ### Canonical contract
 
