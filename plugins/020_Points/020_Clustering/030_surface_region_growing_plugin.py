@@ -9,8 +9,9 @@ Workflow:
 3. User runs this plugin
 4. Plugin identifies the seed cluster from the clicked point and derives a
    reference normal from the picked point + its K seed-cluster neighbors
-5. Expands the seed across unassigned points using a GPU-resident voxel grid +
-   batched RANSAC plane fitting, gated by the reference normal
+5. Expands the seed across unassigned points using a GPU-resident voxel grid;
+   plane fitting per boundary / candidate voxel is delegated to the shared
+   RANSAC infrastructure (``core/services/ransac.fit_many``)
 6. Returns a new Clusters branch: label 0 = grown surface, -1 = non-surface
 """
 
@@ -20,12 +21,13 @@ import time
 import numpy as np
 import torch
 from scipy.spatial import cKDTree
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, List, Optional, Tuple
 from PyQt5.QtWidgets import QMessageBox, QApplication
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.clusters import Clusters
+from core.services.ransac import PlaneModel, fit_many
 
 logger = logging.getLogger(__name__)
 
@@ -410,13 +412,15 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
 
 
 # ---------------------------------------------------------------------------
-# Region growing implementation (GPU-resident voxel grid, batched RANSAC)
+# Region growing implementation
+#
+# Voxel grid, neighbor enumeration, boundary detection, and the expansion
+# loop are GPU-resident here. Plane fitting per voxel is delegated to the
+# shared RANSAC infrastructure (``core/services/ransac.fit_many``), which
+# also runs on GPU when available. The cost is a CPU↔GPU roundtrip at the
+# fit boundary (the public API takes numpy lists) in exchange for MSAC
+# scoring + refit and a single canonical RANSAC implementation.
 # ---------------------------------------------------------------------------
-
-# Per candidate voxel, we retry RANSAC up to this many times when the
-# candidate-plane/boundary-plane angle gate fails. Implemented as
-# RETRIES × ransac_iterations total iterations with an angle-gate filter.
-_CANDIDATE_RANSAC_TRIES = 3
 
 # Max points per candidate voxel fed to RANSAC. The final surface-point
 # filter still uses ALL points in the voxel — this cap only limits the
@@ -465,7 +469,10 @@ def _region_grow(
 ):
     """
     Grow the seed cluster across unassigned points using a GPU-resident voxel
-    grid + batched RANSAC planes, with an orientation gate against `ref_normal`.
+    grid. Plane fitting per boundary / candidate voxel is delegated to
+    ``core/services/ransac.fit_many``; the orientation gate against
+    ``ref_normal`` and the candidate/boundary angle gate are applied here as
+    post-filters on the best plane returned per row.
 
     Returns:
         (labels_out, stopped_early)
@@ -764,54 +771,73 @@ def _gather_all_points_in_voxels(
     return pts, abs_idx, counts.to(torch.int64)
 
 
-def _batched_ransac(
-    pts: torch.Tensor,         # (N, max_p, 3) candidate points per row (zeros in padding)
-    counts: torch.Tensor,      # (N,) valid point count per row
+def _padded_to_lists(
+    pts: torch.Tensor,        # (B, max_p, 3) padded points (zeros past per-row count)
+    counts: torch.Tensor,     # (B,) valid point count per row
+) -> List[np.ndarray]:
+    """Slice a padded GPU tensor down to per-row numpy arrays for ``fit_many``."""
+    pts_cpu = pts.detach().cpu().numpy()
+    counts_cpu = counts.detach().cpu().numpy()
+    return [pts_cpu[i, : int(counts_cpu[i])] for i in range(len(counts_cpu))]
+
+
+def _fit_planes_batched(
+    pts_list: List[np.ndarray],
+    threshold: float,
     iterations: int,
-    inlier_threshold: float,
+    seed: Optional[int],
     device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Batched RANSAC over `iterations` trials per row.
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Run ``fit_many`` for planes and return GPU tensors aligned to ``pts_list``.
 
-    Returns per-trial tensors (the caller picks best):
-        normals_unit : (N, I, 3)
-        d            : (N, I)
-        inliers      : (N, I) int64 — -1 for degenerate / out-of-range iterations
-        iter_valid   : (N, I) bool
+    Returns:
+        normals : (B, 3) float32 — unit normal per row; zero for invalid rows
+        d       : (B,)   float32 — plane offset such that ``n·x + d = 0``
+        valid   : (B,)   bool    — True where a plane was found
     """
-    N = int(pts.shape[0])
-    max_p = int(pts.shape[1])
-    I = iterations
+    B = len(pts_list)
+    if B == 0:
+        return (
+            torch.zeros(0, 3, dtype=torch.float32, device=device),
+            torch.zeros(0, dtype=torch.float32, device=device),
+            torch.zeros(0, dtype=torch.bool, device=device),
+        )
 
-    counts_f = counts.clamp(min=1).to(torch.float32).view(N, 1, 1)
-    rand = torch.rand(N, I, 3, device=device)
-    max_idx = (counts - 1).clamp(min=0).view(N, 1, 1)
-    sample_idx = (rand * counts_f).long().clamp(max=max_idx)
+    # fit_many requires at least PlaneModel.min_samples points per row; filter
+    # the input down to those rows and map results back into the full-size output.
+    min_samples = PlaneModel.min_samples
+    runnable_local: List[int] = [
+        i for i, p in enumerate(pts_list) if len(p) >= min_samples
+    ]
+    normals_np = np.zeros((B, 3), dtype=np.float32)
+    d_np = np.zeros(B, dtype=np.float32)
+    valid_np = np.zeros(B, dtype=bool)
 
-    gather_idx = sample_idx.unsqueeze(-1).expand(N, I, 3, 3)
-    pts_exp = pts.unsqueeze(1).expand(N, I, max_p, 3)
-    triples = torch.gather(pts_exp, 2, gather_idx)
+    if runnable_local:
+        runnable_pts = [pts_list[i] for i in runnable_local]
+        models, _ = fit_many(
+            runnable_pts,
+            "plane",
+            threshold=threshold,
+            max_iterations=iterations,
+            min_inlier_ratio=0.0,  # the orchestrator applies its own filters
+            seed=seed,
+        )
+        for j, i in enumerate(runnable_local):
+            model = models[j]
+            if model is None:
+                continue
+            normal = np.asarray(model.normal, dtype=np.float32)
+            point = np.asarray(model.point, dtype=np.float32)
+            normals_np[i] = normal
+            d_np[i] = -float(np.dot(normal, point))
+            valid_np[i] = True
 
-    p0 = triples[:, :, 0]
-    v1 = triples[:, :, 1] - p0
-    v2 = triples[:, :, 2] - p0
-    normals = torch.cross(v1, v2, dim=-1)
-    mag = torch.norm(normals, dim=-1, keepdim=True)
-    iter_valid = mag.squeeze(-1) > 1e-10
-    normals_unit = normals / mag.clamp(min=1e-10)
-    d = -(normals_unit * p0).sum(dim=-1)
-
-    dists = torch.einsum('npk,nik->npi', pts, normals_unit) + d.unsqueeze(1)
-    pts_valid = (
-        torch.arange(max_p, device=device).unsqueeze(0) < counts.unsqueeze(1)
-    ).unsqueeze(-1)
-    inliers = ((dists.abs() < inlier_threshold) & pts_valid).sum(dim=1)
-    inliers = torch.where(iter_valid, inliers, torch.full_like(inliers, -1))
-
-    # Enough valid points to even form a plane?
-    row_ok = counts >= 3
-    inliers = torch.where(row_ok.unsqueeze(1), inliers, torch.full_like(inliers, -1))
-    return normals_unit, d, inliers, iter_valid
+    return (
+        torch.from_numpy(normals_np).to(device),
+        torch.from_numpy(d_np).to(device),
+        torch.from_numpy(valid_np).to(device),
+    )
 
 
 def _process_chunk_gpu(
@@ -844,11 +870,12 @@ def _process_chunk_gpu(
     B = int(chunk.numel())
     if B == 0:
         return 0
-    I = ransac_iterations
 
     # -------------------------------------------------------------------
     # Step 1: Boundary-voxel RANSAC — surface points WITHIN each boundary
-    # voxel (no neighbor expansion).
+    # voxel (no neighbor expansion). Plane fitting goes through the shared
+    # RANSAC infrastructure; orientation gates are applied as post-filters
+    # on the best plane returned per row.
     # -------------------------------------------------------------------
     b_self_vidx = chunk.view(B, 1)
     b_self_valid = torch.ones(B, 1, dtype=torch.bool, device=device)
@@ -860,29 +887,20 @@ def _process_chunk_gpu(
     if b_surf_pts.shape[1] < 3:
         return 0
 
-    b_normals, b_d_all, b_inliers, _ = _batched_ransac(
-        b_surf_pts, b_surf_cnt, I, ransac_inlier_threshold, device
+    b_pts_list = _padded_to_lists(b_surf_pts, b_surf_cnt)
+    best_b_normal, best_b_d, boundary_has_plane = _fit_planes_batched(
+        b_pts_list, ransac_inlier_threshold, ransac_iterations,
+        seed=None, device=device,
     )
 
     # Skip voxels that don't meet the minimum surface-point count.
     enough_pts = b_surf_cnt >= min_voxel_surface_points
-    b_inliers = torch.where(
-        enough_pts.unsqueeze(1), b_inliers, torch.full_like(b_inliers, -1)
-    )
+    boundary_has_plane = boundary_has_plane & enough_pts
 
     # Optional reference-normal gate.
     if use_ref_normal_gate:
-        ref_dot = (b_normals * ref_normal_t.view(1, 1, 3)).sum(dim=-1).abs()
-        ref_ok = ref_dot >= cos_threshold
-        b_inliers = torch.where(ref_ok, b_inliers, torch.full_like(b_inliers, -1))
-
-    best_b_iter = b_inliers.argmax(dim=1)
-    best_b_count = b_inliers.gather(1, best_b_iter.unsqueeze(1)).squeeze(1)
-    best_b_normal = b_normals.gather(
-        1, best_b_iter.view(B, 1, 1).expand(B, 1, 3)
-    ).squeeze(1)
-    best_b_d = b_d_all.gather(1, best_b_iter.unsqueeze(1)).squeeze(1)
-    boundary_has_plane = best_b_count > 0
+        ref_dot = (best_b_normal * ref_normal_t.view(1, 3)).sum(dim=-1).abs()
+        boundary_has_plane = boundary_has_plane & (ref_dot >= cos_threshold)
 
     if not bool(boundary_has_plane.any()):
         return 0
@@ -919,7 +937,9 @@ def _process_chunk_gpu(
         return 0
 
     # Flatten to (boundary, candidate) pairs and process in sub-batches to
-    # bound peak GPU memory (RANSAC tensors scale as C × max_p × 3·I).
+    # bound peak GPU memory (the gathered-points tensor scales as C × max_p × 3,
+    # and fit_many's internal batched RANSAC adds another C × max_p × 3 staging
+    # tensor on top).
     bi_full, ki_full = torch.nonzero(is_cand_pair, as_tuple=True)
     cand_vidx_full = nb_idx[bi_full, ki_full]
     cand_b_normal_full = best_b_normal[bi_full]
@@ -927,7 +947,6 @@ def _process_chunk_gpu(
     C_total = int(cand_vidx_full.numel())
 
     accepted_chunks = []
-    total_iters = I * _CANDIDATE_RANSAC_TRIES
 
     for c_start in range(0, C_total, _CANDIDATE_CHUNK):
         c_end = min(c_start + _CANDIDATE_CHUNK, C_total)
@@ -960,29 +979,16 @@ def _process_chunk_gpu(
         if max_cand < 3:
             continue
         cand_pts = pts_sorted[:, :max_cand, :]
-        cand_valid_pad = (
-            torch.arange(max_cand, device=device).unsqueeze(0)
-            < cand_pt_cnt.unsqueeze(1)
-        )
-        cand_pts = cand_pts * cand_valid_pad.unsqueeze(-1).to(cand_pts.dtype)
 
-        # --- Step 4: candidate-voxel RANSAC with angle gate ---
-        c_normals, c_d_all, c_inliers, _ = _batched_ransac(
-            cand_pts, cand_pt_cnt, total_iters, ransac_inlier_threshold, device,
+        # --- Step 4: candidate-voxel RANSAC, then angle gate against the
+        # boundary plane.
+        c_pts_list = _padded_to_lists(cand_pts, cand_pt_cnt)
+        best_c_normal, best_c_d, candidate_has_plane = _fit_planes_batched(
+            c_pts_list, ransac_inlier_threshold, ransac_iterations,
+            seed=None, device=device,
         )
-        ang_dot = (c_normals * cand_b_normal.view(C, 1, 3)).sum(dim=-1).abs()
-        angle_ok = ang_dot >= cos_threshold
-        c_inliers = torch.where(
-            angle_ok, c_inliers, torch.full_like(c_inliers, -1)
-        )
-
-        best_c_iter = c_inliers.argmax(dim=1)
-        best_c_count = c_inliers.gather(1, best_c_iter.unsqueeze(1)).squeeze(1)
-        best_c_normal = c_normals.gather(
-            1, best_c_iter.view(C, 1, 1).expand(C, 1, 3)
-        ).squeeze(1)
-        best_c_d = c_d_all.gather(1, best_c_iter.unsqueeze(1)).squeeze(1)
-        candidate_has_plane = best_c_count > 0
+        ang_dot = (best_c_normal * cand_b_normal).sum(dim=-1).abs()
+        candidate_has_plane = candidate_has_plane & (ang_dot >= cos_threshold)
         if not bool(candidate_has_plane.any()):
             continue
 
@@ -1000,7 +1006,7 @@ def _process_chunk_gpu(
 
         # Free large intermediates before the next sub-batch.
         del cand_all_pts, cand_all_idx, cand_slot_valid, perp_b, is_cand_pt
-        del pts_sorted, cand_pts, c_normals, c_d_all, c_inliers, perp_c
+        del pts_sorted, cand_pts, perp_c
 
     if not accepted_chunks:
         return 0
