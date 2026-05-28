@@ -67,6 +67,7 @@ class PointPickingMixin:
 
         threshold = self.max_extent * self.picking_point_threshold_factor
 
+        self._ensure_kdtree()
         if self._kdtree is not None:
             min_distance, min_index = self._kdtree.query(pick_point, k=1)
         else:

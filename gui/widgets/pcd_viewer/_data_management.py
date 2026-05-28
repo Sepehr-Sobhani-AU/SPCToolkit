@@ -37,6 +37,11 @@ class DataManagementMixin:
         self._kdtree = None
         MemoryManager.cleanup()
 
+    def _ensure_kdtree(self):
+        """Build the KDTree on demand. Used lazily by point picking."""
+        if self._kdtree is None and self.points is not None:
+            self._kdtree = cKDTree(self.points[:, :3])
+
     def _clear_display(self):
         """Clear the display: release data and trigger repaint."""
         self._release_point_data()
@@ -139,10 +144,8 @@ class DataManagementMixin:
             self.points[:, 3:] = colors
             logger.debug(f"  Combined array: {self.points.shape}, {self.points.nbytes / 1024 / 1024:.1f} MB")
 
-            # Build spatial index for fast point picking
-            logger.debug("  Building KDTree spatial index...")
-            self._kdtree = cKDTree(self.points[:, :3])
-            logger.debug("  KDTree built")
+            # KDTree is built lazily on first pick query.
+            self._kdtree = None
 
             self.update()
             logger.debug("  set_points() completed")
@@ -191,10 +194,8 @@ class DataManagementMixin:
             self.points = vertices
             logger.debug(f"  Assigned {len(vertices):,} point vertices directly")
 
-            # Build spatial index for fast point picking
-            logger.debug("  Building KDTree spatial index...")
-            self._kdtree = cKDTree(self.points[:, :3])
-            logger.debug("  KDTree built")
+            # KDTree is built lazily on first pick query.
+            self._kdtree = None
 
             self.update()
             logger.debug("  set_point_vertices() completed")
