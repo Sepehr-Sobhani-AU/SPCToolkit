@@ -1,11 +1,21 @@
 # plugins/analysis/subtract_plugin.py
 from typing import Dict, Any, List, Tuple
+import logging
 import numpy as np
 import uuid
+
+logger = logging.getLogger(__name__)
 
 from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.masks import Masks
+
+try:
+    import cupy as _cp
+    _HAS_CUPY = True
+except Exception:  # pragma: no cover - CuPy is optional
+    _cp = None
+    _HAS_CUPY = False
 
 
 class SubtractPlugin(Plugin):
@@ -100,16 +110,20 @@ class SubtractPlugin(Plugin):
         if target_points.shape[1] != subtract_points.shape[1]:
             raise ValueError("Point dimensions do not match between the two point clouds")
 
+        if global_variables.global_cancel_event.is_set():
+            raise RuntimeError("Subtract cancelled.")
+
         global_variables.global_progress = (50, f"Comparing {len(target_points):,} vs {len(subtract_points):,} points...")
 
-        # Convert rows to structured dtype to enable vectorized comparison
-        dtype = [('f0', target_points.dtype), ('f1', target_points.dtype), ('f2', target_points.dtype)]
+        # Ensure C-contiguous and a common dtype so view-based row hashing is safe.
+        common_dtype = np.promote_types(target_points.dtype, subtract_points.dtype)
+        A = np.ascontiguousarray(target_points, dtype=common_dtype)
+        B = np.ascontiguousarray(subtract_points, dtype=common_dtype)
 
-        # Create structured views of the arrays for exact comparison
-        target_view = target_points.view(dtype).reshape(-1)
-        subtract_view = subtract_points.view(dtype).reshape(-1)
+        mask = self._row_isin_not(A, B)
 
-        mask = ~np.isin(target_view, subtract_view)
+        if global_variables.global_cancel_event.is_set():
+            raise RuntimeError("Subtract cancelled.")
 
         # Create a Masks object with the result
         result_mask = Masks(mask)
@@ -117,3 +131,74 @@ class SubtractPlugin(Plugin):
         # Return results, type, and dependencies
         dependencies = [data_node.uid, subtract_uid]
         return result_mask, "masks", dependencies
+
+    @staticmethod
+    def _row_isin_not(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        """
+        Boolean mask of rows in A that are NOT present in B (exact match).
+
+        On GPU (CuPy): runs the full pipeline -- transfer, row-wise unique,
+        and isin -- on the device. On CPU: reduces rows to int64 ids via
+        np.unique on a stacked void-view, then np.isin(kind='table').
+        """
+        n = len(A)
+        if n == 0:
+            return np.zeros(0, dtype=bool)
+        if len(B) == 0:
+            return np.ones(n, dtype=bool)
+
+        if _HAS_CUPY:
+            try:
+                return SubtractPlugin._row_isin_not_gpu(A, B)
+            except Exception as exc:
+                logger.warning(
+                    "Subtract: CuPy path failed (%s); falling back to NumPy.", exc
+                )
+
+        return SubtractPlugin._row_isin_not_cpu(A, B)
+
+    @staticmethod
+    def _row_isin_not_gpu(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        from config.config import global_variables
+
+        cancel_event = global_variables.global_cancel_event
+        n = len(A)
+
+        A_g = _cp.asarray(A)
+        B_g = _cp.asarray(B)
+        if cancel_event.is_set():
+            raise RuntimeError("Subtract cancelled.")
+
+        stacked = _cp.concatenate([A_g, B_g], axis=0)
+        # cp.unique with axis=0 deduplicates whole rows on the device.
+        _, inv = _cp.unique(stacked, axis=0, return_inverse=True)
+        if cancel_event.is_set():
+            raise RuntimeError("Subtract cancelled.")
+
+        tgt_ids = inv[:n]
+        sub_ids = inv[n:]
+        mask_g = ~_cp.isin(tgt_ids, sub_ids)
+        return _cp.asnumpy(mask_g)
+
+    @staticmethod
+    def _row_isin_not_cpu(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        from config.config import global_variables
+
+        cancel_event = global_variables.global_cancel_event
+        n = len(A)
+
+        row_bytes = A.dtype.itemsize * A.shape[1]
+        void_dtype = np.dtype((np.void, row_bytes))
+
+        stacked = np.concatenate([A, B], axis=0)
+        stacked_v = stacked.reshape(-1).view(void_dtype)
+        if cancel_event.is_set():
+            raise RuntimeError("Subtract cancelled.")
+
+        _, inv = np.unique(stacked_v, return_inverse=True)
+        if cancel_event.is_set():
+            raise RuntimeError("Subtract cancelled.")
+
+        tgt_ids = inv[:n]
+        sub_ids = inv[n:]
+        return ~np.isin(tgt_ids, sub_ids, kind='table')
