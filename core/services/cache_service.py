@@ -6,7 +6,7 @@ Pure Core service — no GUI or framework imports.
 """
 import time
 import uuid
-from typing import Optional
+from typing import Callable, List, Optional
 
 
 class CacheService:
@@ -18,6 +18,23 @@ class CacheService:
             data_nodes: DataNodes collection instance.
         """
         self.data_nodes = data_nodes
+        # Callbacks fired after invalidate()/invalidate_descendants() with the
+        # list of uid strings whose caches were dropped. Used by the rendering
+        # coordinator to drop its per-branch vertex cache for the same uids.
+        self._invalidate_listeners: List[Callable[[List[str]], None]] = []
+
+    def add_invalidate_listener(self, callback: Callable[[List[str]], None]) -> None:
+        """Register a callback fired with the list of invalidated uids."""
+        self._invalidate_listeners.append(callback)
+
+    def _notify_invalidated(self, uids: List[str]) -> None:
+        if not uids:
+            return
+        for cb in self._invalidate_listeners:
+            try:
+                cb(uids)
+            except Exception:
+                pass
 
     def get(self, uid) -> Optional[object]:
         """
@@ -68,6 +85,7 @@ class CacheService:
         node.cached_point_cloud = None
         node.is_cached = False
         node.cache_timestamp = None
+        self._notify_invalidated([str(node.uid)])
 
     def invalidate_descendants(self, uid) -> None:
         """
@@ -84,10 +102,13 @@ class CacheService:
         else:
             uid_obj = uid
 
+        invalidated: List[str] = []
         for node_uid, node in self.data_nodes.data_nodes.items():
             if self._is_descendant_of(node, uid_obj) and node.is_cached:
                 node.cached_point_cloud = None
                 node.cache_timestamp = None
+                invalidated.append(str(node_uid))
+        self._notify_invalidated(invalidated)
 
     def is_cached(self, uid) -> bool:
         """

@@ -79,6 +79,17 @@ class ApplicationController:
             data_nodes, reconstruction_service, cache_service
         )
 
+        # When the reconstruction cache is invalidated for any uid, drop the
+        # rendering coordinator's per-branch vertex cache for the same uid so
+        # the next render reflects the updated point cloud.
+        def _on_cache_invalidated(uids):
+            rc = controller.rendering_coordinator
+            if rc is None:
+                return
+            for uid in uids:
+                rc.invalidate_branch(uid)
+        cache_service.add_invalidate_listener(_on_cache_invalidated)
+
         return controller
 
     # === Data Operations ===
