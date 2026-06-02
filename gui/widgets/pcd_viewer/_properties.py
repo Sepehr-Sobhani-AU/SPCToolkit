@@ -289,7 +289,12 @@ class ViewerPropertiesMixin:
         controller = global_variables.global_application_controller
         rc = controller.rendering_coordinator if controller else None
         full = rc.total_visible_points if rc else 0
-        rendered = len(self.points) if self.points is not None else 0
+        # Count from per-branch slices to avoid materialising the combined array.
+        rendered = sum(
+            len(self._branch_vertices[uid])
+            for uid in self._visible_branches
+            if uid in self._branch_vertices
+        )
         return {
             "sample_rate": f"{self._current_sample_rate:.1%}",
             "point_budget": rc._point_budget if rc else 0,

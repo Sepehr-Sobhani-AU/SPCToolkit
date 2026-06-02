@@ -44,9 +44,6 @@ class RenderingCoordinator:
         self._point_budget: int = 50_000_000
         self._total_visible_points: int = 0
 
-        # Per-branch index ranges in the combined vertex array: uid -> (start, end)
-        self.branch_offsets: Dict[str, tuple] = {}
-
         # Per-branch cached Nx6 vertex slices (post-LOD). Reused across
         # visibility toggles so a toggle becomes O(toggled branch) instead
         # of O(all visible points). Cleared on sample-rate change.
@@ -71,16 +68,16 @@ class RenderingCoordinator:
     def total_visible_points(self) -> int:
         return self._total_visible_points
 
-    def prepare_vertices(self, visibility_status: dict,
+    def prepare_branches(self, visibility_status: dict,
                          sample_rate: float = 1.0,
                          camera_distance: float = 1.0,
                          zoom_factor: float = 1.0,
-                         max_extent: float = 1.0) -> Optional[np.ndarray]:
-        """
-        Prepare combined vertex array for all visible nodes.
+                         max_extent: float = 1.0):
+        """Prepare per-branch vertex slices for all visible nodes.
 
-        Handles reconstruction, caching, LOD subsampling, and vertex
-        buffer assembly.
+        Handles reconstruction, caching, and LOD subsampling. Does NOT
+        concatenate — that work belongs to the viewer (and only happens
+        lazily there when picking/zoom needs a global index).
 
         Args:
             visibility_status: Dict mapping uid strings to visibility bools.
@@ -90,18 +87,22 @@ class RenderingCoordinator:
             max_extent: Max extent of visible point cloud (for LOD).
 
         Returns:
-            Vertex array (N, 6) of [x,y,z,r,g,b] float32, or None if empty.
-            Also returns a dict of per-node metadata for GUI updates.
+            (slices_by_uid, visible_order) where:
+              - slices_by_uid: ``{uid: Nx6 float32}``, only point branches
+                that have data (vector features are skipped — they render
+                via prepare_mesh_lines()).
+              - visible_order: ordered list of uids matching the user's
+                visibility intent.
         """
         from infrastructure.memory_manager import MemoryManager
 
-        self.branch_offsets = {}
         uids_to_show = [uid for uid, vis in visibility_status.items() if vis]
         logger.debug(f"Visible branches: {len(uids_to_show)}")
 
         if not uids_to_show:
             self._total_visible_points = 0
-            return None
+            self._last_node_metadata = {}
+            return {}, []
 
         # Estimate total points and cache status
         total_points = 0
@@ -159,9 +160,12 @@ class RenderingCoordinator:
         # Per-node metadata for GUI updates
         node_metadata = {}
 
-        # Build (or reuse) per-branch Nx6 slices, then concatenate.
-        per_branch_slices: List[np.ndarray] = []
-        per_branch_uids: List[str] = []
+        # Build (or reuse) per-branch Nx6 slices. The viewer receives the
+        # dict directly — no concatenation here, so toggling visibility
+        # never pays for an O(total visible points) memcpy.
+        slices_by_uid: Dict[str, np.ndarray] = {}
+        visible_order: List[str] = []
+        total_rendered = 0
 
         for uid_idx, uid in enumerate(uids_to_show):
             logger.debug(f"Processing branch {uid_idx + 1}/{len(uids_to_show)}: {uid[:8]}...")
@@ -182,8 +186,9 @@ class RenderingCoordinator:
                         'newly_cached': False,
                         'is_cached': node.is_cached,
                     }
-                    per_branch_slices.append(cached_slice)
-                    per_branch_uids.append(uid)
+                    slices_by_uid[uid] = cached_slice
+                    visible_order.append(uid)
+                    total_rendered += len(cached_slice)
                     continue
 
                 # Reconstruct (uses cache if available)
@@ -231,8 +236,9 @@ class RenderingCoordinator:
                     branch_slice[:, 3:] = 1.0  # White
 
                 self._branch_vertex_cache[uid] = branch_slice
-                per_branch_slices.append(branch_slice)
-                per_branch_uids.append(uid)
+                slices_by_uid[uid] = branch_slice
+                visible_order.append(uid)
+                total_rendered += slice_n
 
             except Exception as e:
                 logger.error(f"Error processing branch {uid}: {e}")
@@ -246,22 +252,12 @@ class RenderingCoordinator:
 
         self._last_node_metadata = node_metadata
 
-        if not per_branch_slices:
-            return None
-
-        # Concatenate and rebuild branch_offsets from slice lengths.
-        vertices = np.concatenate(per_branch_slices, axis=0)
-        offset = 0
-        for uid, sl in zip(per_branch_uids, per_branch_slices):
-            n = len(sl)
-            self.branch_offsets[uid] = (offset, offset + n)
-            offset += n
-
-        logger.info(f"Rendering {offset:,} points (LOD: {sample_rate:.1%})")
-        return vertices
+        logger.info(f"Rendering {total_rendered:,} points across "
+                    f"{len(visible_order)} branches (LOD: {sample_rate:.1%})")
+        return slices_by_uid, visible_order
 
     def get_node_metadata(self) -> dict:
-        """Get per-node metadata from the last prepare_vertices() call."""
+        """Get per-node metadata from the last prepare_branches() call."""
         return getattr(self, '_last_node_metadata', {})
 
     def _get_node_point_count(self, node) -> int:

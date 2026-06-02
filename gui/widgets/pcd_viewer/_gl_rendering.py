@@ -60,7 +60,7 @@ class GLRenderingMixin:
         If no point cloud data is set, the method returns without rendering anything.
         """
 
-        has_points = self.points is not None
+        has_points = bool(self._visible_branches)
         has_lines = self.line_vertices is not None and self.line_indices is not None
         if (not has_points and not has_lines) or self.max_extent is None:
             return
@@ -129,48 +129,58 @@ class GLRenderingMixin:
         self.render_zoom_window_overlay()
 
     def render_point_cloud(self):
+        """Render visible branches as GL_POINTS, one VBO per branch.
+
+        Per-branch VBOs make visibility toggles O(1): no concat, no GPU
+        upload, no GC. A toggle changes self._visible_branches and queues
+        replaced VBOs for deletion; this method drains the queue (GL
+        context is current here) and lazily creates new VBOs.
         """
-        Render the point cloud data using OpenGL VBO.
-        """
-        if self.points is None:
+        if not self._visible_branches:
             return
 
+        # Drain deletions queued by set_branches() — we have the GL
+        # context now, which set_branches() doesn't.
+        if self._pending_vbo_deletions:
+            for v in self._pending_vbo_deletions:
+                try:
+                    v.delete()
+                except Exception:
+                    pass
+            self._pending_vbo_deletions.clear()
+
         try:
-            # Create VBO if needed
-            if self.vbo is None:
-                num_points = len(self.points)
-                data_size_mb = self.points.nbytes / (1024 * 1024)
-                logger.debug(f"  Creating VBO: {num_points:,} points, {data_size_mb:.1f} MB")
-                self.vbo = vbo.VBO(self.points)
-                logger.debug("  VBO created")
-
             glPointSize(self.point_size)
-
-            # Enable client states
             glEnableClientState(GL_VERTEX_ARRAY)
             glEnableClientState(GL_COLOR_ARRAY)
 
-            # Bind the VBO
-            self.vbo.bind()
+            for uid in self._visible_branches:
+                slc = self._branch_vertices.get(uid)
+                if slc is None or len(slc) == 0:
+                    continue
 
-            # Set pointers to the VBO data
-            stride = 6 * self.points.itemsize
-            glVertexPointer(3, GL_FLOAT, stride, self.vbo)
-            glColorPointer(3, GL_FLOAT, stride, self.vbo + 12)
+                v = self._branch_vbos.get(uid)
+                if v is None:
+                    v = vbo.VBO(slc)
+                    self._branch_vbos[uid] = v
+                    logger.debug(
+                        f"  Created VBO for {uid[:8]}…: "
+                        f"{len(slc):,} pts, {slc.nbytes / (1024 * 1024):.1f} MB"
+                    )
 
-            # Draw all points
-            glDrawArrays(GL_POINTS, 0, len(self.points))
+                v.bind()
+                stride = 6 * slc.itemsize
+                glVertexPointer(3, GL_FLOAT, stride, v)
+                glColorPointer(3, GL_FLOAT, stride, v + 12)
+                glDrawArrays(GL_POINTS, 0, len(slc))
+                v.unbind()
 
-            # Disable client states
             glDisableClientState(GL_VERTEX_ARRAY)
             glDisableClientState(GL_COLOR_ARRAY)
 
-            # Unbind the VBO to prevent issues with other rendering
-            self.vbo.unbind()
-
         except Exception as e:
             logger.error(f"  ERROR in render_point_cloud(): {e}")
-            logger.error(f"  Points shape: {self.points.shape if self.points is not None else 'None'}")
+            logger.error(f"  Visible branches: {len(self._visible_branches)}")
             logger.error(f"  Traceback:\n{traceback.format_exc()}")
             raise
 
@@ -215,23 +225,29 @@ class GLRenderingMixin:
         If no points have been picked, the method returns without rendering anything.
         """
 
-        # Highlight picked points by drawing larger points
-        if self.picked_points_indices:
-            # Filter out invalid indices
-            max_idx = len(self.points) - 1
-            valid = [i for i in self.picked_points_indices if i <= max_idx]
-            if len(valid) != len(self.picked_points_indices):
-                self.picked_points_indices[:] = valid
+        # Highlight picked points by drawing larger points.
+        # Accessing self.points materialises the combined array; we only
+        # pay that on frames where picked points actually exist.
+        if not self.picked_points_indices:
+            return
+        pts = self.points
+        if pts is None:
+            return
 
-            if valid:
-                positions = self.points[valid, :3]
-                highlight_size = self.point_size * self.picked_point_highlight_size * self._PICKED_POINT_SIZE_MULTIPLIER
-                glPointSize(highlight_size)
-                glColor3f(*self.picked_point_highlight_color)
-                glBegin(GL_POINTS)
-                for pos in positions:
-                    glVertex3f(pos[0], pos[1], pos[2])
-                glEnd()
+        max_idx = len(pts) - 1
+        valid = [i for i in self.picked_points_indices if i <= max_idx]
+        if len(valid) != len(self.picked_points_indices):
+            self.picked_points_indices[:] = valid
+
+        if valid:
+            positions = pts[valid, :3]
+            highlight_size = self.point_size * self.picked_point_highlight_size * self._PICKED_POINT_SIZE_MULTIPLIER
+            glPointSize(highlight_size)
+            glColor3f(*self.picked_point_highlight_color)
+            glBegin(GL_POINTS)
+            for pos in positions:
+                glVertex3f(pos[0], pos[1], pos[2])
+            glEnd()
 
     def resizeGL(self, w, h):
         """
@@ -276,10 +292,20 @@ class GLRenderingMixin:
         # Make the OpenGL context current
         self.makeCurrent()
 
-        if self.vbo is not None:
-            self.vbo.unbind()
-            self.vbo.delete()
-            self.vbo = None  # Remove the reference to the VBO
+        # Delete all per-branch VBOs and any pending deletions.
+        for v in self._branch_vbos.values():
+            try:
+                v.unbind()
+                v.delete()
+            except Exception:
+                pass
+        self._branch_vbos.clear()
+        for v in self._pending_vbo_deletions:
+            try:
+                v.delete()
+            except Exception:
+                pass
+        self._pending_vbo_deletions.clear()
 
         # Now, delete OpenGL resources explicitly
         self.deleteOpenGLResources()

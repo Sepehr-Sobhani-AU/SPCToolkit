@@ -601,8 +601,8 @@ class MainWindow(QtWidgets.QMainWindow):
     # === Rendering ===
 
     def _render_visible_data(self, visibility_status: dict, zoom_extent: bool = False):
-        """Prepare and display vertex data for all visible nodes."""
-        vertices = self.controller.rendering_coordinator.prepare_vertices(
+        """Prepare and display per-branch vertex data for all visible nodes."""
+        slices_by_uid, visible_order = self.controller.rendering_coordinator.prepare_branches(
             visibility_status=visibility_status,
             sample_rate=self._current_sample_rate,
             camera_distance=self.pcd_viewer_widget.camera_distance,
@@ -632,21 +632,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.controller.rendering_coordinator.prepare_mesh_lines(visibility_status)
         )
 
-        # Send to viewer
-        if vertices is not None:
-            self.pcd_viewer_widget.set_branch_offsets(
-                self.controller.rendering_coordinator.branch_offsets
-            )
-            self.pcd_viewer_widget.set_point_vertices(vertices)
-        else:
-            self.pcd_viewer_widget.set_branch_offsets({})
-            self.pcd_viewer_widget.set_points(None)
+        # Hand per-branch slices to the viewer. Identity is preserved when
+        # a slice came from the coordinator's cache, so toggling visibility
+        # on a previously-shown branch reuses the same VBO — no concat,
+        # no GPU upload.
+        self.pcd_viewer_widget.set_branches(slices_by_uid, visible_order)
 
         # Set line geometry (independent of point data)
         self.pcd_viewer_widget.set_lines(mesh_verts, mesh_edges, mesh_colors)
-        self.pcd_viewer_widget.update()
 
-        if zoom_extent and vertices is not None:
+        if zoom_extent and visible_order:
             self.pcd_viewer_widget.zoom_to_extent(preserve_rotation=True)
 
     def render_visible_data(self, zoom_extent: bool = False):

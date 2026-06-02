@@ -10,17 +10,10 @@ class BranchSelectionMixin:
     """Branch-scoped selection helpers for PCDViewerWidget."""
 
     def _init_branch_state(self):
-        """Initialize branch offset and LOD state."""
-        # Per-branch index ranges in combined vertex array: uid -> (start, end)
-        self._branch_offsets = {}
-
-        # LOD state (for triggering DataManager re-render)
+        """Initialize LOD state. (Per-branch offsets live on the data mixin
+        as a lazy property — see DataManagementMixin._branch_offsets.)"""
         self._current_sample_rate: float = 1.0
         self._lod_enabled: bool = True  # Dynamic LOD for large point clouds
-
-    def set_branch_offsets(self, offsets: dict):
-        """Store per-branch index ranges for selection filtering."""
-        self._branch_offsets = offsets
 
     def _is_index_in_selected_branch(self, index: int) -> bool:
         """Check if a point index belongs to one of the selected branches."""
