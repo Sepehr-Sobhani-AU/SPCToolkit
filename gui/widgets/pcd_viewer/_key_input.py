@@ -70,7 +70,7 @@ class KeyInputMixin:
         elif event.key() == Qt.Key_C:
             main_window = global_variables.global_main_window
             if main_window:
-                main_window.execute_action_plugin("cut_cluster")
+                main_window.execute_action_plugin("split_clusters")
         elif event.key() == Qt.Key_M:
             main_window = global_variables.global_main_window
             if main_window:

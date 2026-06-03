@@ -1,11 +1,11 @@
 """
-Plugin for cutting (splitting) selected points out of their cluster(s) into new clusters.
+Plugin for splitting selected points out of their cluster(s) into new clusters.
 
 Workflow:
 1. User selects a cluster_labels branch, picks points (Shift+Click or Polygon)
-2. Runs Clusters > Cut Cluster
+2. Runs Clusters > Split Clusters
 3. Selected points are removed from their original clusters and assigned new cluster IDs
-4. Each affected cluster produces one new cluster from its cut-out points
+4. Each affected cluster produces one new cluster from its split-out points
 5. Colors regenerated, view refreshed, picked points cleared
 """
 
@@ -19,10 +19,10 @@ from config.config import global_variables
 from core.entities.clusters import Clusters
 
 
-class CutClusterPlugin(ActionPlugin):
+class SplitClustersPlugin(ActionPlugin):
 
     def get_name(self) -> str:
-        return "cut_cluster"
+        return "split_clusters"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {}
