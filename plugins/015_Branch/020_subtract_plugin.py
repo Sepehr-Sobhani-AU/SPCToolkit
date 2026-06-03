@@ -90,19 +90,32 @@ class SubtractPlugin(Plugin):
         target_pc = data_node.data
         target_points = target_pc.points
 
-        # Get the subtract node and reconstruct it to a point cloud
         try:
             subtract_uid = uuid.UUID(params["subtract_node"])
             subtract_node = data_nodes.get_node(subtract_uid)
 
             if subtract_node is None:
                 raise ValueError(f"Branch with UUID {subtract_uid} not found")
+        except Exception as e:
+            raise ValueError(f"Error processing branch to subtract: {str(e)}")
 
+        # Fast path: when the subtract branch shares lineage with the target and
+        # was carved out by boolean masks (e.g. ground extracted from the same
+        # normal-estimated branch), the result is just the inverse of those masks.
+        # This composes a boolean mask directly -- no reconstruction, no
+        # coordinate matching -- and is exact. Returns None if the lineage isn't
+        # a pure subset chain, in which case we fall back to exact matching.
+        keep_mask = self._lineage_keep_mask(data_node, subtract_node, data_nodes, len(target_points))
+        if keep_mask is not None:
+            dependencies = [data_node.uid, subtract_uid]
+            return Masks(keep_mask), "masks", dependencies
+
+        # Slow path: reconstruct the subtract branch and match points by coordinate.
+        try:
             # Use the controller to reconstruct the point cloud (thread-safe: read-only)
             global_variables.global_progress = (None, "Reconstructing subtract branch...")
             subtract_pc = controller.reconstruct(subtract_uid)
             subtract_points = subtract_pc.points
-
         except Exception as e:
             raise ValueError(f"Error processing branch to subtract: {str(e)}")
 
@@ -131,6 +144,109 @@ class SubtractPlugin(Plugin):
         # Return results, type, and dependencies
         dependencies = [data_node.uid, subtract_uid]
         return result_mask, "masks", dependencies
+
+    # Node types whose transformer preserves point identity, order and count
+    # (they only attach per-point attributes / colors or pass the cloud
+    # through). cluster_labels is included because ClustersTransformer keeps the
+    # parent's points unchanged and merely adds a per-point "cluster_labels"
+    # attribute -- so it does NOT subset, even though clustering feels like it
+    # should. Missing it here was forcing the slow coordinate-match fallback for
+    # any subtract whose lineage crosses a clustering step.
+    _IDENTITY_TYPES = frozenset({
+        "values", "eigenvalues", "colors", "normals", "dist_to_ground",
+        "cluster_labels", "container", "vector_feature", "cad_object",
+    })
+
+    @classmethod
+    def _lineage_keep_mask(cls, target_node, subtract_node, data_nodes, n_target):
+        """
+        Try to compute the subtraction result as a boolean mask over the
+        target's points using lineage alone, without reconstructing or matching
+        coordinates.
+
+        This succeeds only when the subtract branch is reachable from a common
+        ancestor of the target through a pure subset chain (``masks`` nodes that
+        select a boolean subset of their parent, plus identity nodes that merely
+        attach attributes), AND the common-ancestor-to-target path is all
+        identity (so the ancestor's points equal the target's points in order
+        and count). Under those conditions the points selected by the subtract
+        branch map directly to indices into the target's points.
+
+        Returns:
+            np.ndarray | None: Boolean keep-mask over the target points (True =
+            keep, i.e. not present in the subtract branch), or None when the
+            lineage isn't a pure subset chain and the caller must fall back to
+            exact coordinate matching.
+        """
+        # Ancestor chain of the target, from target up to root.
+        target_chain = []
+        node = target_node
+        while node is not None:
+            target_chain.append(node)
+            node = data_nodes.get_node(node.parent_uid) if node.parent_uid else None
+        target_index = {n.uid: i for i, n in enumerate(target_chain)}
+
+        # Walk the subtract branch up until we reach a node shared with the
+        # target's ancestry (the common ancestor), collecting the subset chain.
+        sub_path = []  # subtract -> ... -> (child of common ancestor)
+        node = subtract_node
+        common_pos = None
+        while node is not None:
+            if node.uid in target_index:
+                common_pos = target_index[node.uid]
+                break
+            sub_path.append(node)
+            node = data_nodes.get_node(node.parent_uid) if node.parent_uid else None
+        if common_pos is None:
+            return None  # No shared ancestor -> can't reason about lineage.
+
+        # The common-ancestor -> target path must preserve point identity so the
+        # composed mask (built over the ancestor) is valid over the target.
+        for node in target_chain[:common_pos]:
+            if node.data_type not in cls._IDENTITY_TYPES:
+                return None
+
+        # Compose the subtract subset chain into indices over the ancestor's
+        # points (== target's points). Process top-down: ancestor -> subtract.
+        idx = np.arange(n_target)
+        for node in reversed(sub_path):
+            data_type = node.data_type
+            if data_type in cls._IDENTITY_TYPES:
+                continue  # Count and order preserved; nothing to select.
+            if data_type == "masks":
+                mask = node.data.mask
+                if mask.shape[0] != idx.shape[0]:
+                    return None  # Lineage assumption violated; bail out safely.
+                idx = idx[mask]
+            elif data_type == "class_reference":
+                # A class_reference selects points whose cluster label is in
+                # cluster_ids. The labels come from the nearest cluster_labels
+                # ancestor and line up positionally with the current selection.
+                labels = cls._find_cluster_labels(node, data_nodes)
+                if labels is None or labels.shape[0] != idx.shape[0]:
+                    return None  # Can't align labels safely; fall back.
+                sel = np.isin(labels, node.data.cluster_ids)
+                idx = idx[sel]
+            else:
+                return None  # Unknown / reordering transform -> fall back.
+
+        keep = np.ones(n_target, dtype=bool)
+        keep[idx] = False  # Points belonging to the subtract branch are removed.
+        return keep
+
+    @staticmethod
+    def _find_cluster_labels(node, data_nodes):
+        """
+        Walk up from ``node`` to the nearest ``cluster_labels`` ancestor and
+        return its per-point integer labels (the array a class_reference filters
+        on), or None if there's no such ancestor / no usable labels.
+        """
+        current = data_nodes.get_node(node.parent_uid) if node.parent_uid else None
+        while current is not None:
+            if current.data_type == "cluster_labels":
+                return getattr(current.data, "labels", None)
+            current = data_nodes.get_node(current.parent_uid) if current.parent_uid else None
+        return None
 
     @staticmethod
     def _row_isin_not(A: np.ndarray, B: np.ndarray) -> np.ndarray:
