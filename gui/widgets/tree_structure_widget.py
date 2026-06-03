@@ -1,6 +1,7 @@
 import logging
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QApplication, QHeaderView
 from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtGui import QBrush, QColor
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +33,22 @@ class TreeStructureWidget(QTreeWidget):
         # Track Ctrl key state for multi-selection
         self._ctrl_held = False
 
+        # Brushes for the length-mismatch row highlight (soft amber = this
+        # branch's data length differs from its root ancestor's point count).
+        self._mismatch_brush = QBrush(QColor(255, 224, 178))
+        self._no_brush = QBrush()  # Qt.NoBrush -> clears any background
+
         # Configure tree widget properties
-        self.setColumnCount(2)  # Column 0: Branch name/visibility, Column 1: Cache
-        self.setHeaderLabels(["Branch", "Cache"])
-        # Column 0 (Branch) stretches to fill available space
-        # Column 1 (Cache) sizes to fit its content
+        # Col 0: Branch name/visibility, Col 1: data type, Col 2: point count, Col 3: Cache
+        self.setColumnCount(4)
+        self.setHeaderLabels(["Branch", "Type", "Points", "Cache"])
+        # Column 0 (Branch) stretches to fill available space;
+        # Columns 1 (Type), 2 (Points) and 3 (Cache) size to fit their content.
         self.header().setStretchLastSection(False)
         self.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.header().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.setSelectionMode(QTreeWidget.MultiSelection)
 
         # Connect signals
@@ -60,7 +69,7 @@ class TreeStructureWidget(QTreeWidget):
         # Always call parent event handler
         super().mousePressEvent(event)
 
-    def add_branch(self, uuid: str, parent_uuid: str, name: str, is_root: bool = False, tooltip: str = None):
+    def add_branch(self, uuid: str, parent_uuid: str, name: str, branch_type: str = "", is_root: bool = False, tooltip: str = None):
         """
         Adds a new branch to the tree.
 
@@ -68,6 +77,7 @@ class TreeStructureWidget(QTreeWidget):
             uuid (str): Unique identifier for the branch.
             parent_uuid (str): Unique identifier of the parent branch. None for top-level branches.
             name (str): Name of the branch.
+            branch_type (str): The node's data type (e.g. "point_cloud", "masks"), shown in the Type column.
             is_root (bool): Whether this is a root PointCloud node (always cached).
             tooltip (str): Optional tooltip text for the branch name column.
         """
@@ -79,25 +89,38 @@ class TreeStructureWidget(QTreeWidget):
         logger.debug(f"  Total branches before: {len(self.branches_dict)}")
 
         try:
-            # Create a new tree item for the branch
-            item = QTreeWidgetItem([name, ""])  # Two columns: name and cache icon
+            # Resolve the data type from the DataNode when the caller didn't
+            # supply one. Most plugins call add_branch without a branch_type, so
+            # looking it up here keeps the Type column populated everywhere
+            # without touching ~30 call sites. Safe: the node is registered
+            # before its tree item is created.
+            if not branch_type and uuid:
+                branch_type = self._resolve_branch_type(uuid)
+
+            # Create a new tree item: name, type label, point count, cache icon
+            item = QTreeWidgetItem([name, branch_type or "", "", ""])
             item.setData(0, Qt.UserRole, uuid)
             item.setData(0, Qt.UserRole + 1, name)  # Store name for rename detection
             if tooltip:
                 item.setToolTip(0, tooltip)
+            if branch_type:
+                item.setToolTip(1, branch_type)
 
             # Column 0: Visibility checkbox
             item.setCheckState(0, Qt.Checked)
             item.setFlags(item.flags() | Qt.ItemIsEditable)
 
-            # Column 1: Cache checkbox
+            # Column 2: point count + length-vs-root highlight
+            self._apply_point_count(item, uuid)
+
+            # Column 3: Cache checkbox
             if is_root:
                 # Root nodes are always "cached" (data is in memory)
-                item.setCheckState(1, Qt.Checked)
+                item.setCheckState(3, Qt.Checked)
                 # Store that this is a root node (we'll prevent unchecking in on_item_checked)
-                item.setData(1, Qt.UserRole, "root_cached")
+                item.setData(3, Qt.UserRole, "root_cached")
             else:
-                item.setCheckState(1, Qt.Unchecked)
+                item.setCheckState(3, Qt.Unchecked)
 
             # If a parent UUID is provided, find the parent and add as a child
             if parent_uuid and parent_uuid in self.branches_dict:
@@ -220,6 +243,82 @@ class TreeStructureWidget(QTreeWidget):
     #             self.visibility_status[uid] = new_status
     #             self.branches_dict[uid].setCheckState(0, Qt.Checked if new_status else Qt.Unchecked)
 
+    @staticmethod
+    def _resolve_branch_type(uid: str) -> str:
+        """
+        Look up a branch's data type from the DataNodes singleton.
+
+        Args:
+            uid (str): UUID string of the branch.
+
+        Returns:
+            str: The node's data_type, or "" if it can't be resolved.
+        """
+        try:
+            from uuid import UUID
+            from config.config import global_variables
+            data_nodes = global_variables.global_data_nodes
+            if data_nodes is None:
+                return ""
+            node = data_nodes.get_node(UUID(str(uid)))
+            if node is None:
+                return ""
+            data_type = node.data_type or ""
+            # Value branches carry no intrinsic sub-type, so qualify them with
+            # the producing operation recorded in the node's tags, e.g.
+            # "values (average_distance)". tags[0] is the analysis_type.
+            if data_type == "values" and getattr(node, "tags", None):
+                source = node.tags[0]
+                if source:
+                    return f"values ({source})"
+            return data_type
+        except Exception as e:
+            logger.debug(f"_resolve_branch_type failed for {uid}: {e}")
+            return ""
+
+    def _apply_point_count(self, item, uid):
+        """
+        Fill the Points column for a branch and highlight the row (soft amber)
+        when the node's data length differs from its root ancestor's point
+        count -- i.e. logical operations on it won't align with the root.
+
+        Args:
+            item (QTreeWidgetItem): The branch's tree item.
+            uid (str): UUID string of the branch.
+        """
+        try:
+            from uuid import UUID
+            from config.config import global_variables
+            controller = global_variables.global_application_controller
+            data_nodes = global_variables.global_data_nodes
+            if controller is None or data_nodes is None:
+                return
+            node = data_nodes.get_node(UUID(str(uid)))
+            if node is None:
+                return
+
+            length = controller.get_node_data_length(node)
+            root_count = controller.get_root_point_count(node)
+
+            if length is not None:
+                item.setText(2, f"{length:,}")
+
+            mismatch = (
+                length is not None and root_count is not None and length != root_count
+            )
+            self._set_row_background(item, self._mismatch_brush if mismatch else self._no_brush)
+            if mismatch:
+                item.setToolTip(2, f"{length:,} points — differs from root ({root_count:,})")
+            elif length is not None:
+                item.setToolTip(2, f"{length:,} points")
+        except Exception as e:
+            logger.debug(f"_apply_point_count failed for {uid}: {e}")
+
+    def _set_row_background(self, item, brush):
+        """Apply a background brush across all columns of a tree item."""
+        for col in range(self.columnCount()):
+            item.setBackground(col, brush)
+
     def on_item_checked(self, item, column):
         """
         Handles item check state changes by user and updates visibility or cache status.
@@ -248,17 +347,17 @@ class TreeStructureWidget(QTreeWidget):
                     # Visibility checkbox changed
                     self.visibility_status[uid] = item.checkState(0) == Qt.Checked
                     self.branch_visibility_changed.emit(self.visibility_status)
-            elif column == 1:
+            elif column == 3:
                 # Cache checkbox changed - use singleton pattern (NO signal!)
 
                 # Check if this is a root node (always cached)
-                is_root = item.data(1, Qt.UserRole) == "root_cached"
-                if is_root and item.checkState(1) == Qt.Unchecked:
+                is_root = item.data(3, Qt.UserRole) == "root_cached"
+                if is_root and item.checkState(3) == Qt.Unchecked:
                     # Prevent unchecking root nodes - restore checked state
-                    item.setCheckState(1, Qt.Checked)
+                    item.setCheckState(3, Qt.Checked)
                     return
 
-                is_cached = item.checkState(1) == Qt.Checked
+                is_cached = item.checkState(3) == Qt.Checked
                 controller = global_variables.global_application_controller
                 if controller:
                     if is_cached:
@@ -349,9 +448,9 @@ class TreeStructureWidget(QTreeWidget):
         if item:
             if memory_usage:
                 # Set the text label in the cache column to show memory usage
-                item.setText(1, memory_usage)
-                item.setToolTip(1, f"Memory usage: {memory_usage}")
+                item.setText(3, memory_usage)
+                item.setToolTip(3, f"Memory usage: {memory_usage}")
             else:
                 # Clear the text if no memory usage info
-                item.setText(1, "")
-                item.setToolTip(1, "")
+                item.setText(3, "")
+                item.setToolTip(3, "")

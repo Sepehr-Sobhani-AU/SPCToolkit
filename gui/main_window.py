@@ -556,7 +556,9 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             uid = self.controller.add_point_cloud(point_cloud, point_cloud.name)
             memory_size = self.controller.get_cache_memory_usage(uid)
-            self.tree_widget.add_branch(uid, "", point_cloud.name, is_root=True)
+            root_node = self.controller.get_node(uid)
+            branch_type = root_node.data_type if root_node else "point_cloud"
+            self.tree_widget.add_branch(uid, "", point_cloud.name, branch_type=branch_type, is_root=True)
             self.tree_widget.update_cache_tooltip(uid, memory_size)
         except Exception as e:
             logger.error(f"Failed to load point cloud: {file_path}. Error: {e}")
@@ -622,7 +624,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     item = self.tree_widget.branches_dict.get(uid)
                     if item:
                         self.tree_widget.blockSignals(True)
-                        item.setCheckState(1, Qt.Checked)
+                        item.setCheckState(3, Qt.Checked)
                         self.tree_widget.blockSignals(False)
                     memory_usage = self.controller.get_cache_memory_usage(uid)
                     self.tree_widget.update_cache_tooltip(uid, memory_usage)
@@ -755,7 +757,8 @@ class MainWindow(QtWidgets.QMainWindow):
         result_node = self.controller.get_node(uid)
         display_name = analysis_type
         tooltip = f"{analysis_type},{params}"
-        self.tree_widget.add_branch(uid, parent_uid_str, display_name, tooltip=tooltip)
+        branch_type = result_node.data_type if result_node else result_type
+        self.tree_widget.add_branch(uid, parent_uid_str, display_name, branch_type=branch_type, tooltip=tooltip)
 
         # Show memory usage for new node
         if result_node and hasattr(result_node, 'memory_size') and result_node.memory_size:
@@ -766,7 +769,7 @@ class MainWindow(QtWidgets.QMainWindow):
             item = self.tree_widget.branches_dict.get(parent_uid_str)
             if item:
                 self.tree_widget.blockSignals(True)
-                item.setCheckState(1, Qt.Checked)
+                item.setCheckState(3, Qt.Checked)
                 self.tree_widget.blockSignals(False)
             memory_usage = self.controller.get_cache_memory_usage(parent_uid_str)
             self.tree_widget.update_cache_tooltip(parent_uid_str, memory_usage)

@@ -316,6 +316,48 @@ class ApplicationController:
             return 100000
         return 0
 
+    # Primary per-point array attribute for each derived data class.
+    _DATA_LENGTH_ATTRS = ("points", "mask", "labels", "values",
+                          "eigenvalues", "normals", "colors", "distances")
+
+    def get_node_data_length(self, node) -> Optional[int]:
+        """
+        Length of a node's primary per-point data array, independent of caching.
+
+        Unlike get_node_point_count (which returns the reconstructed/selected
+        point count and consults the cache), this reports the length of the
+        array the node actually stores -- e.g. a mask's length equals its
+        parent's point count, not the number of selected points. Returns None
+        for nodes with no per-point array (class_reference, container, etc.).
+        """
+        data = getattr(node, "data", None)
+        if data is None:
+            return None
+        for attr in self._DATA_LENGTH_ATTRS:
+            arr = getattr(data, attr, None)
+            if arr is not None and hasattr(arr, "__len__"):
+                return len(arr)
+        return None
+
+    def get_root_point_count(self, node) -> Optional[int]:
+        """
+        Point count of the root PointCloud ancestor of ``node`` (the node whose
+        parent_uid is None), or None if it can't be resolved.
+        """
+        current = node
+        seen = set()
+        while current is not None:
+            if current.parent_uid is None:
+                data = getattr(current, "data", None)
+                if data is not None and hasattr(data, "points"):
+                    return len(data.points)
+                return None
+            if current.uid in seen:  # Guard against malformed cycles.
+                return None
+            seen.add(current.uid)
+            current = self.data_nodes.get_node(current.parent_uid)
+        return None
+
     def update_all_branch_memory_labels(self) -> dict:
         """
         Calculate memory labels for all nodes.
