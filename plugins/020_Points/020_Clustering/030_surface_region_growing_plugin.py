@@ -349,6 +349,11 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
                 logger.exception(f"Region growing thread failed: {e}")
                 state['error'] = str(e)
             finally:
+                # Backstop: ensure the caching allocator releases anything that
+                # survived an error path. The happy path also calls empty_cache
+                # inside _region_grow.
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 state['done'] = True
 
         thread = threading.Thread(target=_grow, daemon=True)
@@ -376,18 +381,22 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         main_window.show_progress("Adding result...", 95)
         tree_widget.blockSignals(True)
 
+        # Result is a child of the selected clusters branch (e.g. dbscan), not of
+        # the PointCloud-bearing ancestor. `parent_node` above is only used to
+        # reconstruct the full cloud; the tree/data parent of the new branch is
+        # the selected node itself.
         result_uid = controller.add_analysis_result(
             state['result'],
             "cluster_labels",
-            [parent_node.uid],
-            parent_node,
+            [node.uid],
+            node,
             "surface_region_growing",
             params
         )
 
         tree_widget.add_branch(
             result_uid,
-            parent_uid_str,
+            str(node.uid),
             "surface_region_growing",
             tooltip=f"surface_region_growing,{params}"
         )
@@ -636,6 +645,16 @@ def _region_grow(
     surface_mask_final = surface_mask_t.cpu().numpy()
     labels_out = np.full(n, -1, dtype=np.int32)
     labels_out[surface_mask_final] = 0
+
+    # Release the largest GPU allocations before returning so the caching
+    # allocator has freeable blocks for the subsequent empty_cache().
+    del points_t, surface_mask_t
+    del voxel_point_starts_t, voxel_point_indices_t, point_voxel_idx_t
+    del unique_packed_t, unique_voxel_keys_t
+    del voxel_surface_counts_t, voxel_total_counts_t
+    del is_surface_voxel_t, is_unassigned_voxel_t, is_processed_voxel_t
+    torch.cuda.empty_cache()
+
     return labels_out, stopped_early
 
 
