@@ -33,9 +33,10 @@ class TreeStructureWidget(QTreeWidget):
         # Track Ctrl key state for multi-selection
         self._ctrl_held = False
 
-        # Brushes for the length-mismatch row highlight (soft amber = this
-        # branch's data length differs from its root ancestor's point count).
-        self._mismatch_brush = QBrush(QColor(255, 224, 178))
+        # Brushes for the row highlight (light red = this child branch is NOT
+        # cheaply index-mappable to its root, so logical ops against root would
+        # need slow coordinate matching).
+        self._mismatch_brush = QBrush(QColor(255, 200, 200))
         self._no_brush = QBrush()  # Qt.NoBrush -> clears any background
 
         # Configure tree widget properties
@@ -278,9 +279,11 @@ class TreeStructureWidget(QTreeWidget):
 
     def _apply_point_count(self, item, uid):
         """
-        Fill the Points column for a branch and highlight the row (soft amber)
-        when the node's data length differs from its root ancestor's point
-        count -- i.e. logical operations on it won't align with the root.
+        Fill the Points column with the branch's reconstructed point count, and
+        highlight the row (light red) when it is a child branch that is NOT
+        cheaply index-mappable to its root -- i.e. logical operations against
+        root would fall back to slow coordinate matching. Root point clouds are
+        never highlighted.
 
         Args:
             item (QTreeWidgetItem): The branch's tree item.
@@ -297,20 +300,20 @@ class TreeStructureWidget(QTreeWidget):
             if node is None:
                 return
 
-            length = controller.get_node_data_length(node)
-            root_count = controller.get_root_point_count(node)
+            count = controller.get_node_reconstructed_count(node)
+            if count is not None:
+                item.setText(2, f"{count:,}")
+                item.setToolTip(2, f"{count:,} points (reconstructed)")
 
-            if length is not None:
-                item.setText(2, f"{length:,}")
-
-            mismatch = (
-                length is not None and root_count is not None and length != root_count
-            )
-            self._set_row_background(item, self._mismatch_brush if mismatch else self._no_brush)
-            if mismatch:
-                item.setToolTip(2, f"{length:,} points — differs from root ({root_count:,})")
-            elif length is not None:
-                item.setToolTip(2, f"{length:,} points")
+            # Only child branches can be flagged; roots are always left clean.
+            is_root = node.parent_uid is None
+            flag = (not is_root) and (not controller.is_branch_composable_to_root(node))
+            self._set_row_background(item, self._mismatch_brush if flag else self._no_brush)
+            if flag:
+                item.setToolTip(
+                    2, f"{item.text(2)} points — not index-mappable to root "
+                       "(logical ops need coordinate matching)"
+                )
         except Exception as e:
             logger.debug(f"_apply_point_count failed for {uid}: {e}")
 

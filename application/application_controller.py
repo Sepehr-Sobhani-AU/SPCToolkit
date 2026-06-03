@@ -320,42 +320,78 @@ class ApplicationController:
     _DATA_LENGTH_ATTRS = ("points", "mask", "labels", "values",
                           "eigenvalues", "normals", "colors", "distances")
 
-    def get_node_data_length(self, node) -> Optional[int]:
-        """
-        Length of a node's primary per-point data array, independent of caching.
+    # Node types whose transformer preserves point identity/order/count.
+    _IDENTITY_TYPES = frozenset({
+        "values", "eigenvalues", "colors", "normals", "dist_to_ground",
+        "cluster_labels", "container", "vector_feature", "cad_object",
+    })
+    # Node types that select a subset of their parent (still index-mappable).
+    _SUBSET_TYPES = frozenset({"masks", "class_reference"})
 
-        Unlike get_node_point_count (which returns the reconstructed/selected
-        point count and consults the cache), this reports the length of the
-        array the node actually stores -- e.g. a mask's length equals its
-        parent's point count, not the number of selected points. Returns None
-        for nodes with no per-point array (class_reference, container, etc.).
+    def get_node_reconstructed_count(self, node) -> Optional[int]:
+        """
+        Number of points the branch yields when reconstructed, computed cheaply
+        without reconstructing the cloud.
+
+        - masks: number of selected points (count of True in the mask).
+        - class_reference: points whose label is in cluster_ids (from the
+          nearest cluster_labels ancestor).
+        - identity / point_cloud / other per-point data: the array length
+          (one entry per reconstructed point).
+
+        Returns None when it can't be determined (e.g. container nodes).
         """
         data = getattr(node, "data", None)
         if data is None:
             return None
+
+        data_type = node.data_type
+        if data_type == "masks":
+            mask = getattr(data, "mask", None)
+            return int(np.count_nonzero(mask)) if mask is not None else None
+        if data_type == "class_reference":
+            labels = self._nearest_cluster_labels(node)
+            if labels is None:
+                return None
+            return int(np.count_nonzero(np.isin(labels, getattr(data, "cluster_ids", []))))
+
         for attr in self._DATA_LENGTH_ATTRS:
             arr = getattr(data, attr, None)
             if arr is not None and hasattr(arr, "__len__"):
                 return len(arr)
         return None
 
-    def get_root_point_count(self, node) -> Optional[int]:
+    def is_branch_composable_to_root(self, node) -> bool:
         """
-        Point count of the root PointCloud ancestor of ``node`` (the node whose
-        parent_uid is None), or None if it can't be resolved.
+        True when ``node``'s points can be index-mapped back to its root cloud
+        through a pure subset/identity chain -- i.e. logical operations against
+        the root (subtract / AND / OR) stay fast and never need coordinate
+        matching. False when the lineage is re-rooted through a non-root
+        point_cloud or contains a reordering transform.
+
+        Root nodes (parent_uid is None) are trivially composable.
         """
         current = node
         seen = set()
-        while current is not None:
-            if current.parent_uid is None:
-                data = getattr(current, "data", None)
-                if data is not None and hasattr(data, "points"):
-                    return len(data.points)
-                return None
+        while current is not None and current.parent_uid is not None:
+            data_type = current.data_type
+            if data_type not in self._IDENTITY_TYPES and data_type not in self._SUBSET_TYPES:
+                # point_cloud-with-parent (materialised / re-rooted) or unknown
+                # reordering transform -> can't index-map to the topmost root.
+                return False
             if current.uid in seen:  # Guard against malformed cycles.
-                return None
+                return False
             seen.add(current.uid)
             current = self.data_nodes.get_node(current.parent_uid)
+        return current is not None  # reached a real root node
+
+    def _nearest_cluster_labels(self, node):
+        """Labels of the nearest cluster_labels ancestor of ``node``, or None."""
+        current = self.data_nodes.get_node(node.parent_uid) if node.parent_uid else None
+        while current is not None:
+            if current.data_type == "cluster_labels":
+                return getattr(current.data, "labels", None)
+            current = self.data_nodes.get_node(current.parent_uid) if current.parent_uid else None
         return None
 
     def update_all_branch_memory_labels(self) -> dict:
