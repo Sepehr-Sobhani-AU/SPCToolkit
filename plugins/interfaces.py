@@ -1,6 +1,6 @@
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from core.entities.data_node import DataNode
 
 
@@ -62,6 +62,25 @@ class Plugin(ABC):
                 - A list of dependencies (UIDs of data nodes this result depends on)
         """
         pass
+
+    def confirm_before_execute(self, data_node: DataNode, params: Dict[str, Any]) -> Optional[str]:
+        """
+        Optional pre-flight check, run on the main thread *before* the worker
+        thread starts. Return a warning message to show the user as a Yes/No
+        confirmation (e.g. "this will be slow, proceed?"); the operation only
+        runs if they confirm. Return None to run without prompting (default).
+
+        Must be cheap and side-effect free -- it runs synchronously on the UI
+        thread. Do NOT do the heavy work here; just decide whether to warn.
+
+        Args:
+            data_node (DataNode): The target branch the plugin will run on.
+            params (Dict[str, Any]): The parameters collected from the dialog.
+
+        Returns:
+            Optional[str]: Warning text to confirm, or None for no prompt.
+        """
+        return None
 
 
 class ActionPlugin(ABC):

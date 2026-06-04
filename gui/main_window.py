@@ -674,6 +674,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_analysis(self, analysis_type: str, params: dict):
         """Start analysis with UI protection."""
+        # Pre-flight confirmation (main thread, before we lock the UI / spawn
+        # the worker). A plugin can flag a slow path -- e.g. subtract falling
+        # back to coordinate matching -- and let the user choose.
+        warning = self.controller.get_analysis_confirmation(analysis_type, params)
+        if warning:
+            reply = QtWidgets.QMessageBox.question(
+                self, "Slow operation", warning,
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+
         global_variables.global_progress = (None, f"Running {analysis_type}...")
         self.show_progress(f"Running {analysis_type}...")
         self.disable_menus()

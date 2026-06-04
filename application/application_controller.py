@@ -220,6 +220,40 @@ class ApplicationController:
                 on_error=on_error
             )
 
+    def get_analysis_confirmation(self, plugin_name: str, params: dict) -> Optional[str]:
+        """
+        Ask the plugin whether it wants to confirm a potentially-expensive run
+        before dispatch. Returns the first warning message produced across the
+        selected branches (to be shown as a Yes/No prompt on the main thread),
+        or None if no confirmation is needed.
+
+        This is a cheap, main-thread pre-flight check -- see
+        ``Plugin.confirm_before_execute``.
+        """
+        plugins = self.plugin_manager.get_analysis_plugins()
+        plugin_class = plugins.get(plugin_name)
+        if plugin_class is None:
+            return None
+
+        try:
+            plugin = plugin_class()
+        except Exception as e:
+            logger.debug(f"Could not instantiate '{plugin_name}' for confirmation: {e}")
+            return None
+
+        for uid in self.selected_branches:
+            node = self.data_nodes.get_node(uuid.UUID(uid))
+            if node is None:
+                continue
+            try:
+                message = plugin.confirm_before_execute(node, params)
+            except Exception as e:
+                logger.debug(f"confirm_before_execute failed for '{plugin_name}': {e}")
+                message = None
+            if message:
+                return message
+        return None
+
     def is_analysis_running(self) -> bool:
         """Check if analysis is in progress."""
         if self.analysis_executor is None:
@@ -320,14 +354,6 @@ class ApplicationController:
     _DATA_LENGTH_ATTRS = ("points", "mask", "labels", "values",
                           "eigenvalues", "normals", "colors", "distances")
 
-    # Node types whose transformer preserves point identity/order/count.
-    _IDENTITY_TYPES = frozenset({
-        "values", "eigenvalues", "colors", "normals", "dist_to_ground",
-        "cluster_labels", "container", "vector_feature", "cad_object",
-    })
-    # Node types that select a subset of their parent (still index-mappable).
-    _SUBSET_TYPES = frozenset({"masks", "class_reference"})
-
     def get_node_reconstructed_count(self, node) -> Optional[int]:
         """
         Number of points the branch yields when reconstructed, computed cheaply
@@ -360,60 +386,6 @@ class ApplicationController:
             if arr is not None and hasattr(arr, "__len__"):
                 return len(arr)
         return None
-
-    def is_branch_composable_to_root(self, node) -> bool:
-        """
-        True when ``node``'s points can be index-mapped back to its root cloud
-        through a pure subset/identity chain -- i.e. logical operations against
-        the root (subtract / AND / OR) stay fast and never need coordinate
-        matching. False when the lineage is re-rooted through a non-root
-        point_cloud or contains a reordering transform.
-
-        Root nodes (parent_uid is None) are trivially composable.
-        """
-        current = node
-        seen = set()
-        while current is not None and current.parent_uid is not None:
-            data_type = current.data_type
-            if data_type not in self._IDENTITY_TYPES and data_type not in self._SUBSET_TYPES:
-                # point_cloud-with-parent (materialised / re-rooted) or unknown
-                # reordering transform -> can't index-map to the topmost root.
-                return False
-            if current.uid in seen:  # Guard against malformed cycles.
-                return False
-            seen.add(current.uid)
-            current = self.data_nodes.get_node(current.parent_uid)
-        return current is not None  # reached a real root node
-
-    def get_node_effective_root(self, node):
-        """
-        UID of the node's *effective root* -- the topmost ancestor reachable
-        through a pure subset/identity chain.
-
-        Two branches sharing an effective root can be combined with fast
-        index-space logical operations (subtract / AND / OR / NOT); branches
-        with *different* effective roots would fall back to slow coordinate
-        matching. A branch re-rooted through a materialised ``point_cloud``
-        (merge, duplicate-to-root, reordering transform) is its own effective
-        root -- its index space no longer maps to the topmost cloud.
-
-        This is the grouping key behind the tree's lineage colour cue.
-        """
-        current = node
-        seen = set()
-        while current is not None and current.parent_uid is not None:
-            data_type = current.data_type
-            if data_type not in self._IDENTITY_TYPES and data_type not in self._SUBSET_TYPES:
-                # Re-rooted here: current starts a fresh index space.
-                return current.uid
-            if current.uid in seen:  # Guard against malformed cycles.
-                return current.uid
-            seen.add(current.uid)
-            parent = self.data_nodes.get_node(current.parent_uid)
-            if parent is None:  # Dangling parent -> treat current as the root.
-                return current.uid
-            current = parent
-        return current.uid if current is not None else node.uid
 
     def _nearest_cluster_labels(self, node):
         """Labels of the nearest cluster_labels ancestor of ``node``, or None."""

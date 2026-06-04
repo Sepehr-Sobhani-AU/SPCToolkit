@@ -67,6 +67,47 @@ class SubtractPlugin(Plugin):
             }
         }
 
+    def confirm_before_execute(self, data_node, params):
+        """
+        Warn the user when this subtract can't use the fast lineage path and
+        will have to compare points by coordinate (potentially very slow).
+
+        Runs on the main thread before the worker starts. It reuses
+        ``_lineage_keep_mask`` -- which only inspects lineage and mask arrays,
+        never reconstructs or matches coordinates -- so it's cheap. Returns a
+        confirmation message only when the fast path is unavailable.
+        """
+        from config.config import global_variables
+        data_nodes = global_variables.global_data_nodes
+        controller = global_variables.global_application_controller
+        if data_nodes is None or controller is None:
+            return None
+
+        try:
+            subtract_node = data_nodes.get_node(uuid.UUID(params["subtract_node"]))
+        except Exception:
+            return None
+        if subtract_node is None:
+            return None
+
+        n_target = controller.get_node_reconstructed_count(data_node)
+        if n_target is None:
+            return None  # Can't reason cheaply; let execute() handle it.
+
+        keep_mask = self._lineage_keep_mask(data_node, subtract_node, data_nodes, n_target)
+        if keep_mask is not None:
+            return None  # Fast lineage path available -- no prompt needed.
+
+        n_sub = controller.get_node_reconstructed_count(subtract_node) or 0
+        target_name = getattr(data_node, "alias", None) or "the selected branch"
+        sub_name = getattr(subtract_node, "alias", None) or "the subtract branch"
+        return (
+            f"“{sub_name}” doesn't share a compatible lineage with “{target_name}”, "
+            f"so subtract must match points by coordinate "
+            f"(~{n_target:,} vs {n_sub:,} points). This can be slow.\n\n"
+            f"Proceed with the slow exact match?"
+        )
+
     def execute(self, data_node: DataNode, params: Dict[str, Any]) -> Tuple[Any, str, List]:
         """
         Execute the subtraction between two point clouds.
