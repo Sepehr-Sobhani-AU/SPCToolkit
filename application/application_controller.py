@@ -385,6 +385,36 @@ class ApplicationController:
             current = self.data_nodes.get_node(current.parent_uid)
         return current is not None  # reached a real root node
 
+    def get_node_effective_root(self, node):
+        """
+        UID of the node's *effective root* -- the topmost ancestor reachable
+        through a pure subset/identity chain.
+
+        Two branches sharing an effective root can be combined with fast
+        index-space logical operations (subtract / AND / OR / NOT); branches
+        with *different* effective roots would fall back to slow coordinate
+        matching. A branch re-rooted through a materialised ``point_cloud``
+        (merge, duplicate-to-root, reordering transform) is its own effective
+        root -- its index space no longer maps to the topmost cloud.
+
+        This is the grouping key behind the tree's lineage colour cue.
+        """
+        current = node
+        seen = set()
+        while current is not None and current.parent_uid is not None:
+            data_type = current.data_type
+            if data_type not in self._IDENTITY_TYPES and data_type not in self._SUBSET_TYPES:
+                # Re-rooted here: current starts a fresh index space.
+                return current.uid
+            if current.uid in seen:  # Guard against malformed cycles.
+                return current.uid
+            seen.add(current.uid)
+            parent = self.data_nodes.get_node(current.parent_uid)
+            if parent is None:  # Dangling parent -> treat current as the root.
+                return current.uid
+            current = parent
+        return current.uid if current is not None else node.uid
+
     def _nearest_cluster_labels(self, node):
         """Labels of the nearest cluster_labels ancestor of ``node``, or None."""
         current = self.data_nodes.get_node(node.parent_uid) if node.parent_uid else None

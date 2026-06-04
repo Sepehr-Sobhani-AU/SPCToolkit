@@ -33,11 +33,26 @@ class TreeStructureWidget(QTreeWidget):
         # Track Ctrl key state for multi-selection
         self._ctrl_held = False
 
-        # Brushes for the row highlight (light red = this child branch is NOT
-        # cheaply index-mappable to its root, so logical ops against root would
-        # need slow coordinate matching).
-        self._mismatch_brush = QBrush(QColor(255, 200, 200))
+        # Lineage colour cue: every branch is tinted by its *effective root*
+        # (the topmost ancestor reachable through a pure subset/identity chain).
+        # Branches sharing a colour share an index space, so logical operations
+        # between them (subtract / AND / OR) stay fast; different colours mean a
+        # logical op would fall back to slow coordinate matching. Colours are
+        # assigned in order of first appearance and stay stable for the session.
         self._no_brush = QBrush()  # Qt.NoBrush -> clears any background
+        self._lineage_palette = [
+            QColor(204, 229, 255),  # blue
+            QColor(212, 237, 218),  # green
+            QColor(255, 243, 205),  # amber
+            QColor(248, 215, 218),  # red/pink
+            QColor(226, 217, 243),  # purple
+            QColor(214, 239, 240),  # teal
+            QColor(255, 228, 209),  # orange
+            QColor(233, 236, 239),  # grey
+            QColor(248, 225, 240),  # magenta
+            QColor(225, 240, 213),  # olive
+        ]
+        self._lineage_brushes = {}  # effective-root uid (str) -> QBrush
 
         # Configure tree widget properties
         # Col 0: Branch name/visibility, Col 1: data type, Col 2: point count, Col 3: Cache
@@ -277,13 +292,29 @@ class TreeStructureWidget(QTreeWidget):
             logger.debug(f"_resolve_branch_type failed for {uid}: {e}")
             return ""
 
+    def _lineage_brush_for(self, root_uid):
+        """
+        Return the background brush for an effective-root group, assigning the
+        next palette colour the first time a root is seen. Colours cycle once
+        the palette is exhausted (many distinct roots -- rare).
+        """
+        if root_uid is None:
+            return self._no_brush
+        key = str(root_uid)
+        brush = self._lineage_brushes.get(key)
+        if brush is None:
+            color = self._lineage_palette[len(self._lineage_brushes) % len(self._lineage_palette)]
+            brush = QBrush(color)
+            self._lineage_brushes[key] = brush
+        return brush
+
     def _apply_point_count(self, item, uid):
         """
-        Fill the Points column with the branch's reconstructed point count, and
-        highlight the row (light red) when it is a child branch that is NOT
-        cheaply index-mappable to its root -- i.e. logical operations against
-        root would fall back to slow coordinate matching. Root point clouds are
-        never highlighted.
+        Fill the Points column with the branch's reconstructed point count and
+        tint the whole row by its *effective root* (lineage group). Branches
+        sharing a colour share an index space, so logical operations between
+        them stay fast; a different colour means a subtract / AND / OR against
+        that branch would fall back to slow coordinate matching.
 
         Args:
             item (QTreeWidgetItem): The branch's tree item.
@@ -301,19 +332,18 @@ class TreeStructureWidget(QTreeWidget):
                 return
 
             count = controller.get_node_reconstructed_count(node)
+            count_label = f"{count:,}" if count is not None else ""
             if count is not None:
-                item.setText(2, f"{count:,}")
-                item.setToolTip(2, f"{count:,} points (reconstructed)")
+                item.setText(2, count_label)
 
-            # Only child branches can be flagged; roots are always left clean.
-            is_root = node.parent_uid is None
-            flag = (not is_root) and (not controller.is_branch_composable_to_root(node))
-            self._set_row_background(item, self._mismatch_brush if flag else self._no_brush)
-            if flag:
-                item.setToolTip(
-                    2, f"{item.text(2)} points — not index-mappable to root "
-                       "(logical ops need coordinate matching)"
-                )
+            # Tint the row by lineage group (effective root).
+            root_uid = controller.get_node_effective_root(node)
+            self._set_row_background(item, self._lineage_brush_for(root_uid))
+            short = str(root_uid)[:8] if root_uid else "?"
+            tip = f"Lineage group {short} — same colour = fast logical ops"
+            if count is not None:
+                tip = f"{count_label} points (reconstructed)\n{tip}"
+            item.setToolTip(2, tip)
         except Exception as e:
             logger.debug(f"_apply_point_count failed for {uid}: {e}")
 
