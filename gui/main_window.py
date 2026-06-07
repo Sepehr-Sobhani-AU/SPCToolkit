@@ -750,6 +750,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Process result
         result_data = self.controller.analysis_executor.get_result()
         if result_data:
+            # Deselect any picked/polygon-selected points now that the plugin
+            # has consumed them, so the result isn't shown with stale highlights.
+            self.pcd_viewer_widget.clear_selection()
             self._handle_analysis_result(result_data)
         self.controller.analysis_executor.cleanup()
 

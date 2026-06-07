@@ -62,27 +62,20 @@ class SeparateSelectedClustersPlugin(Plugin):
         from config.config import global_variables
         viewer_widget = global_variables.global_pcd_viewer_widget
 
-        # Create a mask based on the clusters that contain selected points
-        selected_indices = viewer_widget.picked_points_indices
-
         # Check if the point cloud has cluster labels
         cluster_labels = point_cloud.get_attribute("cluster_labels")
         if cluster_labels is None:
             raise ValueError("Point cloud has no cluster labels. Clustering must be performed first.")
 
-        # Get unique cluster IDs of the selected points
-        selected_cluster_ids = set()
-        for idx in selected_indices:
-            if idx < len(cluster_labels):
-                selected_cluster_ids.add(cluster_labels[idx])
+        # Re-derive the selection against full-resolution points (picked indices
+        # reference the LOD-subsampled render buffer, not the full cloud order).
+        selection_mask = viewer_widget.get_selection_mask_for(point_cloud.points)
 
-        # Create a boolean mask where True indicates a point in a selected cluster
-        total_points = point_cloud.size
-        cluster_mask = np.zeros(total_points, dtype=bool)
-
-        for i in range(total_points):
-            if cluster_labels[i] in selected_cluster_ids:
-                cluster_mask[i] = True
+        # Expand the selection to every point sharing a selected cluster id.
+        # Vectorized — the old per-point Python loop was O(n) and very slow on
+        # 10M+ point clouds.
+        selected_cluster_ids = np.unique(cluster_labels[selection_mask])
+        cluster_mask = np.isin(cluster_labels, selected_cluster_ids)
 
         # Create a Masks object with the result
         mask = Masks(cluster_mask)

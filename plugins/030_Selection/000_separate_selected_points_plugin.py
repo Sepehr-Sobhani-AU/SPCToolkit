@@ -61,17 +61,11 @@ class SeparateSelectedPointsPlugin(Plugin):
         from config.config import global_variables
         viewer_widget = global_variables.global_pcd_viewer_widget
 
-        # Create a mask based on the selected points
-        # The size of the mask should match the number of points in the point cloud
-        selected_indices = viewer_widget.picked_points_indices
-        total_points = point_cloud.size
-
-        # Create a boolean mask where True indicates a selected point
-        import numpy as np
-        selection_mask = np.zeros(total_points, dtype=bool)
-        for idx in selected_indices:
-            if idx < total_points:  # Ensure index is valid
-                selection_mask[idx] = True
+        # Re-derive the selection against this cloud's *full-resolution* points.
+        # picked_points_indices index into the viewer's LOD-subsampled render
+        # buffer, so using them directly would select the wrong points; the
+        # viewer maps them back exactly (polygon re-test or coordinate match).
+        selection_mask = viewer_widget.get_selection_mask_for(point_cloud.points)
 
         # Create a Masks object with the result
         mask = Masks(selection_mask)

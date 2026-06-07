@@ -92,6 +92,63 @@ class PolygonSelectionMixin:
 
         self.exit_polygon_mode()
 
+    def clear_selection(self):
+        """Drop all picked points and stored selection polygons, then repaint.
+
+        Called after a plugin consumes the selection so highlighted points are
+        de-highlighted once the operation completes.
+        """
+        self.picked_points_indices.clear()
+        self._selection_polygons.clear()
+        self.update()
+
+    def get_selection_mask_for(self, points_3d):
+        """Boolean mask over *full-resolution* ``points_3d`` marking the user's
+        current selection.
+
+        The viewer's combined ``self.points`` buffer is LOD-subsampled and may
+        concatenate several visible branches, so ``picked_points_indices`` are
+        indices into that rendered buffer — they do NOT map to a branch's
+        full-resolution point order. Plugins must therefore re-derive the
+        selection against the cloud they actually operate on:
+
+        - When polygon selections are stored, re-test the full-resolution points
+          against the saved polygons + camera matrices (exact, resolution
+          independent).
+        - Otherwise fall back to coordinate-matching the picked points' world
+          coordinates (exact float32 row equality, since the rendered slice is
+          just a subsample of the same source coordinates).
+
+        Args:
+            points_3d: (N, >=3) array of full-resolution world coordinates.
+
+        Returns:
+            (N,) boolean mask aligned to ``points_3d``.
+        """
+        pts = np.asarray(points_3d, dtype=np.float64)
+        n = len(pts)
+
+        poly_mask = self.retest_polygon_selection(pts[:, :3])
+        if poly_mask is not None:
+            return poly_mask
+
+        if not self.picked_points_indices or self.points is None:
+            return np.zeros(n, dtype=bool)
+
+        sel = np.asarray(self.picked_points_indices, dtype=np.int64)
+        sel = sel[(sel >= 0) & (sel < len(self.points))]
+        if sel.size == 0:
+            return np.zeros(n, dtype=bool)
+
+        full32 = np.ascontiguousarray(pts[:, :3].astype(np.float32))
+        pick32 = np.ascontiguousarray(
+            np.unique(self.points[sel, :3].astype(np.float32), axis=0)
+        )
+        void_dtype = np.dtype((np.void, full32.dtype.itemsize * 3))
+        fv = full32.reshape(-1).view(void_dtype)
+        pv = pick32.reshape(-1).view(void_dtype)
+        return np.isin(fv, pv)
+
     def retest_polygon_selection(self, points_3d):
         """
         Re-test arbitrary 3D points against all stored polygon selections.
