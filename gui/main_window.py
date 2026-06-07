@@ -774,6 +774,14 @@ class MainWindow(QtWidgets.QMainWindow):
         parent_uid_str = str(parent_node.uid)
         result_node = self.controller.get_node(uid)
         display_name = analysis_type
+        # Honour an explicit branch name from the plugin's dialog (e.g.
+        # separate_selected_points / separate_selected_clusters). Persist it on
+        # the node's alias so the tree, delete prompts, etc. all show it.
+        custom_name = params.get("new_branch_name") if isinstance(params, dict) else None
+        if custom_name:
+            display_name = custom_name
+            if result_node is not None:
+                result_node.alias = custom_name
         tooltip = f"{analysis_type},{params}"
         branch_type = result_node.data_type if result_node else result_type
         self.tree_widget.add_branch(uid, parent_uid_str, display_name, branch_type=branch_type, tooltip=tooltip)
