@@ -583,10 +583,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.disable_tree()
         try:
             self._render_visible_data(visibility_status, zoom_extent=False)
-            # Zoom to extent with plan view (top-down) after loading.
-            # rot=0 is the plan view for Z-up LiDAR data: camera is at +Z looking
-            # toward -Z, so X goes right, Y goes up (north), and Z (height) is depth.
-            self.pcd_viewer_widget.zoom_to_extent(preserve_rotation=False)
+            # Only reset the camera when a *root* point cloud was just loaded —
+            # then a plan view (top-down) makes sense. Analysis results and other
+            # derived branches must NOT snap the view back; the user keeps their
+            # current camera. rot=0 is the plan view for Z-up LiDAR data.
+            if getattr(self.tree_widget, "_last_branch_was_root", False):
+                self.pcd_viewer_widget.zoom_to_extent(preserve_rotation=False)
         except Exception as e:
             logger.error(f"_on_branch_added() FAILED: {e}")
             logger.error(traceback.format_exc())

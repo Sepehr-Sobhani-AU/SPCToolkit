@@ -132,6 +132,12 @@ class TreeStructureWidget(QTreeWidget):
 
             logger.debug(f"  Total branches after: {len(self.branches_dict)}")
 
+            # Record whether the branch just added is a freshly-loaded root
+            # cloud. The branch_added handler reads this to decide whether to
+            # zoom-to-extent (root only) vs. preserve the current camera
+            # (analysis results / derived branches).
+            self._last_branch_was_root = is_root
+
             # Emit the visibility_status update signal
             logger.debug(f"  Emitting branch_added signal...")
             self.branch_added.emit(self.visibility_status)
