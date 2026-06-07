@@ -58,7 +58,7 @@ class DeleteBranchPlugin(ActionPlugin):
             uid = uuid.UUID(uid_str)
             node = data_nodes.get_node(uid)
             if node:
-                node_names.append(node.data_name or str(uid)[:8])
+                node_names.append(self._display_name(node, uid))
 
         child_count = len(uids_to_delete) - len(selected_branches)
         message = f"Delete the following branch(es)?\n\n"
@@ -117,9 +117,27 @@ class DeleteBranchPlugin(ActionPlugin):
                 for dep_uid in node.depends_on:
                     if dep_uid in uids_to_delete:
                         dep_node = data_nodes.get_node(dep_uid)
-                        dep_name = dep_node.data_name if dep_node else str(dep_uid)[:8]
-                        external_deps.append(f"'{node.data_name}' depends on '{dep_name}'")
+                        dep_name = self._display_name(dep_node, dep_uid) if dep_node else str(dep_uid)[:8]
+                        external_deps.append(
+                            f"'{self._display_name(node, node_uid)}' depends on '{dep_name}'"
+                        )
         return external_deps
+
+    @staticmethod
+    def _display_name(node, uid) -> str:
+        """Human-readable branch name shown in dialogs.
+
+        The tree stores a user-edited rename in ``alias`` and the producing
+        operation in ``params``; ``data_name`` is almost always empty, which is
+        why the old code fell back to the raw UUID. Prefer alias, then params,
+        then a short UUID as a last resort.
+        """
+        return (
+            getattr(node, "alias", "")
+            or getattr(node, "data_name", "")
+            or getattr(node, "params", "")
+            or str(uid)[:8]
+        )
 
     def _sort_by_depth(self, uids: Set[uuid.UUID], data_nodes) -> List[uuid.UUID]:
         """Sort UIDs by depth in tree (deepest first for bottom-up deletion)."""
