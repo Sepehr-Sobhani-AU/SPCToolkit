@@ -104,13 +104,20 @@ class ManagePluginsDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "Reload", "Select one or more rows first.")
             return
 
-        messages = []
+        success_count = 0
+        failures = []
         for row in sorted(selected_rows):
             plugin_name = self.table.item(row, 0).data(Qt.UserRole)
             success, msg = self.plugin_manager.reload_plugin(plugin_name)
-            messages.append(msg)
+            if success:
+                success_count += 1
+            else:
+                failures.append(msg)
 
-        QtWidgets.QMessageBox.information(self, "Reload Results", "\n".join(messages))
+        summary = f"Reloaded {success_count} plugin(s)."
+        if failures:
+            summary += "\n\nFailed:\n" + "\n".join(failures)
+        QtWidgets.QMessageBox.information(self, "Reload Results", summary)
 
     def _on_scan(self):
         """Scan for new plugin files on disk and add them to the table."""
