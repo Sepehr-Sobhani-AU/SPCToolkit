@@ -314,6 +314,10 @@ class SubtractPlugin(Plugin):
 
         return SubtractPlugin._row_isin_not_cpu(A, B)
 
+    # Rows processed per cancel-checked chunk. Bounds how long a Cancel click
+    # takes to take effect on the exact-match path (the heavy fallback).
+    _MATCH_CHUNK = 2_000_000
+
     @staticmethod
     def _row_isin_not_gpu(A: np.ndarray, B: np.ndarray) -> np.ndarray:
         from config.config import global_variables
@@ -321,21 +325,27 @@ class SubtractPlugin(Plugin):
         cancel_event = global_variables.global_cancel_event
         n = len(A)
 
-        A_g = _cp.asarray(A)
-        B_g = _cp.asarray(B)
+        # Deduplicate B once, then test A in bounded chunks so a Cancel click is
+        # honoured between chunks instead of only after one giant unique() call.
+        B_unique = _cp.unique(_cp.asarray(B), axis=0)
         if cancel_event.is_set():
             raise RuntimeError("Subtract cancelled.")
 
-        stacked = _cp.concatenate([A_g, B_g], axis=0)
-        # cp.unique with axis=0 deduplicates whole rows on the device.
-        _, inv = _cp.unique(stacked, axis=0, return_inverse=True)
-        if cancel_event.is_set():
-            raise RuntimeError("Subtract cancelled.")
-
-        tgt_ids = inv[:n]
-        sub_ids = inv[n:]
-        mask_g = ~_cp.isin(tgt_ids, sub_ids)
-        return _cp.asnumpy(mask_g)
+        mask = np.empty(n, dtype=bool)
+        for start in range(0, n, SubtractPlugin._MATCH_CHUNK):
+            if cancel_event.is_set():
+                raise RuntimeError("Subtract cancelled.")
+            end = min(start + SubtractPlugin._MATCH_CHUNK, n)
+            chunk = _cp.asarray(A[start:end])
+            stacked = _cp.concatenate([chunk, B_unique], axis=0)
+            # cp.unique(axis=0) deduplicates whole rows; return_inverse gives a
+            # shared id space for the chunk's rows and B's rows.
+            _, inv = _cp.unique(stacked, axis=0, return_inverse=True)
+            inv = inv.reshape(-1)
+            c_ids = inv[: end - start]
+            b_ids = inv[end - start:]
+            mask[start:end] = _cp.asnumpy(~_cp.isin(c_ids, b_ids))
+        return mask
 
     @staticmethod
     def _row_isin_not_cpu(A: np.ndarray, B: np.ndarray) -> np.ndarray:
@@ -347,15 +357,17 @@ class SubtractPlugin(Plugin):
         row_bytes = A.dtype.itemsize * A.shape[1]
         void_dtype = np.dtype((np.void, row_bytes))
 
-        stacked = np.concatenate([A, B], axis=0)
-        stacked_v = stacked.reshape(-1).view(void_dtype)
+        # Reduce each row to a single void scalar so we can use np.isin. Sort B's
+        # unique row-keys once, then test A in bounded chunks with cancel checks.
+        B_keys = np.unique(np.ascontiguousarray(B).reshape(-1).view(void_dtype))
         if cancel_event.is_set():
             raise RuntimeError("Subtract cancelled.")
 
-        _, inv = np.unique(stacked_v, return_inverse=True)
-        if cancel_event.is_set():
-            raise RuntimeError("Subtract cancelled.")
-
-        tgt_ids = inv[:n]
-        sub_ids = inv[n:]
-        return ~np.isin(tgt_ids, sub_ids, kind='table')
+        A_void = np.ascontiguousarray(A).reshape(-1).view(void_dtype)
+        mask = np.empty(n, dtype=bool)
+        for start in range(0, n, SubtractPlugin._MATCH_CHUNK):
+            if cancel_event.is_set():
+                raise RuntimeError("Subtract cancelled.")
+            end = min(start + SubtractPlugin._MATCH_CHUNK, n)
+            mask[start:end] = ~np.isin(A_void[start:end], B_keys)
+        return mask
