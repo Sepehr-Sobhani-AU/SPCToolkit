@@ -410,7 +410,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         for word in words:
             # Keep acronyms uppercase (like DBSCAN, SOR, MLS)
-            if word.upper() in ['DBSCAN', 'HDBSCAN', 'SOR', 'MLS', 'PCA', 'ICP']:
+            if word.upper() in ['DBSCAN', 'HDBSCAN', 'SOR', 'MLS', 'PCA', 'ICP', 'RGB']:
                 formatted_words.append(word.upper())
             else:
                 formatted_words.append(word.capitalize())
