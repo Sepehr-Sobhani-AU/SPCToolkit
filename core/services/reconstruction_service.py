@@ -18,6 +18,7 @@ from core.transformers.colors_transformer import ColorsTransformer
 from core.transformers.dist_to_ground_transformer import DistToGroundTransformer
 from core.transformers.class_reference_transformer import ClassReferenceTransformer
 from core.transformers.normals_transformer import NormalsTransformer
+from core.transformers.transform_matrix_transformer import TransformMatrixTransformer
 
 
 class ReconstructionService:
@@ -38,6 +39,7 @@ class ReconstructionService:
             "dist_to_ground": DistToGroundTransformer,
             "class_reference": ClassReferenceTransformer,
             "normals": NormalsTransformer,
+            "transform_matrix": TransformMatrixTransformer,
         }
 
     def reconstruct(self, uid) -> PointCloud:
