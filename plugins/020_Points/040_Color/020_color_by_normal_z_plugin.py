@@ -14,11 +14,21 @@ class ColorByNormalZPlugin(Plugin):
     Colour a branch by the Z component of each point's normal (nz).
 
     nz encodes surface orientation: a level upward-facing surface has nz ~ +1,
-    a vertical wall has nz ~ 0, a downward-facing surface has nz ~ -1. The ramp
-    runs red (nz = -1) -> green (nz = +1) over the full theoretical [-1, 1]
-    range, so the colouring is comparable across branches. Emits a ``colors``
-    node so the colouring travels through reconstruction like any other
-    per-point colour.
+    a vertical wall has nz ~ 0, a downward-facing surface has nz ~ -1.
+
+    Two ramps are available:
+
+    - **Magnitude only** (default): colour by |nz| over [0, 1], so the direction
+      the normal points is ignored. Up- and down-facing horizontal surfaces both
+      read green (|nz| ~ 1) and vertical walls read red (|nz| ~ 0). This is the
+      common case when normal orientation is unreliable and you only care about
+      separating horizontal surfaces from vertical ones.
+    - **Signed**: colour by nz over the full theoretical [-1, 1] range. Red
+      (nz = -1, downward) -> green (nz = +1, upward), distinguishing the two
+      facing directions.
+
+    Emits a ``colors`` node so the colouring travels through reconstruction like
+    any other per-point colour.
 
     The branch must carry normals (run an estimate-normals step first).
     """
@@ -27,8 +37,18 @@ class ColorByNormalZPlugin(Plugin):
         return "color_by_normal_z"
 
     def get_parameters(self) -> Dict[str, Any]:
-        # No parameters: the ramp spans the full normalised nz range [-1, 1].
-        return {}
+        return {
+            "magnitude_only": {
+                "type": "bool",
+                "default": True,
+                "label": "Magnitude only (ignore direction)",
+                "description": (
+                    "Colour by |nz| over [0, 1] so up- and down-facing surfaces "
+                    "colour the same (red = vertical, green = horizontal). Uncheck "
+                    "to use signed nz over [-1, 1], distinguishing facing direction."
+                ),
+            }
+        }
 
     def execute(self, data_node: DataNode, params: Dict[str, Any]) -> Tuple[Any, str, List]:
         point_cloud: PointCloud = data_node.data
@@ -50,11 +70,16 @@ class ColorByNormalZPlugin(Plugin):
 
         nz = np.asarray(normals, dtype=np.float32)[:, 2]
 
-        # Map nz from the theoretical [-1, 1] range to [0, 1], clipping any
-        # non-unit normals defensively.
-        t = np.clip((nz + 1.0) * 0.5, 0.0, 1.0)
+        magnitude_only = params.get("magnitude_only", True)
+        if magnitude_only:
+            # |nz| spans [0, 1] already; direction of the normal is ignored.
+            t = np.clip(np.abs(nz), 0.0, 1.0)
+        else:
+            # Map signed nz from the theoretical [-1, 1] range to [0, 1],
+            # clipping any non-unit normals defensively.
+            t = np.clip((nz + 1.0) * 0.5, 0.0, 1.0)
 
-        # Red (nz = -1) -> green (nz = +1): R fades out, G fades in, B stays 0.
+        # Red (t = 0) -> green (t = 1): R fades out, G fades in, B stays 0.
         colors = np.empty((len(nz), 3), dtype=np.float32)
         colors[:, 0] = 1.0 - t  # red
         colors[:, 1] = t        # green
