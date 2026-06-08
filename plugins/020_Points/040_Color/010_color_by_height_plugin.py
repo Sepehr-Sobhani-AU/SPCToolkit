@@ -7,23 +7,32 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.colors import Colors
+from services.colormap_service import COLORMAPS, apply_colormap
 
 
 class ColorByHeightPlugin(Plugin):
     """
-    Colour a branch by point height (Z) using a red -> green ramp.
+    Colour a branch by point height (Z) using a selectable colormap.
 
-    The lowest points are red, the highest are green, with a smooth linear
-    interpolation in between. Emits a ``colors`` node so the colouring travels
-    through reconstruction like any other per-point colour.
+    Z is normalised over the branch's own min..max range to [0, 1] and mapped
+    through the chosen colormap (default turbo): the lowest points take the low
+    end of the ramp, the highest the high end. Emits a ``colors`` node so the
+    colouring travels through reconstruction like any other per-point colour.
     """
 
     def get_name(self) -> str:
         return "color_by_height"
 
     def get_parameters(self) -> Dict[str, Any]:
-        # No parameters: the ramp spans the branch's own Z range.
-        return {}
+        return {
+            "colormap": {
+                "type": "dropdown",
+                "options": COLORMAPS,
+                "default": "turbo",
+                "label": "Colormap",
+                "description": "Colour ramp applied across the branch's Z range.",
+            },
+        }
 
     def execute(self, data_node: DataNode, params: Dict[str, Any]) -> Tuple[Any, str, List]:
         point_cloud: PointCloud = data_node.data
@@ -43,11 +52,7 @@ class ColorByHeightPlugin(Plugin):
         else:
             t = (z - z_min) / z_range
 
-        # Red (low) -> green (high): R fades out, G fades in, B stays 0.
-        colors = np.empty((len(z), 3), dtype=np.float32)
-        colors[:, 0] = 1.0 - t  # red
-        colors[:, 1] = t        # green
-        colors[:, 2] = 0.0      # blue
+        colors = apply_colormap(t, params.get("colormap", "turbo"))
 
         result = Colors(colors)
 

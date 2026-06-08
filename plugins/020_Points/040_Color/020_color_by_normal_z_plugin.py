@@ -7,6 +7,7 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.colors import Colors
+from services.colormap_service import COLORMAPS, apply_colormap
 
 
 class ColorByNormalZPlugin(Plugin):
@@ -44,10 +45,17 @@ class ColorByNormalZPlugin(Plugin):
                 "label": "Magnitude only (ignore direction)",
                 "description": (
                     "Colour by |nz| over [0, 1] so up- and down-facing surfaces "
-                    "colour the same (red = vertical, green = horizontal). Uncheck "
+                    "colour the same (low = vertical, high = horizontal). Uncheck "
                     "to use signed nz over [-1, 1], distinguishing facing direction."
                 ),
-            }
+            },
+            "colormap": {
+                "type": "dropdown",
+                "options": COLORMAPS,
+                "default": "turbo",
+                "label": "Colormap",
+                "description": "Colour ramp applied to the normalised nz values.",
+            },
         }
 
     def execute(self, data_node: DataNode, params: Dict[str, Any]) -> Tuple[Any, str, List]:
@@ -79,11 +87,7 @@ class ColorByNormalZPlugin(Plugin):
             # clipping any non-unit normals defensively.
             t = np.clip((nz + 1.0) * 0.5, 0.0, 1.0)
 
-        # Red (t = 0) -> green (t = 1): R fades out, G fades in, B stays 0.
-        colors = np.empty((len(nz), 3), dtype=np.float32)
-        colors[:, 0] = 1.0 - t  # red
-        colors[:, 1] = t        # green
-        colors[:, 2] = 0.0      # blue
+        colors = apply_colormap(t, params.get("colormap", "turbo"))
 
         result = Colors(colors)
 
