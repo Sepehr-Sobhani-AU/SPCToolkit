@@ -61,13 +61,15 @@ class ComputeEigenvaluesPlugin(Plugin):
                 "label": "Smooth Eigenvalues",
                 "description": "Apply neighborhood averaging to reduce noise in eigenvalue estimates"
             },
-            "target_batch_size": {
+            "target_points": {
                 "type": "int",
-                "default": 250000,
-                "min": 10000,
-                "max": 1000000,
-                "label": "Batch Size",
-                "description": "Number of points per spatial batch. Smaller values use less memory."
+                "default": 200000,
+                "min": 1000,
+                "max": 5000000,
+                "label": "Target Points per Tile",
+                "description": "Max points processed per spatial tile. The cloud is split "
+                               "adaptively so every tile stays under this — dense areas split "
+                               "into more tiles, sparse areas merge into fewer."
             }
         }
 
@@ -93,12 +95,12 @@ class ComputeEigenvaluesPlugin(Plugin):
         # Extract parameters
         k = params["k"]
         smooth = params["smooth"]
-        batch_size = params.get("target_batch_size", 250000)
+        target_points = params.get("target_points", 200000)
 
         # Compute eigenvalues using the point cloud's built-in method
         # This method leverages EigenvalueUtils for efficient computation
         global_variables.global_progress = (None, f"Computing eigenvalues (k={k}, {point_cloud.size:,} points)...")
-        eigenvalues_array = point_cloud.get_eigenvalues(k=k, smooth=smooth, batch_size=batch_size)
+        eigenvalues_array = point_cloud.get_eigenvalues(k=k, smooth=smooth, batch_size=target_points)
         global_variables.global_progress = (90, "Eigenvalue computation complete")
 
         # Wrap in Eigenvalues object

@@ -63,13 +63,15 @@ class DBSCANPlugin(Plugin):
                 "label": "Minimum Samples",
                 "description": "The minimum number of points required to form a dense region"
             },
-            "target_batch_size": {
+            "target_points": {
                 "type": "int",
-                "default": 250000,
-                "min": 50000,
-                "max": 1000000,
-                "label": "Target Batch Size",
-                "description": "Target number of points per batch for processing (smaller values use less memory)"
+                "default": 200000,
+                "min": 1000,
+                "max": 5000000,
+                "label": "Target Points per Tile",
+                "description": "Max points processed per spatial tile. The cloud is split "
+                               "adaptively so every tile stays under this — dense areas split "
+                               "into more tiles, sparse areas merge into fewer."
             }
         }
 
@@ -99,7 +101,7 @@ class DBSCANPlugin(Plugin):
         points = point_cloud.points
         eps = params["eps"]
         min_samples = params["min_samples"]
-        target_batch_size = params.get("target_batch_size", 250000)
+        target_points = params.get("target_points", 200000)
 
         # Fixed batch overlap at 10% - this is a programmer decision, not exposed to users
         BATCH_OVERLAP = 0.1
@@ -112,7 +114,7 @@ class DBSCANPlugin(Plugin):
         print(f"{'='*60}")
         print(f"  Total points:     {len(points):,}")
         print(f"  Parameters:       eps={eps}, min_samples={min_samples}")
-        print(f"  Batch size:       {target_batch_size:,}")
+        print(f"  Target/tile:      {target_points:,}")
         print(f"{'='*60}\n")
 
         # Define a wrapper function for DBSCAN that matches the batch processor interface
@@ -126,7 +128,7 @@ class DBSCANPlugin(Plugin):
         # Create a batch processor with appropriate spatial grid settings
         batch_processor = BatchProcessor(
             points=points,
-            batch_size=target_batch_size,
+            batch_size=target_points,
             overlap_percent=BATCH_OVERLAP  # Fixed at 10%
         )
 

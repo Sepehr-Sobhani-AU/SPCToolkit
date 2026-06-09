@@ -60,13 +60,15 @@ class HDBSCANPlugin(Plugin):
                 "label": "Alpha",
                 "description": "Normalization factor for the mutual reachability distance calculation"
             },
-            "target_batch_size": {
+            "target_points": {
                 "type": "int",
-                "default": 250000,
-                "min": 50000,
-                "max": 1000000,
-                "label": "Target Batch Size",
-                "description": "Target number of points per batch for processing (smaller values use less memory)"
+                "default": 200000,
+                "min": 1000,
+                "max": 5000000,
+                "label": "Target Points per Tile",
+                "description": "Max points processed per spatial tile. The cloud is split "
+                               "adaptively so every tile stays under this — dense areas split "
+                               "into more tiles, sparse areas merge into fewer."
             }
         }
 
@@ -85,7 +87,7 @@ class HDBSCANPlugin(Plugin):
         min_samples = params["min_samples"]
         cluster_selection_epsilon = params["cluster_selection_epsilon"]
         alpha = params["alpha"]
-        target_batch_size = params.get("target_batch_size", 250000)
+        target_points = params.get("target_points", 200000)
 
         # Fixed batch overlap at 10%
         BATCH_OVERLAP = 0.1
@@ -98,7 +100,7 @@ class HDBSCANPlugin(Plugin):
         print(f"{'='*60}")
         print(f"  Total points:     {len(points):,}")
         print(f"  Parameters:       min_cluster_size={min_cluster_size}, min_samples={min_samples}")
-        print(f"  Batch size:       {target_batch_size:,}")
+        print(f"  Target/tile:      {target_points:,}")
         print(f"{'='*60}\n")
 
         def hdbscan_func(batch_points, eps, min_points, **kwargs):
@@ -113,7 +115,7 @@ class HDBSCANPlugin(Plugin):
 
         batch_processor = BatchProcessor(
             points=points,
-            batch_size=target_batch_size,
+            batch_size=target_points,
             overlap_percent=BATCH_OVERLAP
         )
 

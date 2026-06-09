@@ -161,13 +161,15 @@ class ClusterByClassPlugin(ActionPlugin):
                 "label": "Min Cluster Size",
                 "description": "Minimum size of clusters (smaller clusters become noise)"
             },
-            "target_batch_size": {
+            "target_points": {
                 "type": "int",
-                "default": 250000,
-                "min": 50000,
-                "max": 1000000,
-                "label": "Target Batch Size",
-                "description": "Target points per batch for processing (smaller = less memory)"
+                "default": 200000,
+                "min": 1000,
+                "max": 5000000,
+                "label": "Target Points per Tile",
+                "description": "Max points processed per spatial tile. The cloud is split "
+                               "adaptively so every tile stays under this — dense areas split "
+                               "into more tiles, sparse areas merge into fewer."
             }
         }
 
@@ -248,7 +250,7 @@ class ClusterByClassPlugin(ActionPlugin):
         eps = params["eps"]
         min_samples = params["min_samples"]
         min_cluster_size = params.get("min_cluster_size", 50)
-        target_batch_size = params.get("target_batch_size", 250000)
+        target_points = params.get("target_points", 200000)
 
         start_time = time.time()
 
@@ -261,7 +263,7 @@ class ClusterByClassPlugin(ActionPlugin):
             print(f"  Parameters:       eps={eps}, min_samples={min_samples}, min_cluster_size={min_cluster_size}")
         else:
             print(f"  Parameters:       min_cluster_size={min_cluster_size}, min_samples={min_samples}")
-        print(f"  Batch size:       {target_batch_size:,}")
+        print(f"  Target/tile:      {target_points:,}")
         print(f"{'='*60}")
 
         # Get unique classes
@@ -281,7 +283,7 @@ class ClusterByClassPlugin(ActionPlugin):
             self._do_clustering(
                 main_window, tree_widget, data_nodes,
                 points, cluster_labels, unique_class_ids, cluster_names, cluster_colors,
-                algorithm, eps, min_samples, min_cluster_size, target_batch_size,
+                algorithm, eps, min_samples, min_cluster_size, target_points,
                 selected_uid_uuid, start_time
             )
         finally:
@@ -291,7 +293,7 @@ class ClusterByClassPlugin(ActionPlugin):
 
     def _do_clustering(self, main_window, tree_widget, data_nodes,
                        points, cluster_labels, unique_class_ids, cluster_names, cluster_colors,
-                       algorithm, eps, min_samples, min_cluster_size, target_batch_size,
+                       algorithm, eps, min_samples, min_cluster_size, target_points,
                        selected_uid_uuid, start_time):
         """Run the actual clustering loop (separated for try/finally cleanup)."""
         # Initialize output arrays
@@ -301,6 +303,8 @@ class ClusterByClassPlugin(ActionPlugin):
 
         # Fixed batch overlap at 10%
         BATCH_OVERLAP = 0.1
+        # Point count above which a class is batched; also the per-tile budget.
+        AUTO_TARGET = target_points
 
         n_classes = len(unique_class_ids)
 
@@ -330,11 +334,11 @@ class ClusterByClassPlugin(ActionPlugin):
             QApplication.processEvents()
 
             # Run clustering on this class
-            if len(class_points) > target_batch_size:
+            if len(class_points) > AUTO_TARGET:
                 # Use batch processor for large point clouds
                 batch_processor = BatchProcessor(
                     points=class_points,
-                    batch_size=target_batch_size,
+                    batch_size=AUTO_TARGET,
                     overlap_percent=BATCH_OVERLAP
                 )
 
