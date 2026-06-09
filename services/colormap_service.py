@@ -69,3 +69,16 @@ def apply_colormap(t, name=DEFAULT_COLORMAP):
     # matplotlib returns RGBA in [0, 1]; drop alpha to match Colors' (N, 3).
     rgba = colormaps[name](t)
     return np.ascontiguousarray(rgba[:, :3], dtype=np.float32)
+
+
+def colormap_swatch(name, width=72, height=16):
+    """
+    Render a horizontal gradient preview of the colormap ``name`` as a
+    C-contiguous ``(height, width, 3)`` uint8 RGB image.
+
+    Qt-free on purpose: callers (e.g. the dialog) wrap this in a QImage/QIcon.
+    Lets users recognise a colormap by its colours, not just its name.
+    """
+    ramp = apply_colormap(np.linspace(0.0, 1.0, width, dtype=np.float32), name)
+    img = np.repeat(ramp[np.newaxis, :, :], height, axis=0)  # (height, width, 3)
+    return np.ascontiguousarray((img * 255.0).round().astype(np.uint8))

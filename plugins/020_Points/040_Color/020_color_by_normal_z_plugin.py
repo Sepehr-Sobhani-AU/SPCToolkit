@@ -7,7 +7,7 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.colors import Colors
-from services.colormap_service import COLORMAPS, apply_colormap
+from services.colormap_service import apply_colormap
 
 
 class ColorByNormalZPlugin(Plugin):
@@ -50,8 +50,7 @@ class ColorByNormalZPlugin(Plugin):
                 ),
             },
             "colormap": {
-                "type": "dropdown",
-                "options": COLORMAPS,
+                "type": "colormap",
                 "default": "turbo",
                 "label": "Colormap",
                 "description": "Colour ramp applied to the normalised nz values.",

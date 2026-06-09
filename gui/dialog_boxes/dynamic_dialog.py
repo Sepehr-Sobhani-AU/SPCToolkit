@@ -74,6 +74,10 @@ class DynamicDialog(QDialog):
                     index = widget.findData(default_value)
                     if index >= 0:
                         widget.setCurrentIndex(index)
+            elif param_type == "colormap":
+                # Dropdown whose items carry a gradient preview of each colormap,
+                # so the user recognises it by colour, not just by name.
+                widget = self._build_colormap_combo(param_info, default_value)
             elif param_type == "choice":
                 # Handle choice type (list of options)
                 widget = QComboBox()
@@ -208,7 +212,7 @@ class DynamicDialog(QDialog):
                 self.params[param_name] = widget.value()
             elif param_type == "float":
                 self.params[param_name] = widget.value()
-            elif param_type == "dropdown":
+            elif param_type in ("dropdown", "colormap"):
                 self.params[param_name] = widget.currentData()  # Get the data value, not the display text
             elif param_type == "choice":
                 # For editable combobox, get the current text (allows custom input)
@@ -219,6 +223,31 @@ class DynamicDialog(QDialog):
                 self.params[param_name] = widget.text()
 
         return self.params
+
+    def _build_colormap_combo(self, param_info: Dict[str, Any], default_value) -> QComboBox:
+        """Build a QComboBox whose items each show a gradient swatch of the
+        colormap they represent. ``options`` defaults to the full colormap
+        registry, so plugins need only declare ``type: "colormap"``."""
+        from PyQt5.QtCore import QSize
+        from PyQt5.QtGui import QIcon, QImage, QPixmap
+        from services.colormap_service import COLORMAPS, colormap_swatch
+
+        options = param_info.get("options") or COLORMAPS
+
+        widget = QComboBox()
+        widget.setIconSize(QSize(72, 16))
+        for value, display_text in options.items():
+            swatch = colormap_swatch(value)
+            h, w, _ = swatch.shape
+            buf = swatch.tobytes()  # keep alive until the QImage is copied
+            image = QImage(buf, w, h, 3 * w, QImage.Format_RGB888).copy()
+            widget.addItem(QIcon(QPixmap.fromImage(image)), display_text, value)
+
+        if default_value and isinstance(default_value, str):
+            index = widget.findData(default_value)
+            if index >= 0:
+                widget.setCurrentIndex(index)
+        return widget
 
     def _browse_directory(self, line_edit: QLineEdit):
         """
