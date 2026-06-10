@@ -83,10 +83,9 @@ class BatchProcessor:
 
         self.grid_bounds = {'min': min_bounds, 'max': max_bounds}
 
-        # cell_size / grid_dimensions are retained only for the legacy
-        # non-subdivided fallback in get_batch_for_grid_cell; every adaptive leaf
-        # carries its own tight bounds in self.cell_bounds, so that branch is dead
-        # in practice.
+        # cell_size / grid_dimensions are kept only for backward compatibility with
+        # external readers; the adaptive partition uses cell_bounds + the leaf index
+        # (built in _build_adaptive_cells), and get_batch_for_grid_cell never reads them.
         self.cell_size = np.maximum(max_bounds - min_bounds, 1e-9)
         self.grid_dimensions = (1, 1, 1)
 
@@ -139,6 +138,29 @@ class BatchProcessor:
             stack.append(idx[order[:half]])
             stack.append(idx[order[half:]])
 
+        self._build_leaf_index(next_cell_id)
+
+    def _build_leaf_index(self, n_leaves):
+        """
+        Build the leaf lookup tables used by get_batch_for_grid_cell so it never
+        scans the whole cloud:
+          - _sorted_point_idx   : point indices grouped by leaf id
+          - _leaf_offsets       : [start, end) of each leaf within _sorted_point_idx
+          - _leaf_min/_leaf_max : (n_leaves, 3) stacked tight bounds for AABB tests
+        """
+        # Group points by leaf (a counting sort; intra-leaf order is irrelevant).
+        self._sorted_point_idx = np.argsort(self.grid_indices)
+        self._leaf_counts = np.bincount(self.grid_indices, minlength=n_leaves)
+        self._leaf_offsets = np.empty(n_leaves + 1, dtype=np.int64)
+        self._leaf_offsets[0] = 0
+        np.cumsum(self._leaf_counts, out=self._leaf_offsets[1:])
+        # Stack the per-leaf tight bounds for vectorised box-overlap queries.
+        self._leaf_min = np.empty((n_leaves, 3), dtype=np.float64)
+        self._leaf_max = np.empty((n_leaves, 3), dtype=np.float64)
+        for cell_id, (lo, hi) in self.cell_bounds.items():
+            self._leaf_min[cell_id] = lo
+            self._leaf_max[cell_id] = hi
+
     def _bounds_of(self, idx):
         """
         Tight (min, max) bounds of the points at the given indices, computed one
@@ -154,46 +176,62 @@ class BatchProcessor:
 
     def get_batch_for_grid_cell(self, cell_idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Generate a batch of points for a given grid cell, including overlapping regions.
+        Build a tile for one leaf cell: its own (primary) points plus an overlap
+        halo gathered from neighbouring leaves.
+
+        Uses the leaf index from _build_adaptive_cells, so neither the primary
+        lookup nor the halo gather scans the whole cloud: primaries are an O(1)
+        slice, and halo candidates come only from the leaves whose tight bounds
+        overlap this tile's extended box.
 
         Args:
-            cell_idx (int): The 1D index of the grid cell.
+            cell_idx (int): Leaf id.
 
         Returns:
             Tuple[np.ndarray, np.ndarray]:
-                - Indices of points in the batch
-                - Boolean mask identifying primary (non-overlap) points
+                - Global indices of points in the batch (primary + halo)
+                - Boolean mask marking which batch points are primary to this cell
         """
-        # Find primary points (those belonging directly to this cell)
-        primary_mask = self.grid_indices == cell_idx
-        primary_indices = np.where(primary_mask)[0]
-
+        # Primary points = this leaf's own points (contiguous slice of the sorted index).
+        primary_indices = self._sorted_point_idx[
+            self._leaf_offsets[cell_idx]:self._leaf_offsets[cell_idx + 1]
+        ]
         if len(primary_indices) == 0:
             return np.array([], dtype=int), np.array([], dtype=bool)
 
-        if cell_idx in self.cell_bounds:
-            # Subdivided cell — use stored bounds
-            min_bounds, max_bounds = self.cell_bounds[cell_idx]
-            overlap_size = (max_bounds - min_bounds) * self.overlap_percent
-        else:
-            # Original grid cell — compute bounds from 3D grid coordinates
-            nx, ny, nz = self.grid_dimensions
-            cell_z = cell_idx % nz
-            cell_y = (cell_idx // nz) % ny
-            cell_x = cell_idx // (ny * nz)
-            min_bounds = self.grid_bounds['min'] + np.array([cell_x, cell_y, cell_z]) * self.cell_size
-            max_bounds = min_bounds + self.cell_size
-            overlap_size = self.cell_size * self.overlap_percent
+        min_bounds, max_bounds = self.cell_bounds[cell_idx]
+        overlap_size = (max_bounds - min_bounds) * self.overlap_percent
         extended_min = min_bounds - overlap_size
         extended_max = max_bounds + overlap_size
 
-        # Find all points within the extended bounds
-        mask = np.ones(len(self.points), dtype=bool)
-        for dim in range(3):
-            mask &= (self.points[:, dim] >= extended_min[dim])
-            mask &= (self.points[:, dim] <= extended_max[dim])
+        # Candidate leaves: those whose tight bounds overlap the extended box. This
+        # is a cheap AABB test over the leaves (hundreds/thousands), not over N points.
+        overlap = np.all(
+            (extended_min <= self._leaf_max) & (self._leaf_min <= extended_max), axis=1
+        )
+        cand_leaves = np.where(overlap)[0]
 
-        batch_indices = np.where(mask)[0]
+        # When the candidates are a small fraction of the cloud, gathering just those
+        # leaves' points and box-testing them is far cheaper than scanning everything.
+        # But an outlier point can stretch a leaf's tight bounds so many leaves
+        # "overlap"; once the candidate set approaches the whole cloud, a single
+        # contiguous (cache-friendly) scan beats a big scattered gather, so fall back.
+        if self._leaf_counts[cand_leaves].sum() <= 0.25 * len(self.points):
+            candidate_idx = np.concatenate([
+                self._sorted_point_idx[self._leaf_offsets[k]:self._leaf_offsets[k + 1]]
+                for k in cand_leaves
+            ])
+            cp = self.points[candidate_idx]
+            m = np.ones(len(candidate_idx), dtype=bool)
+            for dim in range(3):
+                m &= (cp[:, dim] >= extended_min[dim]) & (cp[:, dim] <= extended_max[dim])
+            batch_indices = candidate_idx[m]
+        else:
+            m = np.ones(len(self.points), dtype=bool)
+            for dim in range(3):
+                m &= (self.points[:, dim] >= extended_min[dim])
+                m &= (self.points[:, dim] <= extended_max[dim])
+            batch_indices = np.where(m)[0]
 
         # Cap the batch (primary + halo). An adaptive tile in a sparse region can
         # border a much denser tile; its overlap halo would otherwise scoop up a huge
@@ -201,9 +239,10 @@ class BatchProcessor:
         # nearest the cell box (the ones actually neighbouring boundary primaries) and
         # drop the far halo, which neighbours nothing here. Bounds KNN cost and VRAM.
         cap = self.max_batch_size
-        if cap is not None and len(batch_indices) > cap and len(batch_indices) > len(primary_indices):
-            halo = batch_indices[~primary_mask[batch_indices]]
-            keep = cap - len(primary_indices)
+        n_primary = len(primary_indices)
+        if cap is not None and len(batch_indices) > cap and len(batch_indices) > n_primary:
+            halo = batch_indices[self.grid_indices[batch_indices] != cell_idx]
+            keep = cap - n_primary
             if keep <= 0:
                 batch_indices = primary_indices
             elif keep < len(halo):
@@ -213,8 +252,8 @@ class BatchProcessor:
                 nearest = halo[np.argpartition((d * d).sum(axis=1), keep)[:keep]]
                 batch_indices = np.concatenate([primary_indices, nearest])
 
-        # Which batch points are primary to this cell (vectorized lookup).
-        is_primary = primary_mask[batch_indices]
+        # Which batch points are primary to this cell (O(batch) leaf-id compare).
+        is_primary = self.grid_indices[batch_indices] == cell_idx
 
         return batch_indices, is_primary
 
