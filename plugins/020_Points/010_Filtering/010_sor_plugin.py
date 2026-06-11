@@ -38,7 +38,7 @@ class SORPlugin(Plugin):
                 "type": "int",
                 "default": 20,
                 "min": 5,
-                "max": 100,
+                "max": 500,
                 "label": "Number of Neighbors",
                 "description": "Number of nearest neighbors to use for mean distance calculation"
             },
