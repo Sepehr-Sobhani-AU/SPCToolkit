@@ -1,18 +1,5 @@
 ## ISSUES:
 
-- ~~We need to show branch type in tree structure~~
-  - **Report (Fixed):** Added a **Type** column to the tree (`Branch | Type | Cache`). `TreeStructureWidget.add_branch` resolves each node's `data_type` from the `DataNodes` singleton via `_resolve_branch_type`, so all call sites populate it automatically. Cache column moved from index 1 → 2.
-  - The branch type is shown now. The **Value** node types should show **Value ([type])**. I can't remember exact format. *(some info should be saved in Tag)*
-  - ~~**↳ Done:**~~ `values` branches now render as **`values (<source>)`** in the Type column, where `<source>` is the producing operation read from the node's `tags[0]` (e.g. `values (average_distance)`, `values (knn_analysis)`). No plugin changes needed — the source is already stored in tags. Format is trivial to adjust if you want a different label.
-
-- ~~For some reason subtracting ground branch from estimated normal branch is extremely slow. If I'm not wrong It should be a mask array applying on the estimate normal branch.~~
-  - **Report (Round 1):** Added `_lineage_keep_mask` fast path (compose boolean masks instead of coordinate matching).
-  - *NOT FIXED YET (round 1).* → **Root cause found & fixed (round 2):** the fast path was bailing to the slow coordinate match whenever the ground lineage crossed a **`cluster_labels`** node (dbscan / surface_region_growing). `ClustersTransformer` keeps the parent's points unchanged (it only *attaches* labels), so `cluster_labels` is actually an **identity** step — it's now classified as such. Also added **`class_reference`** support (selects via `isin(labels, cluster_ids)` using the nearest cluster_labels ancestor). Verified exact on the realistic dbscan→region-growing→separate-clusters lineage and the class-select lineage; all unsafe cases still fall back. Subtract should now be instant for these.
-  - ~~***OPEN (new, separate task):*** Change the background color of branches whose datanode data length ≠ their root ancestor's point count.~~ **Dropped — replaced by a confirm prompt.** The colour cue was abandoned: subtract-compatibility is *pairwise* (do these two branches share a positional index space?), not a per-node property, so any single colour-per-node scheme over-promises. Counter-example found in practice: two "same-root" branches still fell back to coordinate matching because the target sits below a `filtering` mask the subtract branch doesn't share (masks are parent-relative — see issue ④). **Instead:** the tree is back to plain (Type + Points columns only, no background tint), and subtract now **asks before the slow path** — when `_lineage_keep_mask` can't compose a result, a Yes/No dialog ("…must match points by coordinate (~N vs M points), this can be slow. Proceed?") lets the user choose. Generic hook `Plugin.confirm_before_execute` (default no-op) checked on the main thread in `_start_analysis` via `ApplicationController.get_analysis_confirmation`; reuses the cheap lineage check (no reconstruction / no coordinate match). The real fix for the underlying slowness remains **root-anchored masks (issue ④)**.
-
-- ~~We need to add a column showing the number of points for each branch.~~
-  - ~~**Report (Open):**~~ **Done (revised):** added a **Points** column (`Branch | Type | Points | Cache`; Cache moved 2 → 3) showing the **reconstructed point count** with thousands separators, computed cheaply (no cloud reconstruction): masks → count of 1s (`np.count_nonzero`), class_reference → matching-label count, identity/point_cloud → array length. `ApplicationController.get_node_reconstructed_count`.
-
 - I expect the length of data nodes in all the branches under the root point cloud be exactly the same as number of points in the root. This way applying logical operations on the branches will be very fast.
   - **Report (Open / design):** Invariant does **not** hold today (masks are boolean over their *immediate parent*; nested masks / point_cloud-subsets are shorter).
   - ***Do you have any suggestion?***
@@ -21,12 +8,6 @@
 - The menus and their contents should be rearranged, as many of the plugins are not in a proper location.
   - **Report (Open):** Organizational; needs a deliberate menu taxonomy pass (Definition-level).
   - ***OK, leave it for later***
-
-- ~~The "Cut cluster" plugin should be renamed to "split clusters" (including .py file)~~
-  - ~~**Report (Open):**~~ **Done:** file `050_cut_cluster_plugin.py` → `050_split_clusters_plugin.py` (git mv, history preserved); class `CutClusterPlugin` → `SplitClustersPlugin`; `get_name()` `"cut_cluster"` → `"split_clusters"` (menu now shows **"Split Clusters"**); keybinding `Key_C` in `_key_input.py` updated to `"split_clusters"`. No `cut_cluster` references remain. Note: distinct from existing "Split Classes" plugin.
-
-- ~~Cancel button not working in exact match branch subtract~~
-  - **Done:** the exact-match fallback collapsed the whole comparison into one un-interruptible `np.unique`/`cp.unique` over the *stacked* A+B array, so a Cancel click did nothing until that single call finished (i.e. the entire slow part). Rewrote both `_row_isin_not_cpu` and `_row_isin_not_gpu` (`015_Branch/020_subtract_plugin.py`) to **dedupe B once, then test the target in bounded chunks** (`_MATCH_CHUNK = 2,000,000`) with a `global_cancel_event` check between chunks. Cancel now takes effect within one chunk. CPU uses a void-row-view + `np.isin`; GPU uses per-chunk `cp.unique` against the deduped B. Verified exact + chunk-boundary-correct on a unit check.
 
 - ~~Review all the plugins using plugin reviewer agent in parallel and generate a report here for not complying items~~
   - **Done:** ran the `plugin-reviewer` agent across 4 parallel partitions. Conventions checked: singleton-over-signal/slot, no custom `pyqtSignal`/`.connect`/`.emit`, interface inheritance, GPU usage (no silent CPU fallback), `threading.Thread`+`QTimer` polling, backend-registry abstraction, data immutability, batching/chunking, progress reporting. **No violations** of singleton/no-custom-signals/interface/data-immutability anywhere. Non-compliant items found:
@@ -41,27 +22,15 @@
     - **Minor/hygiene:** unused/duplicate imports (`las_laz`, `semantickitti`, PointNet trainers); `"dropdown"`/`"info"` param types work but aren't in CLAUDE.md's documented type list (doc gap).
   - *These are reported only (not fixed in this pass) except where noted. Recommend prioritising the runtime-breaking import and the backend-abstraction bypasses.*
 
-- ~~The view resets to the initial view after some of the processes.~~
-  - **Done:** root cause — `TreeStructureWidget.add_branch` emits `branch_added` for **every** new branch (including analysis results), and `_on_branch_added` unconditionally called `zoom_to_extent(preserve_rotation=False)`, snapping the camera back. Now `add_branch` records `_last_branch_was_root` (only true for freshly loaded root clouds, `is_root=True`), and `_on_branch_added` zooms-to-extent **only for root loads**. Derived branches keep the current camera. Manual `reset_view`/`zoom_to_extent` (hotkeys/plugins) and fly-through are unaffected.
-
-- ~~Separate selected clusters plugin doesn't set the name of the new branch as the user input~~
-  - **Done:** `_handle_analysis_result` (`gui/main_window.py`) ignored the dialog's `new_branch_name`, always naming the branch after the plugin (`analysis_type`). It now uses `params["new_branch_name"]` when present — both as the tree display name and persisted to `result_node.alias`. Fixes naming for `separate_selected_clusters` and `separate_selected_points` (and any future plugin exposing `new_branch_name`).
-
-- ~~The selected points should be deselected (unhighlighted) after the process is complete in all plugins~~
-  - **Done:** added `PCDViewerWidget.clear_selection()` (clears `picked_points_indices` + stored selection polygons, repaints). `_check_analysis_completion` calls it right before rendering the result, so any analysis plugin that consumed a selection finishes with no stale highlight. (Action plugins like `surface_region_growing` already clear their own picks.)
-
-- ~~I have selected points using polygon and Separate selected points gave the wrong points.~~
-  - **Done:** root cause — `picked_points_indices` index into the viewer's **LOD-subsampled, multi-branch** render buffer (`self.points`), but the plugin treated them as indices into the **full-resolution** cloud (`point_cloud.size`), so subsampling/offsets corrupted the result. Added `PCDViewerWidget.get_selection_mask_for(points_3d)` which re-derives the selection at full resolution: it prefers an **exact polygon re-test** against the stored polygons + camera matrices (resolution-independent), and otherwise **coordinate-matches** the picked points' world coords (exact float32 row equality). Both `separate_selected_points` and `separate_selected_clusters` now use it.
-
-- ~~Reload selected plugins lists the name of all the plugins.~~
-  - **Done:** `095_Plugins/000_manage_plugins_plugin.py` `_on_reload` now reports a count — `"Reloaded N plugin(s)."` — and only appends a `Failed:` list when some reloads actually failed.
-
 - The algorithm of coordinate matching 2 branches looks very basic. we have to discuss it. For example, we have to use hash grid to speed up the process
   - **Note (discussion — not changed):** the current exact-match (now chunked, see Cancel fix) reduces each row to a void-byte key (CPU) / uses `cp.unique` (GPU) and tests membership — it's an **exact** O((n+m)·d) hash/sort match, *not* spatial. A **hash grid only helps approximate / tolerance matching** (snap-to-voxel within ε), which changes semantics (float-exact vs. nearest-within-radius). Recommended direction: keep the exact path as the safe fallback, and the *real* fix is **root-anchored bit-packed masks** (the open data-model item above) so most subtracts never reach coordinate matching at all. If approximate matching is desired, that's a Definition-level decision (tolerance, voxel size) → `DECISIONS.md`. **Left for discussion as requested.**
 
 - Surface region growing outcome is not %100 correct. We have to investigate it.
   - **Note (investigation — not changed):** read `020_Points/020_Clustering/030_surface_region_growing_plugin.py`. Likely correctness contributors, in order of suspicion: (1) **`is_processed_voxel_t[chunk] = True` permanently retires a boundary voxel after its first fit** — if that voxel later gains surface points from a neighbour, it is never re-evaluated, so growth can stop short of full coverage (under-segmentation at concave joins). (2) Candidate acceptance uses the **boundary-voxel plane** to pre-filter (`distance_threshold`) and then a **separate candidate-voxel RANSAC** + angle gate; a candidate that the boundary plane barely misses is dropped before its own plane is ever fit. (3) `_CANDIDATE_RANSAC_POINTS_CAP = 256` caps the RANSAC sample set, so dense voxels fit on a non-representative subset (stochastic, non-deterministic — `seed=None`). (4) the 26-neighbour expansion + plane/AABB-cross test can miss surfaces thinner than `voxel_size`. Suggested next step: make boundary voxels **re-eligible** when they acquire new surface points (clear their processed flag on update), and set a fixed RANSAC `seed` for reproducibility while debugging. **Needs a dedicated session + test cloud to verify.**
-
-- ~~delete branch message box shows the UUID of deleted branches rather than branches' names.~~
-  - **Done:** `015_Branch/000_delete_branch_plugin.py` read `node.data_name`, which is almost always empty (the tree stores renames in `alias` and the operation in `params`), so it fell through to `str(uid)[:8]`. Added a `_display_name(node, uid)` helper (`alias → data_name → params → short-uuid`) and used it in both the confirmation list and the external-dependency message. **Checked other plugins:** `data_name` is referenced *only* in this plugin (grep across `plugins/`), so no other plugin has the same bug; cluster remove/merge dialogs report counts, not names.
-
+- ~~The project name is not shown anywhere~~
+  - **Done:** window title now shows `SPCToolkit — <project>` on save/load. Added `MainWindow.update_project_title()` (reads `file_manager.current_project_path`), called from `FileManager._update_window_title()` via the singleton (no new signal) after `current_project_path` is set in `save_project`/`load_project`.
+- ~~Filtering point doesn't turn of the source branch~~
+  - **Done (root cause was silent failure, not the hide logic):** the parent-hide code in `_handle_analysis_result` is shared by every mask plugin (SOR included) and is correct — but it only runs when a result branch is created. The filtering plugin's default condition (`point_cloud.normals[:, 2] >= 0.95`) raises when the cloud has no normals; that error was logged but never shown, so no branch was created and the source was never hidden — looking like "filtering did nothing". Fixed by surfacing analysis errors in a `QMessageBox` in both error paths (`_check_analysis_completion` and `_on_analysis_error`). The unsafe `exec()` in the filtering plugin is still tracked separately above.
+- ~~In SOR the number of points is limited to 100, change it to 500~~
+  - **Done:** `010_sor_plugin.py` `nb_neighbors` max raised 100 → 500.
+- 
