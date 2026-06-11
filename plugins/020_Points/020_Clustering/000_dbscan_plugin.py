@@ -129,7 +129,8 @@ class DBSCANPlugin(Plugin):
         batch_processor = BatchProcessor(
             points=points,
             batch_size=target_points,
-            overlap_percent=BATCH_OVERLAP  # Fixed at 10%
+            overlap_distance=eps,             # halo = eps: the neighbour reach DBSCAN needs across seams
+            max_batch_size=2 * target_points  # safety bound if a sparse tile's box still envelops dense
         )
 
         # Run clustering in batches (progress reported via global_variables.global_progress)

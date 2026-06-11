@@ -336,11 +336,20 @@ class ClusterByClassPlugin(ActionPlugin):
             # Run clustering on this class
             if len(class_points) > AUTO_TARGET:
                 # Use batch processor for large point clouds
-                batch_processor = BatchProcessor(
-                    points=class_points,
-                    batch_size=AUTO_TARGET,
-                    overlap_percent=BATCH_OVERLAP
-                )
+                if algorithm == "DBSCAN":
+                    batch_processor = BatchProcessor(
+                        points=class_points,
+                        batch_size=AUTO_TARGET,
+                        overlap_distance=eps,            # halo = eps (correct for DBSCAN)
+                        max_batch_size=2 * AUTO_TARGET   # safety bound for an enveloping sparse tile
+                    )
+                else:
+                    batch_processor = BatchProcessor(
+                        points=class_points,
+                        batch_size=AUTO_TARGET,
+                        overlap_percent=BATCH_OVERLAP,
+                        max_batch_size=2 * AUTO_TARGET  # bound the halo for HDBSCAN
+                    )
 
                 if algorithm == "HDBSCAN":
                     def hdbscan_func(batch_points, min_cluster_size, min_samples, **kwargs):

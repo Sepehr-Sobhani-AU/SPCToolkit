@@ -35,6 +35,7 @@ class BatchProcessor:
             points: np.ndarray,
             batch_size: int = 100000,
             overlap_percent: float = 0.1,
+            overlap_distance: float = None,
             max_batch_size: int = None
     ):
         """
@@ -45,8 +46,13 @@ class BatchProcessor:
             batch_size (int, optional): Maximum number of PRIMARY points per leaf cell
                 (the "budget"). The cloud is split adaptively so every leaf stays at or
                 below this count. Defaults to 100000.
-            overlap_percent (float, optional): Percentage of overlap between adjacent cells (0-1).
-                Defaults to 0.1 (10%).
+            overlap_percent (float, optional): Halo width as a fraction of each tile's
+                own extent. Used only when overlap_distance is None. Defaults to 0.1.
+            overlap_distance (float, optional): Halo width as an ABSOLUTE distance in the
+                cloud's units, applied uniformly on every axis. Prefer this when the
+                correct halo is a known neighbourhood scale (e.g. DBSCAN eps): unlike a
+                percentage of a varying tile extent, it can't explode on a big sparse
+                tile bordering a dense one. None = use overlap_percent. Defaults to None.
             max_batch_size (int, optional): Hard cap on primary + halo points returned
                 per tile. When the overlap halo would push a tile past this, the
                 farthest halo points are dropped (primaries are always kept), which
@@ -56,6 +62,7 @@ class BatchProcessor:
         self.points = points
         self.batch_size = batch_size
         self.overlap_percent = overlap_percent
+        self.overlap_distance = overlap_distance
         self.max_batch_size = max_batch_size
 
         # Will be computed in create_spatial_grid
@@ -200,7 +207,11 @@ class BatchProcessor:
             return np.array([], dtype=int), np.array([], dtype=bool)
 
         min_bounds, max_bounds = self.cell_bounds[cell_idx]
-        overlap_size = (max_bounds - min_bounds) * self.overlap_percent
+        # Absolute halo when given (e.g. DBSCAN eps), else a fraction of tile extent.
+        if self.overlap_distance is not None:
+            overlap_size = self.overlap_distance
+        else:
+            overlap_size = (max_bounds - min_bounds) * self.overlap_percent
         extended_min = min_bounds - overlap_size
         extended_max = max_bounds + overlap_size
 

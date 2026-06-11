@@ -116,7 +116,8 @@ class HDBSCANPlugin(Plugin):
         batch_processor = BatchProcessor(
             points=points,
             batch_size=target_points,
-            overlap_percent=BATCH_OVERLAP
+            overlap_percent=BATCH_OVERLAP,
+            max_batch_size=2 * target_points  # bound the halo; HDBSCAN has no single eps scale
         )
 
         cluster_labels = batch_processor.cluster_in_batches(
