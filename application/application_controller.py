@@ -362,6 +362,8 @@ class ApplicationController:
         - masks: number of selected points (count of True in the mask).
         - class_reference: points whose label is in cluster_ids (from the
           nearest cluster_labels ancestor).
+        - transform_matrix: the parent's count (the transform moves points but
+          preserves their identity, order and count).
         - identity / point_cloud / other per-point data: the array length
           (one entry per reconstructed point).
 
@@ -380,6 +382,9 @@ class ApplicationController:
             if labels is None:
                 return None
             return int(np.count_nonzero(np.isin(labels, getattr(data, "cluster_ids", []))))
+        if data_type == "transform_matrix":
+            parent = self.data_nodes.get_node(node.parent_uid) if node.parent_uid else None
+            return self.get_node_reconstructed_count(parent) if parent is not None else None
 
         for attr in self._DATA_LENGTH_ATTRS:
             arr = getattr(data, attr, None)

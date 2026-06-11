@@ -186,32 +186,27 @@ class SubtractPlugin(Plugin):
         dependencies = [data_node.uid, subtract_uid]
         return result_mask, "masks", dependencies
 
-    # Node types whose transformer preserves point identity, order and count
-    # (they only attach per-point attributes / colors or pass the cloud
-    # through). cluster_labels is included because ClustersTransformer keeps the
-    # parent's points unchanged and merely adds a per-point "cluster_labels"
-    # attribute -- so it does NOT subset, even though clustering feels like it
-    # should. Missing it here was forcing the slow coordinate-match fallback for
-    # any subtract whose lineage crosses a clustering step.
-    _IDENTITY_TYPES = frozenset({
-        "values", "eigenvalues", "colors", "normals", "dist_to_ground",
-        "cluster_labels", "container", "vector_feature", "cad_object",
-    })
-
     @classmethod
     def _lineage_keep_mask(cls, target_node, subtract_node, data_nodes, n_target):
         """
-        Try to compute the subtraction result as a boolean mask over the
-        target's points using lineage alone, without reconstructing or matching
-        coordinates.
+        Try to compute the subtraction result as a boolean keep-mask over the
+        target's points using lineage alone -- no reconstruction, no coordinate
+        matching.
 
-        This succeeds only when the subtract branch is reachable from a common
-        ancestor of the target through a pure subset chain (``masks`` nodes that
-        select a boolean subset of their parent, plus identity nodes that merely
-        attach attributes), AND the common-ancestor-to-target path is all
-        identity (so the ancestor's points equal the target's points in order
-        and count). Under those conditions the points selected by the subtract
-        branch map directly to indices into the target's points.
+        Both the target and the subtract branch are expressed as membership
+        masks over their lowest common ancestor (``inX`` = which ancestor points
+        survive into branch X), composed from pure subset chains (``masks`` /
+        ``class_reference`` selections plus attribute-only identity transforms,
+        see ``branch_lineage.IDENTITY_TYPES``). The result is then
+        ``~in_subtract`` restricted to the target's points::
+
+            keep_over_target = ~in_subtract[flatnonzero(in_target)]
+
+        Crucially this does NOT require the target to be the ancestor itself --
+        it also works when the target is a *subset* of the shared ancestor (e.g.
+        subtracting "vertical features" from a "non-ground" branch when both are
+        masks descending from the same cloud). The older formulation bailed in
+        that case because the ancestor -> target path wasn't pure identity.
 
         Returns:
             np.ndarray | None: Boolean keep-mask over the target points (True =
@@ -219,75 +214,42 @@ class SubtractPlugin(Plugin):
             lineage isn't a pure subset chain and the caller must fall back to
             exact coordinate matching.
         """
-        # Ancestor chain of the target, from target up to root.
-        target_chain = []
-        node = target_node
-        while node is not None:
-            target_chain.append(node)
-            node = data_nodes.get_node(node.parent_uid) if node.parent_uid else None
-        target_index = {n.uid: i for i, n in enumerate(target_chain)}
+        from config.config import global_variables
+        from core.services.branch_lineage import (
+            lowest_common_ancestor, membership_mask_over_ancestor,
+        )
 
-        # Walk the subtract branch up until we reach a node shared with the
-        # target's ancestry (the common ancestor), collecting the subset chain.
-        sub_path = []  # subtract -> ... -> (child of common ancestor)
-        node = subtract_node
-        common_pos = None
-        while node is not None:
-            if node.uid in target_index:
-                common_pos = target_index[node.uid]
-                break
-            sub_path.append(node)
-            node = data_nodes.get_node(node.parent_uid) if node.parent_uid else None
-        if common_pos is None:
+        controller = global_variables.global_application_controller
+        if controller is None:
+            return None
+
+        # During execute() the AnalysisExecutor hands us a *temporary*
+        # reconstructed node whose parent_uid is None (data_type "point_cloud"),
+        # which would sever the target's lineage walk. Resolve the real tree node
+        # by uid to recover its ancestry. (In confirm_before_execute the node is
+        # already the real one, so this is a no-op there.)
+        target_node = data_nodes.get_node(target_node.uid) or target_node
+
+        ancestor = lowest_common_ancestor([target_node, subtract_node], data_nodes)
+        if ancestor is None:
             return None  # No shared ancestor -> can't reason about lineage.
 
-        # The common-ancestor -> target path must preserve point identity so the
-        # composed mask (built over the ancestor) is valid over the target.
-        for node in target_chain[:common_pos]:
-            if node.data_type not in cls._IDENTITY_TYPES:
-                return None
+        n_ancestor = controller.get_node_reconstructed_count(ancestor)
+        if n_ancestor is None:
+            return None  # Can't size the ancestor cheaply -> fall back.
 
-        # Compose the subtract subset chain into indices over the ancestor's
-        # points (== target's points). Process top-down: ancestor -> subtract.
-        idx = np.arange(n_target)
-        for node in reversed(sub_path):
-            data_type = node.data_type
-            if data_type in cls._IDENTITY_TYPES:
-                continue  # Count and order preserved; nothing to select.
-            if data_type == "masks":
-                mask = node.data.mask
-                if mask.shape[0] != idx.shape[0]:
-                    return None  # Lineage assumption violated; bail out safely.
-                idx = idx[mask]
-            elif data_type == "class_reference":
-                # A class_reference selects points whose cluster label is in
-                # cluster_ids. The labels come from the nearest cluster_labels
-                # ancestor and line up positionally with the current selection.
-                labels = cls._find_cluster_labels(node, data_nodes)
-                if labels is None or labels.shape[0] != idx.shape[0]:
-                    return None  # Can't align labels safely; fall back.
-                sel = np.isin(labels, node.data.cluster_ids)
-                idx = idx[sel]
-            else:
-                return None  # Unknown / reordering transform -> fall back.
+        in_target = membership_mask_over_ancestor(target_node, ancestor, data_nodes, n_ancestor)
+        in_subtract = membership_mask_over_ancestor(subtract_node, ancestor, data_nodes, n_ancestor)
+        if in_target is None or in_subtract is None:
+            return None  # Lineage isn't a pure subset chain -> fall back.
 
-        keep = np.ones(n_target, dtype=bool)
-        keep[idx] = False  # Points belonging to the subtract branch are removed.
-        return keep
+        # Ancestor indices retained by the target, in the target's point order.
+        idx_target = np.flatnonzero(in_target)
+        if idx_target.shape[0] != n_target:
+            return None  # Safety: membership must line up with the target's points.
 
-    @staticmethod
-    def _find_cluster_labels(node, data_nodes):
-        """
-        Walk up from ``node`` to the nearest ``cluster_labels`` ancestor and
-        return its per-point integer labels (the array a class_reference filters
-        on), or None if there's no such ancestor / no usable labels.
-        """
-        current = data_nodes.get_node(node.parent_uid) if node.parent_uid else None
-        while current is not None:
-            if current.data_type == "cluster_labels":
-                return getattr(current.data, "labels", None)
-            current = data_nodes.get_node(current.parent_uid) if current.parent_uid else None
-        return None
+        # Keep target points that are NOT present in the subtract branch.
+        return ~in_subtract[idx_target]
 
     @staticmethod
     def _row_isin_not(A: np.ndarray, B: np.ndarray) -> np.ndarray:
