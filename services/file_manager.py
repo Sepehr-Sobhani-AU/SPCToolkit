@@ -28,6 +28,16 @@ class FileManager(QObject):
         self.current_project_path = None
         self.flythroughs = []  # List of {name, fps, waypoints: [{name, duration, ...}]}
 
+    def _update_window_title(self):
+        """Refresh the main window title to show the current project name.
+
+        Uses the singleton (per project convention) rather than a signal.
+        """
+        from config.config import global_variables
+        main_window = global_variables.global_main_window
+        if main_window is not None and hasattr(main_window, "update_project_title"):
+            main_window.update_project_title()
+
     def _save_version_copy(self, filepath):
         """Create an auto-versioned copy of the saved project file.
 
@@ -224,6 +234,7 @@ class FileManager(QObject):
 
             # Store the path for future saves
             self.current_project_path = filename
+            self._update_window_title()
 
             # Emit the signal with the saved path
             self.project_saved.emit(filename)
@@ -285,6 +296,7 @@ class FileManager(QObject):
 
             # Store the path for future saves
             self.current_project_path = filename
+            self._update_window_title()
 
             # Emit the signal with the loaded DataNodes
             self.project_loaded.emit(loaded_data_nodes)

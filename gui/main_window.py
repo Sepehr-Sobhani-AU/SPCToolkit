@@ -77,6 +77,22 @@ class MainWindow(QtWidgets.QMainWindow):
         # Set up the UI components
         self.setup_ui()
 
+    def update_project_title(self):
+        """Show the current project name in the window title bar.
+
+        Called by FileManager (via the singleton) whenever a project is saved
+        or loaded. Falls back to the bare application name when no project file
+        is associated yet.
+        """
+        import os
+
+        path = self.file_manager.current_project_path
+        if path:
+            project_name = os.path.splitext(os.path.basename(path))[0]
+            self.setWindowTitle(f"SPCToolkit — {project_name}")
+        else:
+            self.setWindowTitle("SPCToolkit")
+
     def setup_ui(self):
         """Sets up the main window UI components with dynamically built menus."""
 
@@ -745,6 +761,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if error:
             logger.error(f"Analysis failed: {error}")
             self.controller.analysis_executor.cleanup()
+            QtWidgets.QMessageBox.warning(
+                self, "Analysis Failed",
+                f"The operation could not be completed and produced no result.\n\n"
+                f"Details: {error}"
+            )
             return
 
         # Process result
@@ -831,6 +852,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cancel_button.hide()
         self.enable_menus()
         self.enable_tree()
+        QtWidgets.QMessageBox.warning(
+            self, "Analysis Failed",
+            f"The operation could not be completed and produced no result.\n\n"
+            f"Details: {error_msg}"
+        )
 
     def closeEvent(self, event):
         """
