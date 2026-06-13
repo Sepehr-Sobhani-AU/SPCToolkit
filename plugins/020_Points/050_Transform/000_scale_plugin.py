@@ -7,8 +7,10 @@ as a CHILD of the selected branch -- it is applied lazily during reconstruction
 (see core/transformers/transform_matrix_transformer.py), so NO duplicate point
 cloud is created. Toggling the child off restores the original geometry.
 
-Scaling about the centroid keeps the cloud in place; negative factors mirror it
-across that centroid. A single 4x4 homogeneous matrix encodes the scaling via
+Scaling is performed about a CONSTANT pivot -- the axis-aligned bounding-box
+centre of the top root-ancestor cloud -- so repeated transforms share the same
+anchor instead of drifting with each operation. Negative factors mirror across
+that pivot. A single 4x4 homogeneous matrix encodes the scaling via
 ``TransformMatrix.from_scale`` (linear algebra: T(c) @ S @ T(-c)).
 """
 
@@ -110,12 +112,12 @@ class ScalePlugin(ActionPlugin):
             if parent_node is None:
                 raise ValueError(f"Selected branch {source_uid} not found")
 
-            # Pivot = centroid. Reconstruct once only to read the points for the
-            # centroid; the reconstructed cloud is discarded (no node stored).
-            pc = controller.reconstruct(source_uid)
-            center = np.asarray(pc.points, dtype=np.float64).mean(axis=0)
+            # Pivot = constant anchor: the AABB centre of the top root-ancestor
+            # cloud. Using the root (not the current branch) keeps the pivot
+            # fixed across stacked transforms instead of drifting each time.
+            center = self._root_bbox_center(parent_node)
 
-            # Build the 4x4 scale transform about the centroid (linear algebra).
+            # Build the 4x4 scale transform about the pivot (linear algebra).
             transform = TransformMatrix.from_scale(
                 float(factors[0]), float(factors[1]), float(factors[2]),
                 center=center
@@ -159,3 +161,23 @@ class ScalePlugin(ActionPlugin):
             main_window.tree_overlay.hide_processing()
             main_window.enable_menus()
             main_window.enable_tree()
+
+    @staticmethod
+    def _root_bbox_center(node) -> np.ndarray:
+        """
+        Axis-aligned bounding-box centre of the top root-ancestor's cloud.
+
+        Walks up ``parent_uid`` to the root point_cloud (always in memory) and
+        returns ``(min + max) / 2`` over its points -- a constant anchor that
+        does not change as transforms are stacked on the branch.
+        """
+        data_nodes = global_variables.global_data_nodes
+        root = node
+        while root.parent_uid is not None:
+            parent = data_nodes.get_node(root.parent_uid)
+            if parent is None:
+                break
+            root = parent
+
+        pts = np.asarray(root.data.points, dtype=np.float64)
+        return (pts.min(axis=0) + pts.max(axis=0)) * 0.5
