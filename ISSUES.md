@@ -27,4 +27,7 @@
 
 - Surface region growing outcome is not %100 correct. We have to investigate it.
   - **Note (investigation — not changed):** read `020_Points/020_Clustering/030_surface_region_growing_plugin.py`. Likely correctness contributors, in order of suspicion: (1) **`is_processed_voxel_t[chunk] = True` permanently retires a boundary voxel after its first fit** — if that voxel later gains surface points from a neighbour, it is never re-evaluated, so growth can stop short of full coverage (under-segmentation at concave joins). (2) Candidate acceptance uses the **boundary-voxel plane** to pre-filter (`distance_threshold`) and then a **separate candidate-voxel RANSAC** + angle gate; a candidate that the boundary plane barely misses is dropped before its own plane is ever fit. (3) `_CANDIDATE_RANSAC_POINTS_CAP = 256` caps the RANSAC sample set, so dense voxels fit on a non-representative subset (stochastic, non-deterministic — `seed=None`). (4) the 26-neighbour expansion + plane/AABB-cross test can miss surfaces thinner than `voxel_size`. Suggested next step: make boundary voxels **re-eligible** when they acquire new surface points (clear their processed flag on update), and set a fixed RANSAC `seed` for reproducibility while debugging. **Needs a dedicated session + test cloud to verify.**
-- Filtering:The unsafe `exec()` in the filtering plugin is still tracked separately above.
+- Filter plugin needs a dialog box to create a filter. We need to discuss it later. please remind me. 
+- In filter plugin fix the unsafe `exec()` in the filtering plugin is still tracked separately above.
+- Surface region growing plugin doesn't toggle the source branch visibility
+- 
