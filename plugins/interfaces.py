@@ -82,6 +82,17 @@ class Plugin(ABC):
         """
         return None
 
+    def requires_selection(self) -> bool:
+        """Whether this plugin consumes the live viewer selection (picked or
+        polygon-selected points) at execute time.
+
+        Pipeline replay uses this to pause at such a step so the user can make
+        the selection on the freshly-produced intermediate (e.g. the clusters)
+        before the step runs, instead of relying on a selection that no longer
+        applies. Default False.
+        """
+        return False
+
 
 class ActionPlugin(ABC):
     """
@@ -135,6 +146,14 @@ class ActionPlugin(ABC):
             None: Action plugins perform their operations directly (e.g., open dialogs, trigger events)
         """
         pass
+
+    def requires_selection(self) -> bool:
+        """Whether this action plugin consumes the live viewer selection (picked
+        or polygon-selected points) at execute time -- e.g. a seed point for
+        region growing. Pipeline replay pauses at such a step so the user can
+        select on the freshly-produced intermediate before it runs. Default False.
+        """
+        return False
 
 
 # Legacy alias for backward compatibility during migration

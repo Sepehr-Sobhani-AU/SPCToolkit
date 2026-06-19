@@ -24,6 +24,9 @@ class SeparateSelectedPointsPlugin(Plugin):
         """
         return "separate_selected_points"
 
+    def requires_selection(self) -> bool:
+        return True
+
     def get_parameters(self) -> Dict[str, Any]:
         """
         Define the parameters for separating selected points.

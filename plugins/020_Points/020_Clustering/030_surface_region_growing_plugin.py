@@ -37,6 +37,9 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
     def get_name(self) -> str:
         return "surface_region_growing"
 
+    def requires_selection(self) -> bool:
+        return True
+
     def get_parameters(self) -> Dict[str, Any]:
         return {
             "voxel_size": {

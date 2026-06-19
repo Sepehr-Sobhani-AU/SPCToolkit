@@ -25,6 +25,9 @@ class SeparateSelectedClustersPlugin(Plugin):
         """
         return "separate_selected_clusters"
 
+    def requires_selection(self) -> bool:
+        return True
+
     def get_parameters(self) -> Dict[str, Any]:
         """
         Define the parameters for separating selected clusters.

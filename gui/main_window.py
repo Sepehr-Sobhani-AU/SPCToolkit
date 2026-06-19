@@ -692,6 +692,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_analysis(self, analysis_type: str, params: dict):
         """Start analysis with UI protection."""
+        # Track the node this run produces so a pipeline replay can chain to it.
+        self._last_analysis_uid = None
         # Pre-flight confirmation (main thread, before we lock the UI / spawn
         # the worker). A plugin can flag a slow path -- e.g. subtract falling
         # back to coordinate matching -- and let the user choose.
@@ -754,6 +756,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.controller.analysis_executor.was_cancelled():
             logger.info("Analysis was cancelled by user")
             self.controller.analysis_executor.cleanup()
+            self._advance_pipeline_if_running(False, "cancelled by user")
             return
 
         # Check for error
@@ -766,6 +769,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"The operation could not be completed and produced no result.\n\n"
                 f"Details: {error}"
             )
+            self._advance_pipeline_if_running(False, error)
             return
 
         # Process result
@@ -776,6 +780,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pcd_viewer_widget.clear_selection()
             self._handle_analysis_result(result_data)
         self.controller.analysis_executor.cleanup()
+        self._advance_pipeline_if_running(True)
+
+    def _advance_pipeline_if_running(self, ok: bool, error: str = None):
+        """If a pipeline replay is active, hand it this step's outcome so it can
+        launch the next step (or stop). No-op for normal single analyses."""
+        runner = getattr(self, '_pipeline_runner', None)
+        if runner is not None and runner.is_active():
+            runner.on_step_finished(ok, getattr(self, '_last_analysis_uid', None), error)
 
     def _handle_analysis_result(self, result_data: dict):
         """Handle completed analysis result."""
@@ -790,6 +802,8 @@ class MainWindow(QtWidgets.QMainWindow):
         uid = self.controller.add_analysis_result(
             result, result_type, dependencies, parent_node, analysis_type, params
         )
+        # Expose the new node to an active pipeline replay (see PipelineRunner).
+        self._last_analysis_uid = uid
 
         # Update tree widget
         parent_uid_str = str(parent_node.uid)
