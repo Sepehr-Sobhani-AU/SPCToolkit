@@ -79,19 +79,25 @@ class KNNBackend(BaseBackend):
     """Abstract base class for K-Nearest Neighbors backends."""
 
     @abstractmethod
-    def query(self, points: np.ndarray, k: int, batch_size: int = 100_000) -> Tuple[np.ndarray, np.ndarray]:
+    def query(self, points: np.ndarray, k: int, batch_size: int = 100_000,
+              reference: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Find k nearest neighbors for each point.
+        Find k nearest neighbors for each query point.
 
         Args:
-            points: (N, 3) array of XYZ coordinates
+            points: (N, 3) array of XYZ query coordinates
             k: Number of neighbors to find
             batch_size: Number of query points to process per batch
+            reference: optional (M, 3) array to build the index on. When given,
+                neighbors are searched in `reference` and the returned indices
+                index into it (cloud-to-cloud query). When None (default), the
+                index is built on `points` itself (self-query).
 
         Returns:
             Tuple of:
                 - distances: (N, k) array of distances to neighbors
-                - indices: (N, k) array of neighbor indices
+                - indices: (N, k) array of neighbor indices (into `reference`
+                  when given, else into `points`)
         """
         pass
 
