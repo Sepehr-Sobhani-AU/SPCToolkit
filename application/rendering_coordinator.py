@@ -314,10 +314,10 @@ class RenderingCoordinator:
             geom = feature.geometry
             T = feature.transform_matrix
 
-            if cad.geometry_type == "mesh":
+            if feature.geometry_type == "mesh":
                 verts = np.asarray(geom["vertices"], dtype=np.float64)
                 edges = np.asarray(geom["edges"], dtype=np.uint32)
-            elif cad.geometry_type == "polyline":
+            elif feature.geometry_type == "polyline":
                 verts = np.asarray(geom["vertices"], dtype=np.float64)
                 n = len(verts)
                 pairs = [[i, i + 1] for i in range(n - 1)]
@@ -339,7 +339,7 @@ class RenderingCoordinator:
             all_verts.append(transformed)
             all_edges.append(edges + vertex_offset)
             all_colors.append(
-                np.tile(cad.color, (len(transformed), 1))
+                np.tile(feature.color, (len(transformed), 1))
             )
             vertex_offset += len(transformed)
 
