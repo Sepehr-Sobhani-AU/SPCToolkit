@@ -93,6 +93,21 @@ class Plugin(ABC):
         """
         return False
 
+    def build_param_dialog(self, parent) -> Optional[Any]:
+        """Optional custom parameter dialog, replacing the auto-generated form.
+
+        Return a ``QDialog`` whose ``exec_()`` collects input and whose
+        ``get_parameters()`` returns the params dict passed to ``execute`` — the
+        same contract ``DynamicDialog`` satisfies. Return None (default) to use
+        the schema-driven dialog built from ``get_parameters()``.
+
+        Use this only when the schema dialog can't express the input (e.g. an
+        attribute query builder with a variable number of condition rows). The
+        returned params MUST stay JSON-serialisable so the step replays from
+        saved pipelines without reopening the dialog.
+        """
+        return None
+
 
 class ActionPlugin(ABC):
     """

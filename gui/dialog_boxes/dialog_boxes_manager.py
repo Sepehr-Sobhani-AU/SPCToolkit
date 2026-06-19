@@ -73,6 +73,22 @@ class DialogBoxesManager(QObject):
 
         plugin_class = analysis_plugins[analysis_type]
         plugin_instance = plugin_class()
+
+        # A plugin may supply its own dialog when the flat schema can't express
+        # its input (e.g. the attribute query builder). It collects params the
+        # same way DynamicDialog does (exec_ + get_parameters), so the rest of
+        # the flow — storing, recording, replay — is unchanged.
+        from config.config import global_variables
+        custom_dialog = plugin_instance.build_param_dialog(
+            getattr(global_variables, "global_main_window", None)
+        )
+        if custom_dialog is not None:
+            if custom_dialog.exec_():
+                params = custom_dialog.get_parameters()
+                self.store_params(analysis_type, params)
+                return params
+            return None  # User cancelled
+
         parameter_schema = plugin_instance.get_parameters()
 
         # No parameters needed — return empty dict
