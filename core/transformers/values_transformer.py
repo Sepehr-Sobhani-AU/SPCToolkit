@@ -84,6 +84,40 @@ class ValuesTransformer:
         else:
             # Regular 1D array case
             result_point_cloud.add_attribute("values", self.values)
+            # Auto-colour the cloud by this scalar (turbo, min-max) so a values
+            # branch is immediately visible without a separate colouring step.
+            # A later color_by_value / colours node simply overrides it.
+            colors = self._scalar_to_colors(self.values)
+            if colors is not None:
+                result_point_cloud.colors = colors
             print(f"Added values as attribute to point cloud")
 
         return result_point_cloud
+
+    @staticmethod
+    def _scalar_to_colors(values):
+        """Map a 1-D scalar field to turbo RGB so a values branch renders
+        coloured by default. Returns None on failure.
+
+        Normalisation is robust (2-98th percentile, not raw min-max). Real
+        per-point fields like signed distance-to-ground carry outliers -- a few
+        points below the reference (negative) or a lone far point -- and raw
+        min-max lets those stretch the range so the bulk of the cloud collapses
+        into a narrow band (everything reads green->red with no blue low end,
+        and height becomes unreadable). Clamping to the 2-98% range restores the
+        full blue->red spread across the points that matter; outliers pin to the
+        ends and NaN stays NaN (rendered grey by apply_colormap).
+        """
+        try:
+            from services.colormap_service import apply_colormap
+            v = np.asarray(values, dtype=np.float32).ravel()
+            finite = v[np.isfinite(v)]
+            if finite.size == 0:
+                return None
+            lo = float(np.percentile(finite, 2.0))
+            hi = float(np.percentile(finite, 98.0))
+            rng = hi - lo
+            t = np.zeros_like(v) if rng <= 0 else (v - lo) / rng
+            return apply_colormap(t, "turbo")  # clips to [0,1]; NaN -> grey
+        except Exception:
+            return None

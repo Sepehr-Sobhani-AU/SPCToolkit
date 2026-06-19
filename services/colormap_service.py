@@ -2,8 +2,8 @@
 Colormap Service
 
 Maps normalized scalar values (t in [0, 1]) to per-point RGB colors using a
-curated set of matplotlib colormaps. Shared by the scalar-coloring plugins
-(color_by_normal_z, color_by_height) so the t -> RGB mapping lives in one place.
+curated set of matplotlib colormaps. Shared by the scalar-coloring plugin
+(color_by_value) so the t -> RGB mapping lives in one place.
 
 Colors are returned as an (N, 3) float32 array in [0, 1], matching the contract
 of core.entities.colors.Colors.
@@ -47,8 +47,14 @@ def apply_colormap(t, name=DEFAULT_COLORMAP):
     reproduces the legacy red(0) -> green(1) ramp exactly. An unknown name
     falls back to the default colormap rather than raising, so a stray param
     string never aborts a long coloring run.
+
+    Non-finite entries (NaN/inf) mark "no measurement" -- e.g. points beyond a
+    distance cap -- and are rendered a neutral grey rather than a ramp endpoint,
+    so they read as missing data instead of an extreme value.
     """
-    t = np.clip(np.asarray(t, dtype=np.float32), 0.0, 1.0)
+    t = np.asarray(t, dtype=np.float32)
+    bad = ~np.isfinite(t)
+    t = np.clip(np.nan_to_num(t, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
 
     if name == "red_green":
         # Legacy ramp: red (t=0) -> green (t=1), blue stays 0.
@@ -56,19 +62,22 @@ def apply_colormap(t, name=DEFAULT_COLORMAP):
         colors[:, 0] = 1.0 - t
         colors[:, 1] = t
         colors[:, 2] = 0.0
-        return colors
+    else:
+        from matplotlib import colormaps
 
-    from matplotlib import colormaps
+        if name not in colormaps:
+            logger.warning(
+                "Unknown colormap '%s'; falling back to '%s'.", name, DEFAULT_COLORMAP
+            )
+            name = DEFAULT_COLORMAP
 
-    if name not in colormaps:
-        logger.warning(
-            "Unknown colormap '%s'; falling back to '%s'.", name, DEFAULT_COLORMAP
-        )
-        name = DEFAULT_COLORMAP
+        # matplotlib returns RGBA in [0, 1]; drop alpha to match Colors' (N, 3).
+        rgba = colormaps[name](t)
+        colors = np.ascontiguousarray(rgba[:, :3], dtype=np.float32)
 
-    # matplotlib returns RGBA in [0, 1]; drop alpha to match Colors' (N, 3).
-    rgba = colormaps[name](t)
-    return np.ascontiguousarray(rgba[:, :3], dtype=np.float32)
+    if bad.any():
+        colors[bad] = 0.5  # neutral grey for no-measurement / invalid points
+    return colors
 
 
 def colormap_swatch(name, width=72, height=16):
