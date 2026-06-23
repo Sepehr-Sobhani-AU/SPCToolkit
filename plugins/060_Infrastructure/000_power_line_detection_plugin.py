@@ -18,7 +18,9 @@ from config.config import global_variables
 from core.entities.clusters import Clusters
 from core.entities.masks import Masks
 from core.entities.point_cloud import PointCloud
-from core.services.power_line_tracer import PowerLineTracer
+from core.services.linear_region_grower import (
+    LinearRegionGrower, AXIS_TRACE, debug_vector_features,
+)
 
 
 class PowerLineDetectionPlugin(ActionPlugin):
@@ -60,6 +62,16 @@ class PowerLineDetectionPlugin(ActionPlugin):
                 "label": "Cylinder Length",
                 "description": "Search cylinder length per growth step (m)",
             },
+            "cylinder_overlap": {
+                "type": "float",
+                "default": 0.0,
+                "min": 0.0,
+                "max": 90.0,
+                "label": "Cylinder Overlap (%)",
+                "description": "Percent each step's cylinder overlaps the previous "
+                               "(0 = end-to-end, 50 = half). Higher follows sagging "
+                               "cables better but is slower",
+            },
             "min_points": {
                 "type": "int",
                 "default": 5,
@@ -83,6 +95,26 @@ class PowerLineDetectionPlugin(ActionPlugin):
                 "max": 5.0,
                 "label": "RANSAC Threshold",
                 "description": "RANSAC inlier distance threshold (m)",
+            },
+            "ransac_iterations": {
+                "type": "int",
+                "default": 100,
+                "min": 10,
+                "max": 1000,
+                "label": "RANSAC Iterations",
+                "description": "Max RANSAC hypotheses per line fit (higher = more robust, slower)",
+            },
+            "show_cylinders": {
+                "type": "bool",
+                "default": False,
+                "label": "Show Search Cylinders",
+                "description": "Overlay the search cylinders used while tracing in the viewer (debug)",
+            },
+            "show_lines": {
+                "type": "bool",
+                "default": False,
+                "label": "Show Centerlines",
+                "description": "Overlay the traced cable centerlines in the viewer (debug)",
             },
         }
 
@@ -176,30 +208,48 @@ class PowerLineDetectionPlugin(ActionPlugin):
                                 "Try increasing DBSCAN Eps or selecting more points per cable.")
             return
 
-        # --- Build shared KDTree and trace each cable ---
-        tracer = PowerLineTracer(
+        # --- Build shared grower (axis-trace mode) and trace each cable ---
+        grower = LinearRegionGrower(
             all_points=pc_points,
             kdtree=tree_kd,
+            mode=AXIS_TRACE,
             cylinder_radius=params.get("cylinder_radius", 0.5),
             cylinder_length=params.get("cylinder_length", 5.0),
+            overlap=params.get("cylinder_overlap", 0.0) / 100.0,
             min_points=params.get("min_points", 5),
             max_angle_deg=params.get("max_angle", 15.0),
             ransac_threshold=params.get("ransac_threshold", 0.3),
+            max_iterations=params.get("ransac_iterations", 100),
         )
 
         # --- Trace each cable and collect only cable points ---
         all_cable_indices = []
         cable_assignments = []  # parallel list: cable_id for each index
         cluster_names = {}
+        already_grown = set()   # cloud points claimed by cables traced so far
+        cable_id = 0
 
-        for cable_id, cluster_label in enumerate(sorted(unique_labels)):
-            cable_seed_mask = seed_labels == cluster_label
-            cable_seed_local = seed_indices[cable_seed_mask]
+        for cluster_label in sorted(unique_labels):
+            cable_seed_local = seed_indices[seed_labels == cluster_label]
 
-            cable_indices = tracer.trace_cable(cable_seed_local)
+            # DBSCAN can split ONE physical cable's picked seeds into several
+            # clusters (sparse/gappy picks, small eps). Growing each would retrace
+            # the same conductor and draw a duplicate centerline + cylinders over
+            # it. Skip a cluster whose seeds already belong to a traced cable.
+            if already_grown and len(cable_seed_local) > 0:
+                covered = sum(int(s) in already_grown for s in cable_seed_local)
+                if covered / len(cable_seed_local) > 0.5:
+                    continue
+
+            cable_indices = grower.grow(cable_seed_local)
+            if len(cable_indices) == 0:
+                continue
+
+            already_grown.update(int(i) for i in cable_indices)
             all_cable_indices.append(cable_indices)
             cable_assignments.append(np.full(len(cable_indices), cable_id, dtype=np.int32))
             cluster_names[cable_id] = f"Cable {cable_id + 1}"
+            cable_id += 1
 
         if not all_cable_indices:
             QMessageBox.warning(main_window, "No Cable Points",
@@ -280,6 +330,22 @@ class PowerLineDetectionPlugin(ActionPlugin):
         if cl_item:
             cl_item.setCheckState(0, Qt.Checked)
             tree_widget.visibility_status[cl_uid] = True
+        tree_widget.blockSignals(False)
+
+        # --- Debug geometry as controllable branches (gated by the show_* boxes) ---
+        tree_widget.blockSignals(True)
+        for name, feature in debug_vector_features(
+            grower, params.get("show_cylinders"), params.get("show_lines")
+        ):
+            vf_uid = controller.add_analysis_result(
+                feature, "vector_feature", [cl_node.uid], cl_node, name, params
+            )
+            tree_widget.add_branch(vf_uid, cl_uid, name,
+                                   tooltip=f"power_line_detection,{params}")
+            vf_item = tree_widget.branches_dict.get(vf_uid)
+            if vf_item:
+                vf_item.setCheckState(0, Qt.Checked)
+            tree_widget.visibility_status[vf_uid] = True
         tree_widget.blockSignals(False)
 
         # --- Render and clear selection ---
