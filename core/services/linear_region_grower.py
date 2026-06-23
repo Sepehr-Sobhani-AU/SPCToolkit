@@ -1,0 +1,440 @@
+"""
+Generic linear-feature region growing.
+
+Grows a 1-D linear feature (cable, pipe, rail, kerb, edge) outward from seed
+points using one of three strategies, all built on the shared RANSAC line
+engine (``core/services/ransac.fit``):
+
+- ``"axis_trace"`` — fit a line to the seeds, march a search cylinder along its
+  axis, refit each step, and stop on a large direction change (e.g. a pole),
+  too few points, or empty space. Raw points only; best for isolated thin
+  features (cables, pipes, rails).
+
+- ``"linearity_connected"`` — breadth-first neighbour expansion over a KD-tree,
+  accepting a neighbour only if its *precomputed* per-point linearity is above a
+  threshold. Best for edges/kerbs embedded in a surface, where an axis cylinder
+  would leak into the surface. Requires a per-point linearity array (consumed
+  from upstream eigenvalues — never computed here).
+
+- ``"hybrid"`` — the axis-trace march with the linearity gate additionally
+  applied to candidate points; combines directional ordering with
+  surface-leak resistance.
+
+This is an *orchestrator* over RANSAC, per ``DECISIONS.md`` 2026-05-26: it calls
+``fit`` and owns the iteration policy. It is not a RANSAC variant.
+"""
+
+from collections import deque
+
+import numpy as np
+from scipy.spatial import cKDTree
+
+from core.services.ransac import fit
+from core.entities.vector_feature import VectorFeature
+
+
+# Growth modes
+AXIS_TRACE = "axis_trace"
+LINEARITY_CONNECTED = "linearity_connected"
+HYBRID = "hybrid"
+
+_LINEARITY_MODES = (LINEARITY_CONNECTED, HYBRID)
+
+
+class LinearRegionGrower:
+    """
+    Trace a linear feature through a point cloud from seed points.
+
+    Parameters:
+        all_points: ``(N, 3)`` array — the full point cloud.
+        kdtree: Pre-built ``cKDTree`` for *all_points* (built on demand if None).
+        mode: One of ``AXIS_TRACE``, ``LINEARITY_CONNECTED``, ``HYBRID``.
+        ransac_threshold: RANSAC line inlier distance threshold (m).
+        max_iterations: Max RANSAC hypotheses tried per line fit.
+        cylinder_radius: Axis-trace search cylinder radius (m).
+        cylinder_length: Axis-trace search cylinder length per step (m).
+        overlap: Fraction (0–0.9) each step's cylinder overlaps the previous; the
+            tip advances by (1 - overlap) of a cylinder length per step.
+        min_points: Stop the axis march if fewer points fall in the cylinder.
+        max_angle_deg: Max direction change per step before stopping (m).
+        max_steps: Safety cap on axis-march steps per direction.
+        linearity: ``(N,)`` per-point linearity, required for the linearity
+            modes. Consumed from upstream eigenvalues; never computed here.
+        linearity_threshold: Minimum linearity to accept a point.
+        neighbor_radius: Radius for linearity-connected neighbour queries (m).
+            If None, a k-NN query with *neighbor_k* is used instead.
+        neighbor_k: k for k-NN neighbour queries when *neighbor_radius* is None.
+    """
+
+    def __init__(
+        self,
+        all_points: np.ndarray,
+        kdtree: cKDTree = None,
+        mode: str = AXIS_TRACE,
+        ransac_threshold: float = 0.03,
+        max_iterations: int = 100,
+        cylinder_radius: float = 0.03,
+        cylinder_length: float = 0.5,
+        overlap: float = 0.0,
+        min_points: int = 5,
+        max_angle_deg: float = 20.0,
+        max_steps: int = 500,
+        linearity: np.ndarray = None,
+        linearity_threshold: float = 0.4,
+        neighbor_radius: float = None,
+        neighbor_k: int = 16,
+    ):
+        self.all_points = np.asarray(all_points)
+        self.kdtree = kdtree if kdtree is not None else cKDTree(self.all_points)
+        self.mode = mode
+
+        self.ransac_threshold = ransac_threshold
+        self.max_iterations = max_iterations
+        self.cylinder_radius = cylinder_radius
+        self.cylinder_length = cylinder_length
+        self.overlap = overlap
+        self.min_points = min_points
+        self.max_angle_cos = np.cos(np.radians(max_angle_deg))
+        self.max_steps = max_steps
+
+        # Debug geometry recorded during axis-trace marching, for visualization.
+        # Accumulates across grow() calls: (tip, direction, radius, length) per
+        # search cylinder, and (p0, p1) per centerline segment.
+        self.debug_cylinders = []
+        self.debug_lines = []
+
+        self.linearity = None if linearity is None else np.asarray(linearity)
+        self.linearity_threshold = linearity_threshold
+        self.neighbor_radius = neighbor_radius
+        self.neighbor_k = neighbor_k
+
+        if self.mode in _LINEARITY_MODES and self.linearity is None:
+            raise ValueError(
+                f"growth mode '{self.mode}' requires a per-point linearity "
+                "array; none was provided (compute eigenvalues upstream)."
+            )
+        if self.linearity is not None and len(self.linearity) != len(self.all_points):
+            raise ValueError(
+                "linearity array length "
+                f"({len(self.linearity)}) does not match number of points "
+                f"({len(self.all_points)})."
+            )
+
+    # ------------------------------------------------------------------ #
+    # Public                                                             #
+    # ------------------------------------------------------------------ #
+
+    def grow(self, seed_indices: np.ndarray) -> np.ndarray:
+        """
+        Grow a single linear feature from *seed_indices*.
+
+        Returns an array of point indices belonging to the feature (indices
+        into ``self.all_points``), always including the seeds.
+        """
+        seed_indices = np.asarray(seed_indices, dtype=np.intp)
+        if seed_indices.size == 0:
+            return seed_indices
+        if self.mode == LINEARITY_CONNECTED:
+            return self._grow_linearity_connected(seed_indices)
+        # AXIS_TRACE and HYBRID both march along the axis; HYBRID adds the gate.
+        return self._grow_axis_trace(
+            seed_indices, use_linearity_gate=(self.mode == HYBRID)
+        )
+
+    # ------------------------------------------------------------------ #
+    # Axis-trace (cylinder march)                                        #
+    # ------------------------------------------------------------------ #
+
+    def _fit_line(self, points, min_inlier_ratio):
+        return fit(
+            points,
+            "line",
+            self.ransac_threshold,
+            max_iterations=self.max_iterations,
+            min_inlier_ratio=min_inlier_ratio,
+        )
+
+    def _grow_axis_trace(self, seed_indices, use_linearity_gate=False) -> np.ndarray:
+        seed_indices = np.asarray(seed_indices, dtype=np.intp)
+        seed_pts = self.all_points[seed_indices]
+        if len(seed_pts) < 2:
+            return seed_indices
+
+        # Order the seeds along the feature by their dominant (PCA) axis. A
+        # RANSAC line is the WRONG tool here: seeds spanning a curved feature are
+        # not collinear, so the fit fails and nothing grows. The PCA axis always
+        # returns and is used ONLY to locate the span centre + anchor the march;
+        # the march re-fits locally every step, so the seed body obeys the same
+        # cylinder rule as the growth instead of being one straight line fit.
+        axis = self._principal_axis(seed_pts)
+        projections = (seed_pts - seed_pts.mean(axis=0)) @ axis
+
+        anchor, start_dir = self._seed_anchor_and_direction(seed_pts, projections, axis)
+
+        collected = set(int(i) for i in seed_indices)
+        # March outward from the span centre in both directions. Each pass steps
+        # a locally-refit cylinder, so it traverses half the seed body, reaches
+        # the far end, and continues past it; the two passes share the anchor and
+        # tile into one continuous chain of aligned cylinders / centerline.
+        collected |= self._march(anchor, start_dir, use_linearity_gate)
+        collected |= self._march(anchor, -start_dir, use_linearity_gate)
+        return np.array(sorted(collected), dtype=np.intp)
+
+    @staticmethod
+    def _principal_axis(pts):
+        """Unit dominant axis of *pts* (eigenvector of the largest covariance
+        eigenvalue). Always defined, even when the points are not collinear."""
+        centered = pts - pts.mean(axis=0)
+        _, eigvecs = np.linalg.eigh(centered.T @ centered)
+        axis = eigvecs[:, -1]
+        return axis / (np.linalg.norm(axis) + 1e-12)
+
+    def _seed_anchor_and_direction(self, seed_pts, projections, axis):
+        """Start point + initial heading for the axis march.
+
+        Anchors at the seed nearest the middle of the span, then takes the
+        heading from a line fit to the dense *cloud* within one cylinder length
+        of that anchor — a true local tangent that does not depend on how
+        sparsely the user picked seeds. Falls back to the seed *axis* if the
+        local fit is unavailable. The two marches (start_dir and -start_dir)
+        cover both directions, so the sign of the heading does not matter.
+        """
+        mid = 0.5 * (float(projections.min()) + float(projections.max()))
+        anchor = seed_pts[int(np.argmin(np.abs(projections - mid)))].copy()
+
+        direction = axis
+        nbr = self.kdtree.query_ball_point(anchor, self.cylinder_length)
+        if len(nbr) >= 2:
+            local_model, _ = self._fit_line(
+                self.all_points[np.asarray(nbr, dtype=np.intp)], min_inlier_ratio=0.2
+            )
+            if local_model is not None:
+                direction = local_model.direction
+        return anchor, direction / (np.linalg.norm(direction) + 1e-12)
+
+    def _march(self, tip, direction, use_linearity_gate) -> set:
+        collected = set()
+        half_len = self.cylinder_length / 2.0
+        search_radius = np.sqrt(self.cylinder_radius ** 2 + half_len ** 2)
+
+        current_tip = np.asarray(tip, dtype=float).copy()
+        current_dir = np.asarray(direction, dtype=float).copy()
+
+        for _ in range(self.max_steps):
+            # Place the search centre ahead of the current tip.
+            centre = current_tip + half_len * current_dir
+            candidate_idx = self.kdtree.query_ball_point(centre, search_radius)
+            if not candidate_idx:
+                break
+
+            candidate_idx = np.asarray(candidate_idx, dtype=np.intp)
+            pts = self.all_points[candidate_idx]
+
+            # Keep points inside the forward half-cylinder.
+            vecs = pts - current_tip
+            along = vecs @ current_dir
+            length_mask = (along > 0) & (along < self.cylinder_length)
+            perp = vecs - np.outer(along, current_dir)
+            radius_mask = np.linalg.norm(perp, axis=1) < self.cylinder_radius
+            valid_mask = length_mask & radius_mask
+
+            if use_linearity_gate:
+                valid_mask &= self.linearity[candidate_idx] >= self.linearity_threshold
+
+            if np.count_nonzero(valid_mask) < self.min_points:
+                break
+
+            valid_idx = candidate_idx[valid_mask]
+            valid_pts = pts[valid_mask]
+
+            new_model, inlier_mask = self._fit_line(
+                valid_pts, min_inlier_ratio=0.2
+            )
+            if new_model is None:
+                break
+
+            new_dir = new_model.direction
+            if np.dot(new_dir, current_dir) < 0:
+                new_dir = -new_dir
+            # Stop on a sharp bend (e.g. a pole or feature end).
+            if np.dot(new_dir, current_dir) < self.max_angle_cos:
+                break
+
+            inlier_idx = valid_idx[inlier_mask]
+            collected.update(int(i) for i in inlier_idx)
+
+            # Advance one step. The step is (1 - overlap) of a cylinder length.
+            # Re-project the new tip onto the freshly fitted local axis so the
+            # march stays ON the feature through curves (instead of drifting to
+            # the outside of each bend). Both the old and new tips therefore lie
+            # on local fit lines — i.e. on the cable.
+            step = self.cylinder_length * (1.0 - self.overlap)
+            foot_t = float((current_tip - new_model.point) @ new_dir)
+            next_tip = new_model.point + (foot_t + step) * new_dir
+
+            # Record the step's search cylinder as the SEGMENT current_tip ->
+            # next_tip (not a fixed-length axis cylinder). Consecutive cylinders
+            # then share an endpoint by construction, so they tile with no
+            # lateral offset and the tube bends to follow the marched centerline
+            # instead of cutting across the curve.
+            seg = next_tip - current_tip
+            seg_len = float(np.linalg.norm(seg))
+            if seg_len > 1e-9:
+                self.debug_cylinders.append(
+                    (current_tip.copy(), seg / seg_len, self.cylinder_radius, seg_len)
+                )
+                self.debug_lines.append((current_tip.copy(), next_tip.copy()))
+
+            current_tip = next_tip
+            current_dir = new_dir
+
+        return collected
+
+    # ------------------------------------------------------------------ #
+    # Linearity-connected (neighbour BFS gated by linearity)             #
+    # ------------------------------------------------------------------ #
+
+    def _grow_linearity_connected(self, seed_indices) -> np.ndarray:
+        n = len(self.all_points)
+        visited = np.zeros(n, dtype=bool)
+        in_region = np.zeros(n, dtype=bool)
+        thr = self.linearity_threshold
+        use_radius = self.neighbor_radius is not None and self.neighbor_radius > 0
+
+        queue = deque()
+        for i in seed_indices:
+            i = int(i)
+            visited[i] = True
+            in_region[i] = True
+            queue.append(i)
+
+        while queue:
+            i = queue.popleft()
+            if use_radius:
+                nbrs = self.kdtree.query_ball_point(
+                    self.all_points[i], self.neighbor_radius
+                )
+            else:
+                _, nbrs = self.kdtree.query(self.all_points[i], k=self.neighbor_k + 1)
+                nbrs = np.atleast_1d(nbrs)
+
+            for j in nbrs:
+                j = int(j)
+                if j >= n or visited[j]:  # cKDTree returns n for missing neighbours
+                    continue
+                visited[j] = True
+                if self.linearity[j] >= thr:
+                    in_region[j] = True
+                    queue.append(j)
+
+        return np.where(in_region)[0].astype(np.intp)
+
+
+# --------------------------------------------------------------------------- #
+# Debug geometry -> renderable branches                                        #
+#                                                                              #
+# The grower records raw search cylinders and centerline segments during the   #
+# axis-trace march. These helpers convert that raw geometry into render-only    #
+# VectorFeature objects so a plugin can add them as ordinary, fully            #
+# controllable tree branches (wireframe, drawn through the standard set_lines   #
+# path) rather than as an ad-hoc viewer overlay. They are pure: no GUI access.  #
+# --------------------------------------------------------------------------- #
+
+_CYLINDER_COLOR = np.array([0.1, 0.7, 1.0], dtype=np.float32)    # light blue
+_CENTERLINE_COLOR = np.array([1.0, 0.9, 0.1], dtype=np.float32)  # yellow
+
+
+def _perp_basis(direction):
+    """Two orthonormal vectors spanning the plane perpendicular to *direction*."""
+    d = np.asarray(direction, dtype=np.float64)
+    d = d / (np.linalg.norm(d) + 1e-12)
+    ref = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    u = np.cross(d, ref)
+    u /= (np.linalg.norm(u) + 1e-12)
+    v = np.cross(d, u)
+    return u, v
+
+
+def cylinders_to_vector_feature(cylinders, color=None, n_segments=12):
+    """Wireframe VectorFeature: two end rings + a few longitudinals per cylinder."""
+    if not cylinders:
+        return None
+    verts = []
+    edges = []
+    angles = np.linspace(0.0, 2.0 * np.pi, n_segments, endpoint=False)
+    long_step = max(1, n_segments // 4)
+
+    for tip, direction, radius, length in cylinders:
+        tip = np.asarray(tip, dtype=np.float64)
+        d = np.asarray(direction, dtype=np.float64)
+        d = d / (np.linalg.norm(d) + 1e-12)
+        u, v = _perp_basis(d)
+        ring = radius * np.array([np.cos(a) * u + np.sin(a) * v for a in angles])
+
+        base0 = len(verts)
+        verts.extend(tip + ring)
+        top0 = len(verts)
+        verts.extend(tip + length * d + ring)
+
+        for i in range(n_segments):
+            j = (i + 1) % n_segments
+            edges.append([base0 + i, base0 + j])   # base ring
+            edges.append([top0 + i, top0 + j])     # top ring
+        for i in range(0, n_segments, long_step):
+            edges.append([base0 + i, top0 + i])    # longitudinal
+
+    return _wireframe_vector_feature(
+        "Search Cylinders", verts, edges,
+        _CYLINDER_COLOR if color is None else color,
+    )
+
+
+def segments_to_vector_feature(segments, color=None):
+    """Wireframe VectorFeature from a list of (p0, p1) centerline segments."""
+    if not segments:
+        return None
+    verts = []
+    edges = []
+    for p0, p1 in segments:
+        i = len(verts)
+        verts.append(np.asarray(p0, dtype=np.float64))
+        verts.append(np.asarray(p1, dtype=np.float64))
+        edges.append([i, i + 1])
+
+    return _wireframe_vector_feature(
+        "Centerlines", verts, edges,
+        _CENTERLINE_COLOR if color is None else color,
+    )
+
+
+def _wireframe_vector_feature(symbol_type, verts, edges, color):
+    vertices = np.asarray(verts, dtype=np.float32)
+    edges = np.asarray(edges, dtype=np.int32)
+    dims = (vertices.max(axis=0) - vertices.min(axis=0)).astype(np.float32)
+    geometry = {"vertices": vertices, "faces": [], "edges": edges}
+    return VectorFeature(
+        symbol_type=symbol_type,
+        geometry_type="mesh",
+        geometry=geometry,
+        transform_matrix=np.eye(4),
+        dimensions=dims,
+        color=np.asarray(color, dtype=np.float32),
+    )
+
+
+def debug_vector_features(grower, show_cylinders, show_lines):
+    """Return ``[(branch_name, VectorFeature), ...]`` for the requested overlays.
+
+    Pure: builds render-only geometry from the grower's recorded debug data; the
+    caller adds each as an ordinary, controllable tree branch.
+    """
+    out = []
+    if show_cylinders:
+        vf = cylinders_to_vector_feature(grower.debug_cylinders)
+        if vf is not None:
+            out.append(("search_cylinders", vf))
+    if show_lines:
+        vf = segments_to_vector_feature(grower.debug_lines)
+        if vf is not None:
+            out.append(("centerlines", vf))
+    return out

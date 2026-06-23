@@ -42,7 +42,7 @@ Conventions:
 - `batch_processor.py` _(class)_ **BatchProcessor** — Processes large point clouds in spatial batches with optional overlap between adjacent cells.
 - `cache_service.py` _(class)_ **CacheService** — Centralized cache management for reconstructed PointClouds.
 - `eigenvalue_utils.py` _(class)_ **EigenvalueUtils** — Utility class for computing and processing eigenvalues from point clouds.
-- `power_line_tracer.py` _(class)_ **PowerLineTracer** — Traces power-line cables through a point cloud from seed points.
+- `linear_region_grower.py` _(class)_ **LinearRegionGrower** — Grows 1-D linear features (cables, pipes, rails, kerbs, edges) from seed points via the RANSAC line engine; modes: axis trace, linearity-connected, hybrid.
 - `ransac.py` — 3 units in this file:
   - _(class)_ **RANSACModel** — Interface that every geometric model must implement for use with RANSAC.
   - _(class)_ **LineModel3D** — 3D line defined by a point and a unit direction vector.
@@ -109,6 +109,7 @@ Conventions:
 - `010_hdbscan_plugin.py` _(plugin)_ **HDBSCANPlugin → "hdbscan"** — HDBSCAN clustering algorithm plugin with integrated batch processing.
 - `020_cluster_size_filter_plugin.py` _(plugin)_ **ClusterSizeFilterPlugin → "cluster_size_filter"** — Plugin for filtering clusters based on the number of points they contain.
 - `030_surface_region_growing_plugin.py` _(plugin)_ **SurfaceRegionGrowingPlugin → "surface_region_growing"** — Plugin for surface region growing on a pre-existing DBSCAN Clusters branch.
+- `040_linear_region_growing_plugin.py` _(plugin)_ **LinearRegionGrowingPlugin → "linear_region_growing"** — Semi-automated linear-feature region growing (cables, pipes, rails, kerbs, edges) from picked seed points; axis-trace / linearity-connected / hybrid modes.
 
 ## `plugins/020_Points/030_Analysis/`
 
