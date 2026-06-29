@@ -263,27 +263,26 @@ class LinearRegionGrower:
             inlier_idx = valid_idx[inlier_mask]
             collected.update(int(i) for i in inlier_idx)
 
+            # Record the EXACT selection cylinder this step searched: base at the
+            # current tip, axis along the current search direction, full
+            # cylinder_length and cylinder_radius. This is precisely the forward
+            # half-cylinder the filter above selected points from, so the drawn
+            # cylinder matches the real selection region — even where consecutive
+            # cylinders overlap (overlap > 0) or step across a bend.
+            self.debug_cylinders.append(
+                (current_tip.copy(), current_dir.copy(),
+                 self.cylinder_radius, self.cylinder_length)
+            )
+
             # Advance one step. The step is (1 - overlap) of a cylinder length.
             # Re-project the new tip onto the freshly fitted local axis so the
             # march stays ON the feature through curves (instead of drifting to
-            # the outside of each bend). Both the old and new tips therefore lie
-            # on local fit lines — i.e. on the cable.
+            # the outside of each bend). Both the old and new tips lie on local
+            # fit lines — i.e. on the cable — so the centerline runs down it.
             step = self.cylinder_length * (1.0 - self.overlap)
             foot_t = float((current_tip - new_model.point) @ new_dir)
             next_tip = new_model.point + (foot_t + step) * new_dir
-
-            # Record the step's search cylinder as the SEGMENT current_tip ->
-            # next_tip (not a fixed-length axis cylinder). Consecutive cylinders
-            # then share an endpoint by construction, so they tile with no
-            # lateral offset and the tube bends to follow the marched centerline
-            # instead of cutting across the curve.
-            seg = next_tip - current_tip
-            seg_len = float(np.linalg.norm(seg))
-            if seg_len > 1e-9:
-                self.debug_cylinders.append(
-                    (current_tip.copy(), seg / seg_len, self.cylinder_radius, seg_len)
-                )
-                self.debug_lines.append((current_tip.copy(), next_tip.copy()))
+            self.debug_lines.append((current_tip.copy(), next_tip.copy()))
 
             current_tip = next_tip
             current_dir = new_dir

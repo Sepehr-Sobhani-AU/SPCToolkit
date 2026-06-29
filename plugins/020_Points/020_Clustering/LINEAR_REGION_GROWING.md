@@ -37,7 +37,7 @@ Raw points only — needs no upstream features. Best for **isolated thin feature
    - Ball-query the KD-tree at a point half a cylinder-length ahead, then keep candidates inside the forward half-cylinder (`0 < along < cylinder_length`, perpendicular distance `< cylinder_radius`).
    - Re-fit a line to the cylinder contents; flip it to keep pointing forward.
    - **Stop** if the direction change exceeds `max_angle` (a bend — e.g. a pole or feature end), fewer than `min_points` fall in the cylinder, or the cylinder is empty.
-   - Collect the inliers, then advance the tip by `(1 − cylinder_overlap%)` of a cylinder length, **re-projecting it onto the freshly-fit local axis** so the march stays on the feature through curves. The step's cylinder is recorded as the segment from the old tip to the new one, so consecutive cylinders **share an endpoint** — they tile with no lateral offset and the tube bends to follow the centerline. Repeat (capped at `max_steps = 500` per direction).
+   - Collect the inliers, then advance the tip by `(1 − cylinder_overlap%)` of a cylinder length, **re-projecting it onto the freshly-fit local axis** so the march stays on the feature through curves. **Show Search Cylinders** draws each step's *actual* selection cylinder (full `cylinder_length` × `cylinder_radius`, along the search direction), faithfully showing where points were selected — so consecutive cylinders overlap when `cylinder_overlap > 0` and step across bends. Repeat (capped at `max_steps = 500` per direction).
 
 ### Linearity-Connected (`linearity_connected`)
 Requires precomputed linearity. Best for **edges/kerbs embedded in a surface**, where an axis cylinder would leak into the surrounding plane.

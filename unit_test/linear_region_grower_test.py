@@ -79,11 +79,11 @@ def test_axis_trace_long_curved_seeds():
     assert leaked == 0, f"curved-seed trace leaked {leaked} clutter points"
 
 
-def test_axis_trace_cylinders_tile():
-    """Consecutive search cylinders must share an endpoint (tile with no lateral
-    offset) even on a curve, apart from the single seam where the two outward
-    marches meet at the anchor. Guards the misaligned-cylinder bug seen in the
-    viewer."""
+def test_axis_trace_cylinders_match_search():
+    """The drawn search cylinders must be the ACTUAL selection cylinders: each
+    has the full cylinder_length and cylinder_radius the march searched with —
+    not a shortened tip-to-tip segment — so the overlay matches the real
+    selection region even when overlap > 0 shortens the per-step advance."""
     rng = np.random.default_rng(3)
     R = 8.0
     n = 500
@@ -92,21 +92,21 @@ def test_axis_trace_cylinders_tile():
     arc += rng.normal(0, 0.003, arc.shape)
     seeds = np.arange(n)[::n // 12]
 
+    cyl_len, cyl_rad = 0.5, 0.2
     g = LinearRegionGrower(
         arc, mode=AXIS_TRACE, ransac_threshold=0.05,
-        cylinder_radius=0.2, cylinder_length=0.5, min_points=3, max_angle_deg=25.0,
+        cylinder_radius=cyl_rad, cylinder_length=cyl_len, overlap=0.5,  # step != length
+        min_points=3, max_angle_deg=25.0,
     )
     g.grow(seeds)
     cyls = g.debug_cylinders
     assert len(cyls) > 4, f"expected several cylinders, got {len(cyls)}"
 
-    gaps = 0
-    for (b0, d0, _r0, l0), (b1, _d1, _r1, _l1) in zip(cyls, cyls[1:]):
-        far_face = np.asarray(b0) + l0 * np.asarray(d0)
-        if np.linalg.norm(np.asarray(b1) - far_face) > 1e-6:
-            gaps += 1
-    print(f"cylinder tiling (curved): {gaps} non-tiling joint(s) of {len(cyls) - 1}")
-    assert gaps <= 1, f"cylinders must tile; got {gaps} offset joints (expected <=1 seam)"
+    for _base, direction, radius, length in cyls:
+        assert abs(length - cyl_len) < 1e-9, f"cylinder length {length} != search length {cyl_len}"
+        assert abs(radius - cyl_rad) < 1e-9, f"cylinder radius {radius} != search radius {cyl_rad}"
+        assert abs(np.linalg.norm(direction) - 1.0) < 1e-6, "cylinder axis must be unit length"
+    print(f"search cylinders: all {len(cyls)} match length={cyl_len} radius={cyl_rad}")
 
 
 def test_linearity_connected_stays_on_feature():
@@ -187,7 +187,7 @@ def test_debug_vector_features_built():
 if __name__ == "__main__":
     test_axis_trace_collects_line()
     test_axis_trace_long_curved_seeds()
-    test_axis_trace_cylinders_tile()
+    test_axis_trace_cylinders_match_search()
     test_linearity_connected_stays_on_feature()
     test_linearity_mode_requires_linearity()
     test_overlap_increases_cylinder_count()
