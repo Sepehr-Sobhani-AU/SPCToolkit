@@ -30,4 +30,5 @@
 - Filter plugin needs a dialog box to create a filter. We need to discuss it later. please remind me. 
 - In filter plugin fix the unsafe `exec()` in the filtering plugin is still tracked separately above.
 - Surface region growing plugin doesn't toggle the source branch visibility
-- 
+- Query plugin dialog doesn't hold the previous parameters
+- Separate selected points will get stuck running when no branch is selected
