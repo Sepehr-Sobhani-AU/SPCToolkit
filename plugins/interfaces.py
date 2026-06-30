@@ -82,24 +82,34 @@ class Plugin(ABC):
         """
         return None
 
-    def requires_selection(self) -> bool:
-        """Whether this plugin consumes the live viewer selection (picked or
-        polygon-selected points) at execute time.
+    def requires_selection(self) -> Optional[str]:
+        """What selection this plugin consumes at execute time, if any:
 
-        Pipeline replay uses this to pause at such a step so the user can make
-        the selection on the freshly-produced intermediate (e.g. the clusters)
-        before the step runs, instead of relying on a selection that no longer
-        applies. Default False.
+        * ``None`` / ``False`` — needs no selection (default).
+        * ``"points"`` — picked or polygon-selected points in the viewer.
+        * ``"branches"`` — one or more selected tree branches.
+        * ``"either"`` — at least one of the above.
+
+        The legacy boolean contract still works: ``True`` is read as
+        ``"points"``. Consumed in two places (via ``application/selection_gate``):
+        a normal menu run prompts — non-modally — only when the needed selection
+        is *absent*, then proceeds; pipeline replay *always* pauses here so the
+        user can select on the freshly-produced intermediate (e.g. the clusters)
+        rather than rely on a stale selection.
         """
-        return False
+        return None
 
-    def build_param_dialog(self, parent) -> Optional[Any]:
+    def build_param_dialog(self, parent, last_params=None) -> Optional[Any]:
         """Optional custom parameter dialog, replacing the auto-generated form.
 
         Return a ``QDialog`` whose ``exec_()`` collects input and whose
         ``get_parameters()`` returns the params dict passed to ``execute`` — the
         same contract ``DynamicDialog`` satisfies. Return None (default) to use
         the schema-driven dialog built from ``get_parameters()``.
+
+        ``last_params`` is the params dict from this plugin's previous run (or
+        None on first use), so a custom dialog can pre-populate its widgets the
+        way the schema dialog restores last-used defaults.
 
         Use this only when the schema dialog can't express the input (e.g. an
         attribute query builder with a variable number of condition rows). The
@@ -162,13 +172,15 @@ class ActionPlugin(ABC):
         """
         pass
 
-    def requires_selection(self) -> bool:
-        """Whether this action plugin consumes the live viewer selection (picked
-        or polygon-selected points) at execute time -- e.g. a seed point for
-        region growing. Pipeline replay pauses at such a step so the user can
-        select on the freshly-produced intermediate before it runs. Default False.
+    def requires_selection(self) -> Optional[str]:
+        """What selection this action plugin consumes at execute time, if any —
+        e.g. a seed point for region growing. Same contract as
+        ``Plugin.requires_selection``: ``None``/``False`` (none, default),
+        ``"points"``, ``"branches"``, or ``"either"`` (legacy ``True`` ⇒
+        ``"points"``). A normal menu run prompts non-modally only when the needed
+        selection is absent; pipeline replay always pauses here.
         """
-        return False
+        return None
 
 
 # Legacy alias for backward compatibility during migration

@@ -75,11 +75,27 @@ class _ConditionRow(QWidget):
             "value2": self.value2_edit.text().strip() or None,
         }
 
+    def set_clause(self, clause):
+        """Restore this row's widgets from a saved clause dict (best-effort:
+        unknown fields/operators are skipped so a query saved against a
+        different cloud still loads what it can)."""
+        field_idx = self.field_combo.findData(clause.get("field"))
+        if field_idx >= 0:
+            self.field_combo.setCurrentIndex(field_idx)
+        op_idx = self.op_combo.findData(clause.get("op"))
+        if op_idx >= 0:
+            self.op_combo.setCurrentIndex(op_idx)
+        self.value_edit.setText(str(clause.get("value", "")))
+        value2 = clause.get("value2")
+        if value2 is not None:
+            self.value2_edit.setText(str(value2))
+        self._sync_between()
+
 
 class QueryBuilderDialog(QDialog):
     """Build an attribute query against ``pc`` (the branch's point cloud)."""
 
-    def __init__(self, node, pc, parent=None):
+    def __init__(self, node, pc, parent=None, initial_params=None):
         super().__init__(parent)
         self.setWindowTitle("Select By Attributes")
         self.setMinimumWidth(560)
@@ -152,9 +168,35 @@ class QueryBuilderDialog(QDialog):
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
 
-        # Start with one condition row.
-        if self._fields:
+        # Restore the previous query if one was passed; otherwise start with a
+        # single empty condition row.
+        if self._fields and not self._restore(initial_params):
             self._add_row()
+
+    def _restore(self, initial_params) -> bool:
+        """Pre-populate the dialog from a previous run's params. Returns True if
+        anything was restored, False otherwise (so the caller adds a blank row)."""
+        if not initial_params:
+            return False
+
+        if initial_params.get("combiner") == "OR":
+            self.any_radio.setChecked(True)
+        else:
+            self.all_radio.setChecked(True)
+
+        name = initial_params.get("new_branch_name")
+        if name:
+            self.name_edit.setText(str(name))
+
+        clauses = initial_params.get("clauses") or []
+        for clause in clauses:
+            self._add_row()
+            self._rows[-1].set_clause(clause)
+
+        # Always leave at least one row so the dialog isn't empty.
+        if not self._rows:
+            self._add_row()
+        return True
 
     # --- rows ------------------------------------------------------------
 

@@ -33,7 +33,7 @@ class QuerySelectPlugin(Plugin):
         # Input is collected by the custom builder dialog, not a flat schema.
         return {}
 
-    def build_param_dialog(self, parent):
+    def build_param_dialog(self, parent, last_params=None):
         from config.config import global_variables
         from gui.dialog_boxes.query_builder_dialog import QueryBuilderDialog
         from services.point_fields import representative_cloud
@@ -51,7 +51,7 @@ class QuerySelectPlugin(Plugin):
                     node = None
 
         pc = representative_cloud(node)
-        return QueryBuilderDialog(node, pc, parent)
+        return QueryBuilderDialog(node, pc, parent, initial_params=last_params)
 
     def execute(self, data_node: DataNode, params: Dict[str, Any]) -> Tuple[Any, str, List]:
         point_cloud = data_node.data

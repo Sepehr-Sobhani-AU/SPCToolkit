@@ -80,7 +80,8 @@ class DialogBoxesManager(QObject):
         # the flow — storing, recording, replay — is unchanged.
         from config.config import global_variables
         custom_dialog = plugin_instance.build_param_dialog(
-            getattr(global_variables, "global_main_window", None)
+            getattr(global_variables, "global_main_window", None),
+            last_params=self._last_params.get(analysis_type),
         )
         if custom_dialog is not None:
             if custom_dialog.exec_():
