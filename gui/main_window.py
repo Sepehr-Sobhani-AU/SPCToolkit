@@ -448,17 +448,84 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         Open a dialog box for parameter input or execute action directly.
 
-        Routes to appropriate handler based on plugin type (data processing vs action).
+        Routes to the appropriate handler based on plugin type (data processing
+        vs action). A plugin that declares ``requires_selection()`` is gated
+        first: if the needed points/branches aren't selected yet, the user is
+        prompted (non-modally) before the run proceeds. See
+        ``_gate_selection_then``.
         """
-        # Check if this is an action plugin
         if self.plugin_manager.is_action_plugin(plugin_name):
-            # Handle action plugin directly
-            self.execute_action_plugin(plugin_name)
+            # Action plugin: collects its own params inside execute_action_plugin.
+            self._gate_selection_then(
+                plugin_name, lambda: self.execute_action_plugin(plugin_name)
+            )
         else:
-            # Get params via dialog (direct call, no signal)
-            params = self.dialog_boxes_manager.get_analysis_params(plugin_name)
-            if params is not None:
-                self._start_analysis(plugin_name, params)
+            def _proceed():
+                # Get params via dialog (direct call, no signal), then run.
+                params = self.dialog_boxes_manager.get_analysis_params(plugin_name)
+                if params is not None:
+                    self._start_analysis(plugin_name, params)
+
+            self._gate_selection_then(plugin_name, _proceed)
+
+    def _gate_selection_then(self, plugin_name, proceed):
+        """Run ``proceed`` once the plugin's required selection is available.
+
+        If the plugin declares ``requires_selection()`` and the needed
+        points/branches are *not* selected, show a non-modal prompt and let the
+        user select in the viewer/tree, then continue. If a selection is already
+        present (or none is needed), ``proceed`` runs immediately.
+
+        Runs on the main thread *before* any UI lock, so the viewer and tree are
+        both live for picking. The pipeline path bypasses this (it calls
+        ``_start_analysis`` directly and does its own pause), so there is no
+        double prompt.
+        """
+        from application.selection_gate import selection_kind, selection_present
+
+        plugin_class = self.plugin_manager.get_plugin(plugin_name)
+        kind = selection_kind(plugin_class)
+        if selection_present(kind):
+            proceed()
+        else:
+            self._show_selection_gate_prompt(plugin_name, kind, proceed)
+
+    def _show_selection_gate_prompt(self, plugin_name, kind, proceed):
+        """Show the non-modal “make a selection” prompt for a gated run."""
+        from application.selection_gate import SelectionPrompt, selection_present
+
+        what = {"points": "points", "branches": "a branch",
+                "either": "points or a branch"}.get(kind, "a selection")
+        message = (f"“{plugin_name}” needs {what} selected.\n\n"
+                   f"Make the selection in the viewer/tree, then click Continue.")
+
+        def on_continue():
+            self._close_selection_gate_prompt()
+            if not selection_present(kind):
+                QtWidgets.QMessageBox.information(
+                    self, "No Selection",
+                    f"Nothing is selected. Select {what}, then click Continue."
+                )
+                self._show_selection_gate_prompt(plugin_name, kind, proceed)
+                return
+            proceed()
+
+        def on_cancel():
+            self._close_selection_gate_prompt()
+
+        self._selection_gate_prompt = SelectionPrompt(
+            self, message, on_continue=on_continue, on_cancel=on_cancel,
+            title="Selection Needed",
+        )
+        self._selection_gate_prompt.show()
+        self._selection_gate_prompt.raise_()
+
+    def _close_selection_gate_prompt(self):
+        """Close and drop the reference to a live selection-gate prompt."""
+        prompt = getattr(self, "_selection_gate_prompt", None)
+        if prompt is not None:
+            prompt.close()
+            self._selection_gate_prompt = None
 
     def execute_action_plugin(self, plugin_name: str):
         """
@@ -692,6 +759,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_analysis(self, analysis_type: str, params: dict):
         """Start analysis with UI protection."""
+        # Guard: every analysis iterates over selected_branches. With nothing
+        # selected, run_analysis dispatches no work, so the completion poll would
+        # never finish and the UI would stay locked on "Running...". Bail early
+        # with a clear message instead.
+        if not self.controller.selected_branches:
+            QtWidgets.QMessageBox.information(
+                self, "No Branch Selected",
+                "Select a branch in the tree first, then run this operation again."
+            )
+            return
+
         # Track the node this run produces so a pipeline replay can chain to it.
         self._last_analysis_uid = None
         # Pre-flight confirmation (main thread, before we lock the UI / spawn
