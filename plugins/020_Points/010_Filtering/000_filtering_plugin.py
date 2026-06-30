@@ -54,17 +54,22 @@ class FilteringPlugin(Plugin):
                 - Result type identifier "masks"
                 - List containing the data_node's UID as a dependency
         """
+        import numpy as np
+
         filter_condition = params["condition"]
         point_cloud: PointCloud = data_node.data
 
-        # Use a dictionary to capture the result of the exec statement
+        # Evaluate the condition in a restricted namespace. Builtins are stripped
+        # so the expression can't import modules, open files, or otherwise run
+        # arbitrary code — only the point cloud and numpy are exposed. eval()
+        # (expression only) replaces the previous exec() for the same reason.
+        safe_globals = {"__builtins__": {}, "np": np, "numpy": np}
         local_vars = {"point_cloud": point_cloud}
 
-        # Execute the condition in the provided namespace
-        exec(f"filter_mask = {filter_condition}", globals(), local_vars)
-
-        # Extract the filter_mask from the namespace
-        filter_mask = local_vars.get("filter_mask")
+        try:
+            filter_mask = eval(filter_condition, safe_globals, local_vars)
+        except Exception as e:
+            raise ValueError(f"Invalid filter condition: {e}")
 
         # Create a Masks object with the result
         mask = Masks(filter_mask)
