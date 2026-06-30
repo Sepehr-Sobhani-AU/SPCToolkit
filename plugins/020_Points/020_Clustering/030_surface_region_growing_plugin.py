@@ -22,6 +22,7 @@ import numpy as np
 import torch
 from scipy.spatial import cKDTree
 from typing import Dict, Any, List, Optional, Tuple
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QMessageBox, QApplication
 
 from plugins.interfaces import ActionPlugin
@@ -37,8 +38,8 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
     def get_name(self) -> str:
         return "surface_region_growing"
 
-    def requires_selection(self) -> bool:
-        return True
+    def requires_selection(self) -> str:
+        return "points"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {
@@ -405,6 +406,19 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         )
 
         tree_widget.visibility_status[result_uid] = True
+
+        # Hide the source branch so only the new result is shown — the standard
+        # analysis path does this automatically, but this action plugin builds
+        # the result branch by hand and must toggle source visibility itself.
+        parent_uid_str = str(node.uid)
+        if parent_uid_str in tree_widget.visibility_status:
+            tree_widget.visibility_status[parent_uid_str] = False
+        parent_item = tree_widget.branches_dict.get(parent_uid_str)
+        if parent_item is not None:
+            parent_item.setCheckState(0, Qt.Unchecked)
+        child_item = tree_widget.branches_dict.get(result_uid)
+        if child_item is not None:
+            child_item.setCheckState(0, Qt.Checked)
 
         tree_widget.blockSignals(False)
 
