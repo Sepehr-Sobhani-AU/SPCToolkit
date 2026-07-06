@@ -25,8 +25,8 @@ class SeparateSelectedClustersPlugin(Plugin):
         """
         return "separate_selected_clusters"
 
-    def requires_selection(self) -> bool:
-        return True
+    def requires_selection(self) -> str:
+        return "points"
 
     def get_parameters(self) -> Dict[str, Any]:
         """

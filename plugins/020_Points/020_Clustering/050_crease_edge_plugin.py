@@ -71,7 +71,7 @@ class CreaseEdgePlugin(ActionPlugin):
                 "min": 1.0,
                 "max": 90.0,
                 "label": "Min Dihedral Angle (deg)",
-                "description": "Stop where a cube's two planes meet at less than "
+                "description": "Stop where a cell's two planes meet at less than "
                                "this angle — one surface, so the edge has ended.",
             },
             "ransac_threshold": {

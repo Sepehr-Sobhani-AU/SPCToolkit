@@ -58,8 +58,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
     def get_name(self) -> str:
         return "linear_region_growing"
 
-    def requires_selection(self) -> bool:
-        return True
+    def requires_selection(self) -> str:
+        return "points"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {

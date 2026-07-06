@@ -18,44 +18,13 @@ convention. See ``docs/pipeline_macro_design.md``.
 import logging
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-)
 
 from config.config import global_variables
+from application.selection_gate import (
+    SelectionPrompt, selection_kind, selection_present,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class _SelectionPrompt(QDialog):
-    """Non-modal prompt shown while replay pauses for a viewer selection.
-
-    Non-modal so the 3D viewer stays interactive — the user makes their
-    selection, then clicks Continue (or Cancel). Built-in QPushButton ``clicked``
-    signals are used, which the project permits (only *custom* signals are
-    disallowed).
-    """
-
-    def __init__(self, parent, message, on_continue, on_cancel):
-        super().__init__(parent)
-        self.setWindowTitle("Pipeline Paused — Selection Needed")
-        self.setModal(False)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-
-        layout = QVBoxLayout(self)
-        label = QLabel(message)
-        label.setWordWrap(True)
-        layout.addWidget(label)
-
-        row = QHBoxLayout()
-        cancel_btn = QPushButton("Cancel Pipeline")
-        continue_btn = QPushButton("Continue")
-        continue_btn.setDefault(True)
-        cancel_btn.clicked.connect(on_cancel)
-        continue_btn.clicked.connect(on_continue)
-        row.addWidget(cancel_btn)
-        row.addWidget(continue_btn)
-        layout.addLayout(row)
 
 
 class PipelineRunner:
@@ -68,7 +37,7 @@ class PipelineRunner:
         self._name = name or "pipeline"
         self._index = -1
         self._active = False
-        self._prompt = None  # live _SelectionPrompt while paused for selection
+        self._prompt = None  # live SelectionPrompt while paused for selection
 
     def is_active(self) -> bool:
         return self._active
@@ -131,13 +100,7 @@ class PipelineRunner:
 
     def _needs_selection(self, plugin_name, controller) -> bool:
         plugin_class = controller.plugin_manager.get_plugin(plugin_name)
-        if plugin_class is None:
-            return False
-        try:
-            req = getattr(plugin_class(), "requires_selection", None)
-            return bool(req()) if callable(req) else False
-        except Exception:
-            return False
+        return selection_kind(plugin_class) is not None
 
     def _pause_for_selection(self, step) -> None:
         """Make the intermediate visible and show a non-modal prompt; the run
@@ -146,10 +109,12 @@ class PipelineRunner:
         msg = (f"Step {self._index + 1}/{len(self._steps)}: “{step.plugin}” "
                f"needs a selection.\n\n"
                f"Select the points/clusters in the viewer, then click Continue.")
-        self._prompt = _SelectionPrompt(
+        self._prompt = SelectionPrompt(
             self._main_window, msg,
             on_continue=self._on_selection_continue,
             on_cancel=self._on_selection_cancel,
+            title="Pipeline Paused — Selection Needed",
+            cancel_text="Cancel Pipeline",
         )
         self._prompt.show()
         self._prompt.raise_()
@@ -157,10 +122,7 @@ class PipelineRunner:
     def _on_selection_continue(self) -> None:
         self._close_prompt()
         step = self._steps[self._index]
-        viewer = global_variables.global_pcd_viewer_widget
-        has_selection = bool(getattr(viewer, "picked_points_indices", None)) or \
-            bool(getattr(viewer, "_selection_polygons", None))
-        if not has_selection:
+        if not selection_present("points"):
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.information(
                 self._main_window, "No Selection",
