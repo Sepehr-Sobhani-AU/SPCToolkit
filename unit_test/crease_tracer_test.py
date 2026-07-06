@@ -8,6 +8,7 @@ from core.services.crease_tracer import (
     CreaseTracer,
     vertices_to_polyline_feature,
     debug_vector_features,
+    suggest_perpendicular,
 )
 
 
@@ -83,7 +84,8 @@ def _monotonic(values):
 def test_kerb_crease_traces_edge_line():
     points, normals = _kerb_crease_cloud()
     tracer = CreaseTracer(
-        points, normals, cell_size=1.0, min_points_per_cell=10,
+        points, normals, seed_point=[5.0, 0.0, 0.0],
+        edge_length=1.0, perpendicular_size=1.0,
         min_dihedral_deg=20.0, ransac_threshold=0.03, ransac_iterations=100,
         backend="cpu", seed=0,
     )
@@ -106,9 +108,11 @@ def test_oblique_crease_traces_edge_line():
     rot = _rot_z(0.5) @ _rot_y(0.3)          # arbitrary off-axis orientation
     points = points @ rot.T
     normals = normals @ rot.T
+    seed_point = np.array([5.0, 0.0, 0.0]) @ rot.T   # the kerb seed, rotated
 
     tracer = CreaseTracer(
-        points, normals, cell_size=1.0, min_points_per_cell=10,
+        points, normals, seed_point=seed_point,
+        edge_length=1.0, perpendicular_size=1.0,
         min_dihedral_deg=20.0, ransac_threshold=0.03, ransac_iterations=100,
         backend="cpu", seed=0,
     )
@@ -123,7 +127,6 @@ def test_oblique_crease_traces_edge_line():
     assert dev.max() < 0.05, f"oblique vertices stray from edge: max dev {dev.max():.3f} m"
     assert (v @ d).max() - (v @ d).min() > 7.0, "edge does not span the kerb length"
     assert _monotonic(v @ d), "vertices not ordered along the crease"
-    assert tracer._global_axes is not None, "global crease orientation should have been found"
     print(f"oblique crease: {len(v)} vertices, max edge deviation {dev.max()*1000:.1f} mm")
 
 
@@ -152,8 +155,10 @@ def _curved_crease_cloud(radius=5.0, noise=0.004, seed=4):
 def test_curved_crease_follows_arc():
     radius = 5.0
     points, normals = _curved_crease_cloud(radius=radius)
+    seed_point = [radius * np.cos(np.pi / 4), radius * np.sin(np.pi / 4), 0.0]
     tracer = CreaseTracer(
-        points, normals, cell_size=0.5, min_points_per_cell=8,
+        points, normals, seed_point=seed_point,
+        edge_length=0.5, perpendicular_size=0.5,
         min_dihedral_deg=20.0, ransac_threshold=0.03, ransac_iterations=100,
         backend="cpu", seed=0,
     )
@@ -175,7 +180,8 @@ def test_curved_crease_follows_arc():
 def test_corner_crease_traces_vertical_edge():
     points, normals = _corner_crease_cloud()
     tracer = CreaseTracer(
-        points, normals, cell_size=1.0, min_points_per_cell=10,
+        points, normals, seed_point=[0.0, 0.0, 2.5],
+        edge_length=1.0, perpendicular_size=1.0,
         min_dihedral_deg=20.0, ransac_threshold=0.03, ransac_iterations=100,
         backend="cpu", seed=0,
     )
@@ -191,8 +197,8 @@ def test_corner_crease_traces_vertical_edge():
 
 
 def test_single_plane_yields_no_edge():
-    """One flat surface is not a crease: every cell resolves to one plane, so the
-    dihedral gate rejects them all and no edge is produced."""
+    """One flat surface is not a crease: the seed neighbourhood resolves to a
+    single plane, the dihedral gate rejects it, and the march never starts."""
     rng = np.random.default_rng(3)
     m = 5000
     pts = np.stack(
@@ -202,8 +208,8 @@ def test_single_plane_yields_no_edge():
     nrm = _flip_random_signs(np.tile([0.0, 0.0, 1.0], (m, 1)), rng)
 
     tracer = CreaseTracer(
-        pts.astype(np.float64), nrm.astype(np.float64),
-        cell_size=1.0, min_points_per_cell=10, min_dihedral_deg=20.0,
+        pts.astype(np.float64), nrm.astype(np.float64), seed_point=[5.0, 5.0, 0.0],
+        edge_length=1.0, perpendicular_size=1.0, min_dihedral_deg=20.0,
         ransac_threshold=0.03, ransac_iterations=100, backend="cpu", seed=0,
     )
     v = tracer.trace()
@@ -214,7 +220,8 @@ def test_single_plane_yields_no_edge():
 def test_debug_overlays_recorded():
     points, normals = _kerb_crease_cloud()
     tracer = CreaseTracer(
-        points, normals, cell_size=1.0, min_points_per_cell=10,
+        points, normals, seed_point=[5.0, 0.0, 0.0],
+        edge_length=1.0, perpendicular_size=1.0,
         min_dihedral_deg=20.0, ransac_threshold=0.03, ransac_iterations=100,
         backend="cpu", seed=0, record_debug=True,
     )
@@ -229,8 +236,8 @@ def test_debug_overlays_recorded():
     assert len(tracer.debug_cells) == len(tracer.debug_planes), "one plane-pair per cell"
     assert len(tracer.debug_cells) >= len(v), "at least one cell per vertex"
 
-    # Normals split into two colour branches by global cluster; both surfaces
-    # present and the two clusters capture distinctly-oriented normals.
+    # Normals split into two colour branches by cluster; both surfaces present
+    # and the two clusters capture distinctly-oriented normals.
     side = tracer.debug_point_side
     assert side is not None
     assert (side == 0).any() and (side == 1).any(), "both normal clusters expected"
@@ -249,6 +256,20 @@ def test_debug_overlays_recorded():
     print(f"debug overlays: {names}; {len(tracer.debug_cells)} cells, "
           f"{len(tracer.debug_planes)} planes, "
           f"normals split {int((side==0).sum())}/{int((side==1).sum())}")
+
+
+def test_suggest_perpendicular():
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(0, 10, (5000, 3))
+    seed = np.array([5.0, 5.0, 5.0])
+
+    width = suggest_perpendicular(pts, seed, target_points=100)
+    radius = width / 2.0
+    n_within = int((np.linalg.norm(pts - seed, axis=1) <= radius).sum())
+    assert 90 <= n_within <= 115, f"radius should hold ~100 points, holds {n_within}"
+    # The cap is respected.
+    assert suggest_perpendicular(pts, seed, target_points=100, cap=0.1) == 0.1
+    print(f"suggest_perpendicular: width {width:.3f}, {n_within} pts within radius")
 
 
 def test_polyline_feature_built():
@@ -271,5 +292,6 @@ if __name__ == "__main__":
     test_corner_crease_traces_vertical_edge()
     test_single_plane_yields_no_edge()
     test_debug_overlays_recorded()
+    test_suggest_perpendicular()
     test_polyline_feature_built()
     print("\nAll crease_tracer tests passed.")

@@ -9,11 +9,13 @@ Workflow:
 1. Select a PointCloud branch with per-point normals (embedded PLY nx/ny/nz or
    produced by the normal_estimation plugin — normals are consumed, never
    recomputed here).
-2. Optionally polygon-/Shift-select a swath that straddles **both** surfaces and
-   the edge between them. With no selection, the whole branch is the swath.
-3. Run the plugin. The shared ``CreaseTracer`` marches one cube along the edge,
-   fitting two planes per step, intersecting them, and emitting one vertex per
-   step — the cube re-centres on the edge and rotates to follow it (curves too).
+2. Shift+click **one point near the edge**. The pick only *locates* the edge;
+   the code searches the whole branch and discovers the two intersecting planes.
+3. Run the plugin. ``perpendicular_size`` is pre-filled from a quick estimate at
+   your pick (how far to reach to capture both surfaces) — accept or override.
+   The shared ``CreaseTracer`` marches one cell along the edge, fitting two
+   planes per step and intersecting them; the cell re-centres on the edge and
+   rotates to follow it (curves too).
 4. The result is a polyline ``VectorFeature`` branch tracing the crease.
 
 A kerb is two runs of this brick (road∩face, top∩face); a building base loop is
@@ -32,7 +34,10 @@ from core.services.crease_tracer import (
     CreaseTracer,
     vertices_to_polyline_feature,
     debug_vector_features,
+    suggest_perpendicular,
 )
+
+_FALLBACK_PERPENDICULAR = 0.3  # used when no seed is picked yet
 
 
 class CreaseEdgePlugin(ActionPlugin):
@@ -40,30 +45,30 @@ class CreaseEdgePlugin(ActionPlugin):
     def get_name(self) -> str:
         return "crease_edge"
 
-    def requires_selection(self) -> bool:
-        return True
+    def requires_selection(self) -> str:
+        return "points"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {
-            "cell_size": {
+            "edge_length": {
                 "type": "float",
                 "default": 0.3,
                 "min": 0.001,
                 "max": 100.0,
-                "label": "Cell Size",
-                "description": "Cube edge length and step along the edge (m). One "
-                               "cube per step is centred on the edge and fits two "
-                               "planes; smaller follows tighter curves but holds "
-                               "fewer points per fit.",
+                "label": "Cell Size Along Edge",
+                "description": "Cell length along the edge (m) — also the step. "
+                               "The only size you set; smaller follows tighter "
+                               "curves and spaces vertices more finely.",
             },
-            "min_points_per_cell": {
-                "type": "int",
-                "default": 10,
-                "min": 6,
-                "max": 1000,
-                "label": "Min Points per Cell",
-                "description": "Stop the march where a cube holds fewer points "
-                               "than this (too sparse, or the edge has ended).",
+            "perpendicular_size": {
+                "type": "float",
+                "default": self._suggest_perpendicular_default(),
+                "min": 0.001,
+                "max": 100.0,
+                "label": "Cell Size Across Edge (auto)",
+                "description": "How far each cell reaches across the edge to "
+                               "capture both surfaces (m). Auto-suggested from "
+                               "your picked point; adjust if it over/under-reaches.",
             },
             "min_dihedral_angle": {
                 "type": "float",
@@ -95,31 +100,50 @@ class CreaseEdgePlugin(ActionPlugin):
                 "type": "bool",
                 "default": False,
                 "label": "Show Cells",
-                "description": "Debug: overlay the candidate grid cells as "
-                               "wireframe cubes.",
+                "description": "Debug: overlay each step's cell as a wireframe box.",
             },
             "show_planes": {
                 "type": "bool",
                 "default": False,
                 "label": "Show Planes",
-                "description": "Debug: overlay the two fitted planes per accepted "
-                               "cell (square patches + normal stubs).",
+                "description": "Debug: overlay the two fitted planes per step "
+                               "(square patches + normal stubs).",
             },
             "show_voxel_points": {
                 "type": "bool",
                 "default": False,
                 "label": "Show Voxel Points",
-                "description": "Debug: colour the swath points by the march cube "
-                               "they fell into (as a Clusters branch).",
+                "description": "Debug: colour the points by the march cell they "
+                               "fell into (as a Clusters branch).",
             },
             "show_normals": {
                 "type": "bool",
                 "default": False,
                 "label": "Show Normals",
                 "description": "Debug: overlay the per-point normals (used to "
-                               "split each cell into two planes) as short segments.",
+                               "split each cell into two planes), coloured by side.",
             },
         }
+
+    @staticmethod
+    def _suggest_perpendicular_default() -> float:
+        """Estimate ``perpendicular_size`` at the current pick to pre-fill the
+        dialog. Cheap (an O(N) distance pass on the viewer points, no normals or
+        reconstruction); falls back to a static default when nothing is picked."""
+        try:
+            viewer = global_variables.global_pcd_viewer_widget
+            picked = list(viewer.picked_points_indices)
+            pts = np.asarray(viewer.points)[:, :3]
+            coords = pts[[i for i in picked if i < len(pts)]]
+            if len(coords) == 0:
+                return _FALLBACK_PERPENDICULAR
+            seed = coords.mean(axis=0)
+            suggestion = suggest_perpendicular(pts, seed)
+            if suggestion and suggestion > 0:
+                return round(float(suggestion), 3)
+        except Exception:
+            pass
+        return _FALLBACK_PERPENDICULAR
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
         controller = global_variables.global_application_controller
@@ -144,14 +168,30 @@ class CreaseEdgePlugin(ActionPlugin):
                                 "Could not find the selected branch.")
             return
 
-        # --- Reconstruct the selected branch ---
+        # --- Seed: one (or more) points Shift+clicked near the edge ---
+        picked = list(viewer_widget.picked_points_indices)
+        if not picked:
+            QMessageBox.warning(
+                main_window, "No Point Picked",
+                "Shift+click one point near the edge you want to trace, then run "
+                "the plugin. The pick only locates the edge — the code finds the "
+                "two surfaces itself.")
+            return
+        viewer_points = np.asarray(viewer_widget.points)
+        coords = viewer_points[[i for i in picked if i < len(viewer_points)], :3]
+        if len(coords) == 0:
+            QMessageBox.warning(main_window, "No Point Picked",
+                                "Could not read the picked point coordinates.")
+            return
+        seed_point = coords.mean(axis=0)
+
+        # --- Reconstruct the whole branch (the data the march searches) ---
         try:
             point_cloud = controller.reconstruct(selected_uid)
         except Exception as e:
             QMessageBox.critical(main_window, "Reconstruction Error",
                                  f"Failed to reconstruct branch:\n{str(e)}")
             return
-
         pc_points = np.asarray(point_cloud.points)
 
         # --- Consume upstream normals (never recomputed here) ---
@@ -167,36 +207,20 @@ class CreaseEdgePlugin(ActionPlugin):
             return
         normals = np.asarray(normals)
 
-        # --- Swath: the polygon selection if one was drawn, else whole branch ---
-        polygon_mask = viewer_widget.retest_polygon_selection(pc_points)
-        if polygon_mask is not None and bool(polygon_mask.any()):
-            swath_idx = np.where(polygon_mask)[0]
-        else:
-            swath_idx = np.arange(len(pc_points))
-
-        if len(swath_idx) < params.get("min_points_per_cell", 10):
-            QMessageBox.warning(
-                main_window, "Swath Too Small",
-                "The selected swath has too few points. Select a region that "
-                "straddles both surfaces and the edge between them.")
-            return
-
-        swath_points = pc_points[swath_idx]
-        swath_normals = normals[swath_idx]
-
         show_cells = bool(params.get("show_cells", False))
         show_planes = bool(params.get("show_planes", False))
         show_voxel_points = bool(params.get("show_voxel_points", False))
         show_normals = bool(params.get("show_normals", False))
         any_debug = show_cells or show_planes or show_voxel_points or show_normals
 
-        # --- Trace the crease ---
+        # --- Trace the crease from the seed ---
         try:
             tracer = CreaseTracer(
-                points=swath_points,
-                normals=swath_normals,
-                cell_size=params.get("cell_size", 0.3),
-                min_points_per_cell=params.get("min_points_per_cell", 10),
+                points=pc_points,
+                normals=normals,
+                seed_point=seed_point,
+                edge_length=params.get("edge_length", 0.3),
+                perpendicular_size=params.get("perpendicular_size", _FALLBACK_PERPENDICULAR),
                 min_dihedral_deg=params.get("min_dihedral_angle", 20.0),
                 ransac_threshold=params.get("ransac_threshold", 0.03),
                 ransac_iterations=params.get("ransac_iterations", 100),
@@ -229,15 +253,13 @@ class CreaseEdgePlugin(ActionPlugin):
 
         if any_debug:
             self._add_debug_branches(
-                controller, tree_widget, tracer, parent_uid, parent_node, node,
-                len(pc_points), swath_idx, params,
+                controller, tree_widget, tracer, parent_uid, parent_node, node, params,
                 show_cells, show_planes, show_voxel_points, show_normals,
             )
 
-        # --- Render and clear selection ---
+        # --- Render and clear the pick ---
         main_window.render_visible_data(zoom_extent=False)
         viewer_widget.picked_points_indices.clear()
-        viewer_widget._selection_polygons.clear()
         viewer_widget.update()
 
         if feature is None:
@@ -250,10 +272,9 @@ class CreaseEdgePlugin(ActionPlugin):
             else:
                 QMessageBox.warning(
                     main_window, "No Edge Found",
-                    "No crease edge was traced. Try a larger swath, a smaller cell "
-                    "size, or a lower minimum dihedral angle — or enable the "
-                    "Show Cells/Planes/Voxel Points/Normals boxes to trace the "
-                    "process.")
+                    "No crease edge was traced. Pick a point nearer the edge, "
+                    "increase the across-edge cell size, or lower the minimum "
+                    "dihedral angle — or enable the debug boxes to trace it.")
             return
 
         QMessageBox.information(
@@ -275,11 +296,11 @@ class CreaseEdgePlugin(ActionPlugin):
         tree_widget.blockSignals(False)
 
     def _add_debug_branches(self, controller, tree_widget, tracer, parent_uid,
-                            parent_node, input_node, n_points, swath_idx, params,
+                            parent_node, input_node, params,
                             show_cells, show_planes, show_voxel_points, show_normals):
         """Add each requested processing stage as an ordinary controllable branch
         under *parent_uid*."""
-        # Wireframe stages: cells (cubes), planes (patches), normals (segments).
+        # Wireframe stages: cells (boxes), planes (patches), normals (segments).
         for name, feature in debug_vector_features(
             tracer, show_cells, show_planes, show_normals
         ):
@@ -289,12 +310,11 @@ class CreaseEdgePlugin(ActionPlugin):
             tree_widget.add_branch(uid, parent_uid, name, tooltip=f"crease_edge,{name}")
             self._set_visible(tree_widget, uid)
 
-        # Voxel points: colour the swath points by their grid cell (a Clusters
-        # branch — points are not wireframe geometry).
+        # Voxel points: colour the cloud points by the march cell they fell into
+        # (a Clusters branch — points are not wireframe geometry). The tracer's
+        # debug_point_cell is aligned to the whole branch it ran on.
         if show_voxel_points and tracer.debug_point_cell is not None:
-            labels = np.full(n_points, -1, dtype=np.int32)
-            labels[swath_idx] = tracer.debug_point_cell.astype(np.int32)
-            clusters = Clusters(labels=labels)
+            clusters = Clusters(labels=tracer.debug_point_cell.astype(np.int32))
             clusters.set_random_color()
             uid = controller.add_analysis_result(
                 clusters, "cluster_labels", [input_node.uid], parent_node,

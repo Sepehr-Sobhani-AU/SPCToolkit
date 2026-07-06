@@ -3,31 +3,33 @@ Generic crease-edge tracing — the intersection line of two surfaces.
 
 A *crease edge* is where two surfaces meet at an angle (kerb top/bottom,
 building corners, roof ridges, wall/floor joints). This service traces that
-edge as a polyline from a single user-selected swath that straddles **both**
-surfaces and the edge between them. It knows nothing about kerbs or buildings:
-those features are *outcomes* of running this one brick (and, later, a separate
-junction brick that joins edges at corners). See ``DECISIONS.md`` 2026-06-26 /
-2026-06-28.
+edge as a polyline, given the whole cloud and a single **seed point** the user
+picked near the edge. It knows nothing about kerbs or buildings: those features
+are *outcomes* of running this one brick (and, later, a separate junction brick
+that joins edges at corners). See ``DECISIONS.md`` 2026-06-26 / 2026-06-28.
 
 Method — a **local march** (one cell per step, each centred on the edge and
 rotating to follow it):
 
-1. Bootstrap: a global 2-means split of all the swath's normals into two plane
-   orientations gives the edge direction ``nA x nB`` and a seed point on the
-   edge (intersection of the two global planes, nearest the swath centre).
-2. March: at each step, gather points in one ``cell_size`` cube centred on the
-   current edge point and oriented to the local edge tangent; split them into
-   two planes by **2-means on their normals** (sign-invariant); fit a plane to
-   each side (shared RANSAC engine ``core/services/ransac.fit``); intersect the
-   two planes; emit the point on that line nearest the cube centre as a vertex.
-3. Re-centre and rotate: the next cube is placed one cell along the *local* edge
-   tangent and re-oriented to it, so a single row of cells follows the crease —
-   straight or curved — with the edge through each cube's centre.
-4. The march runs both directions from the seed and stops when a cube no longer
+1. Bootstrap: snap the picked point to the nearest cloud point, gather a ball
+   around it, split the normals into two planes (2-means, sign-invariant), fit
+   and intersect them → the initial edge heading. The selection only *locates*
+   the edge; the code discovers which two planes form it.
+2. March: at each step gather points in a box of ``edge_length`` (along the
+   tangent) × ``perpendicular_size`` × ``perpendicular_size`` (across), centred
+   on the current edge point and oriented to the local tangent; split into two
+   planes by normal; fit each (shared RANSAC ``core/services/ransac.fit``);
+   intersect; emit the point on that line nearest the box centre as a vertex.
+3. Re-centre and rotate: the next box steps one ``edge_length`` along the local
+   tangent and re-orients to it, so a single row of cells follows the crease —
+   straight or curved — with the edge through each box's centre.
+4. The march runs both directions from the seed and stops when a box no longer
    straddles two distinctly-oriented surfaces (the edge ended).
 
-Per-point normals are *consumed* from upstream (PLY ``nx/ny/nz`` or the
-normal_estimation plugin), never computed here.
+The user sets only ``edge_length``; ``perpendicular_size`` is suggested by
+``suggest_perpendicular`` (how far to reach to capture both surfaces) and
+pre-filled in the dialog. Per-point normals are *consumed* from upstream (PLY
+``nx/ny/nz`` or the normal_estimation plugin), never computed here.
 
 Deliberately **not** here (separate, deferred bricks per ``DECISIONS.md``):
 corner resolution (extend-to-intersection of two edge polylines) and
@@ -43,13 +45,16 @@ from core.entities.vector_feature import VectorFeature
 
 _EPS = 1e-9
 
-# Cap on points fed to a single plane fit. A planar patch in one cell is
-# over-determined by a few hundred points; capping bounds RANSAC's per-iteration
-# distance pass, matching the candidate cap surface_region_growing uses.
+# Cap on points fed to a single plane fit. A planar patch is over-determined by
+# a few hundred points; capping bounds RANSAC's per-iteration distance pass.
 _MAX_POINTS_PER_SIDE = 256
 
+# Minimum points each side of a box needs for a stable plane fit; below this the
+# box no longer straddles two surfaces, so the march stops.
+_MIN_POINTS_PER_SIDE = 6
+
 # Stop the march if the edge tangent turns more than this between steps — a
-# sharp bend usually means the cube has wandered off the feature.
+# sharp bend usually means the box has wandered off the feature.
 _MAX_ANGLE_DEG = 60.0
 
 # Safety cap on steps per march direction.
@@ -60,18 +65,21 @@ _EDGE_COLOR = np.array([1.0, 0.55, 0.0], dtype=np.float32)  # orange
 
 class CreaseTracer:
     """
-    Trace the intersection line of two surfaces through a swath of points.
+    Trace the intersection line of two surfaces, seeded by one picked point.
 
     Parameters:
-        points: ``(N, 3)`` swath points covering both surfaces and the edge.
-        normals: ``(N, 3)`` per-point normals, consumed from upstream. Used to
-            split each cell's points into two planes and to seed the march.
-        cell_size: Cube edge length (m) — also the step length along the edge.
-            One cube per step is centred on the edge; smaller follows tighter
-            curves and spaces vertices more finely, but each cube then holds
-            fewer points to fit two planes from.
-        min_points_per_cell: Stop the march if a cube holds fewer points.
-        min_dihedral_deg: Stop the march when a cube's two fitted planes meet at
+        points: ``(N, 3)`` cloud points (the whole branch).
+        normals: ``(N, 3)`` per-point normals, consumed from upstream.
+        seed_point: ``(3,)`` a point near the edge (the user's pick). Only locates
+            the edge; the code finds the two intersecting planes itself.
+        edge_length: Box length along the edge — also the step (m). The only size
+            the user sets. Smaller follows tighter curves and spaces vertices
+            more finely.
+        perpendicular_size: Box width across the edge (m), i.e. how far each cell
+            reaches to capture both surfaces. Auto-suggested (see
+            ``suggest_perpendicular``) and pre-filled in the dialog; the march
+            uses whatever value it is given.
+        min_dihedral_deg: Stop the march when a box's two fitted planes meet at
             less than this angle — they are one surface, so the edge has ended.
         ransac_threshold: Plane RANSAC inlier distance threshold (m).
         ransac_iterations: Max RANSAC hypotheses per plane fit.
@@ -85,8 +93,9 @@ class CreaseTracer:
         self,
         points: np.ndarray,
         normals: np.ndarray,
-        cell_size: float = 0.3,
-        min_points_per_cell: int = 10,
+        seed_point: np.ndarray,
+        edge_length: float = 0.3,
+        perpendicular_size: float = 0.3,
         min_dihedral_deg: float = 20.0,
         ransac_threshold: float = 0.03,
         ransac_iterations: int = 100,
@@ -96,6 +105,7 @@ class CreaseTracer:
     ):
         self.points = np.asarray(points, dtype=np.float64)
         self.normals = np.asarray(normals, dtype=np.float64)
+        self.seed_point = np.asarray(seed_point, dtype=np.float64).reshape(3)
         if self.points.ndim != 2 or self.points.shape[1] != 3:
             raise ValueError(f"points must be (N, 3); got {self.points.shape}")
         if self.normals.shape != self.points.shape:
@@ -103,11 +113,11 @@ class CreaseTracer:
                 f"normals shape {self.normals.shape} does not match points "
                 f"shape {self.points.shape}"
             )
-        if cell_size <= 0:
-            raise ValueError("cell_size must be positive.")
+        if edge_length <= 0 or perpendicular_size <= 0:
+            raise ValueError("edge_length and perpendicular_size must be positive.")
 
-        self.cell_size = float(cell_size)
-        self.min_points_per_cell = int(min_points_per_cell)
+        self.edge_length = float(edge_length)
+        self.perpendicular_size = float(perpendicular_size)
         self.min_dihedral_deg = float(min_dihedral_deg)
         self.ransac_threshold = float(ransac_threshold)
         self.ransac_iterations = int(ransac_iterations)
@@ -115,14 +125,12 @@ class CreaseTracer:
         self.seed = seed
 
         self._kdtree = None
-        self._global_axes = None       # (n_a, n_b) global plane orientations
 
-        # Debug geometry recorded during trace() for the show-* overlays, so a
-        # plugin can add each stage as an ordinary controllable branch.
+        # Debug geometry recorded during trace() for the show-* overlays.
         self.record_debug = bool(record_debug)
-        self.debug_point_cell = None   # (N,) step id of the cube a point fell in, -1 = unused
-        self.debug_point_side = None   # (N,) global cluster 0/1 per split point, -1 = unused
-        self.debug_cells = []          # (center, R) oriented cube per step
+        self.debug_point_cell = None   # (N,) step id of the box a point fell in, -1 = unused
+        self.debug_point_side = None   # (N,) cluster 0/1 per split point, -1 = unused
+        self.debug_cells = []          # (center, R) oriented box per step
         self.debug_planes = []         # (vertex, n_a, n_b) per step
 
     # ------------------------------------------------------------------ #
@@ -134,7 +142,7 @@ class CreaseTracer:
         Trace the crease and return ordered polyline vertices.
 
         Returns an ``(M, 3)`` array of vertices in march order along the crease.
-        Empty ``(0, 3)`` if no crease was found.
+        Empty ``(0, 3)`` if no crease was found at the seed.
         """
         self.debug_point_cell = np.full(len(self.points), -1, dtype=np.int64)
         self.debug_point_side = np.full(len(self.points), -1, dtype=np.int8)
@@ -144,11 +152,11 @@ class CreaseTracer:
         boot = self._bootstrap()
         if boot is None:
             return np.empty((0, 3), dtype=np.float64)
-        seed_point, seed_dir = boot  # _bootstrap built self._kdtree
+        seed_point, seed_dir, ref_axes = boot  # _bootstrap built self._kdtree
 
-        forward = self._march(seed_point, seed_dir)
-        backward = self._march(seed_point, -seed_dir)
-        # Both marches emit the seed cube first; drop the backward duplicate and
+        forward = self._march(seed_point, seed_dir, ref_axes)
+        backward = self._march(seed_point, -seed_dir, ref_axes)
+        # Both marches emit the seed box first; drop the backward duplicate and
         # lay the backward steps (reversed) before the forward ones so the
         # vertices read in a single sweep along the crease.
         records = list(reversed(backward[1:])) + forward
@@ -159,88 +167,90 @@ class CreaseTracer:
         if len(records) < 2:
             return np.empty((0, 3), dtype=np.float64)
         vertices = np.array([r["vertex"] for r in records], dtype=np.float64)
-        return _dedup(vertices, self.cell_size * 0.25)
+        return _dedup(vertices, self.edge_length * 0.25)
 
     # ------------------------------------------------------------------ #
     # Bootstrap                                                          #
     # ------------------------------------------------------------------ #
 
     def _bootstrap(self):
-        """Seed the march from a *global* two-plane fit of the whole swath.
+        """Seed the march from a local two-plane fit at the picked point.
 
-        Returns ``(seed_point, seed_dir)`` — a point on the global edge line
-        nearest the swath centre, and the edge direction — or ``None`` when the
-        swath does not resolve into two distinctly-oriented planes.
+        Returns ``(seed_point, seed_dir, ref_axes)`` — the snapped seed, the
+        initial edge heading, and the two plane normals (for consistent
+        side-colouring) — or ``None`` when the neighbourhood of the pick does not
+        resolve into two distinctly-oriented planes (the pick wasn't near a
+        crease, or ``perpendicular_size`` is too small).
         """
-        self._global_axes = None
-        if len(self.points) < 6:
-            return None
-        labels = _split_two_planes_by_normal(self.normals)
-        mask_a = labels == 0
-        mask_b = labels == 1
-        if mask_a.sum() < 3 or mask_b.sum() < 3:
-            return None
-
-        n_a = _principal_axis(self.normals[mask_a])
-        n_b = _principal_axis(self.normals[mask_b])
-        self._global_axes = (n_a, n_b)
-        edge = np.cross(n_a, n_b)
-        if np.linalg.norm(edge) < 1e-6:  # parallel: no crease
-            return None
-        direction = _unit(edge)  # average edge tangent — initial march heading
-
-        # Seed where the two surfaces meet *spatially*: the point whose local
-        # neighbourhood is the most balanced mix of the two clusters. This is
-        # robust to curvature — unlike intersecting the two global *flat* planes,
-        # whose straight chord can run nowhere near a curved edge.
-        n = len(self.points)
         self._kdtree = cKDTree(self.points)
-        k = min(16, n)
-        rng = np.random.default_rng(self.seed)
-        sample = rng.choice(n, 2000, replace=False) if n > 2000 else np.arange(n)
-        _, nbr = self._kdtree.query(self.points[sample], k=k)
-        frac_b = labels[nbr].mean(axis=1)  # fraction of cluster-B neighbours
-        seed_point = self.points[sample[int(np.argmin(np.abs(frac_b - 0.5)))]]
-        return seed_point, direction
+        _, seed_idx = self._kdtree.query(self.seed_point)
+        seed = self.points[seed_idx]
+
+        cand = self._kdtree.query_ball_point(seed, self.perpendicular_size)
+        if len(cand) < 2 * _MIN_POINTS_PER_SIDE:
+            return None
+        cand = np.asarray(cand, dtype=np.intp)
+        labels = _split_two_planes_by_normal(self.normals[cand])
+        side_a = cand[labels == 0]
+        side_b = cand[labels == 1]
+        if len(side_a) < _MIN_POINTS_PER_SIDE or len(side_b) < _MIN_POINTS_PER_SIDE:
+            return None
+
+        model_a = self._fit_plane(self.points[side_a])
+        model_b = self._fit_plane(self.points[side_b])
+        if model_a is None or model_b is None:
+            return None
+        n_a = _unit(model_a.normal)
+        n_b = _unit(model_b.normal)
+        if abs(float(n_a @ n_b)) > np.cos(np.radians(self.min_dihedral_deg)):
+            return None
+
+        line = _intersect_line(n_a, model_a.point, n_b, model_b.point)
+        if line is None:
+            return None
+        _, direction = line
+        return seed, direction, (n_a, n_b)
 
     # ------------------------------------------------------------------ #
     # March                                                              #
     # ------------------------------------------------------------------ #
 
-    def _march(self, start, direction) -> list:
-        """March from *start* along *direction*, one cube per step.
+    def _march(self, start, direction, ref_axes) -> list:
+        """March from *start* along *direction*, one box per step.
 
-        Returns a list of per-step records (dicts) in traversal order.
+        ``ref_axes`` anchors the side-colour labelling so both march directions
+        agree at the seed. Returns per-step records (dicts) in traversal order.
         """
-        half = self.cell_size / 2.0
-        search_radius = half * np.sqrt(3.0)  # cube circumradius
+        half_len = self.edge_length / 2.0
+        half_perp = self.perpendicular_size / 2.0
+        search_radius = np.sqrt(half_len ** 2 + 2.0 * half_perp ** 2)  # box circumradius
         cos_dihedral = np.cos(np.radians(self.min_dihedral_deg))
         cos_bend = np.cos(np.radians(_MAX_ANGLE_DEG))
 
         tip = np.asarray(start, dtype=np.float64).copy()
         heading = _unit(direction)
+        ref_a, ref_b = ref_axes
         out = []
 
         for _ in range(_MAX_STEPS):
-            # Gather points in the cube centred at the tip, oriented to heading.
             cand = self._kdtree.query_ball_point(tip, search_radius)
-            if len(cand) < self.min_points_per_cell:
+            if len(cand) < 2 * _MIN_POINTS_PER_SIDE:
                 break
             cand = np.asarray(cand, dtype=np.intp)
             u2, u3 = _perp_basis(heading)
-            rot = np.stack([heading, u2, u3])  # rows = cube axes
-            local = (self.points[cand] - tip) @ rot.T
-            in_cube = np.all(np.abs(local) <= half, axis=1)
-            box_idx = cand[in_cube]
-            if len(box_idx) < self.min_points_per_cell:
+            rot = np.stack([heading, u2, u3])  # rows = box axes
+            local = np.abs((self.points[cand] - tip) @ rot.T)
+            in_box = (local[:, 0] <= half_len) & (local[:, 1] <= half_perp) & (local[:, 2] <= half_perp)
+            box_idx = cand[in_box]
+            if len(box_idx) < 2 * _MIN_POINTS_PER_SIDE:
                 break
 
-            # Split the cube into two planes by normal; both must be present.
+            # Split the box into two planes by normal; both must be present.
             labels = _split_two_planes_by_normal(self.normals[box_idx])
             side_a = box_idx[labels == 0]
             side_b = box_idx[labels == 1]
-            if len(side_a) < 3 or len(side_b) < 3:
-                break  # only one surface in the cube: the edge has ended
+            if len(side_a) < _MIN_POINTS_PER_SIDE or len(side_b) < _MIN_POINTS_PER_SIDE:
+                break  # only one surface in the box: the edge has ended
 
             model_a = self._fit_plane(self.points[side_a])
             model_b = self._fit_plane(self.points[side_b])
@@ -258,22 +268,31 @@ class CreaseTracer:
             if edge_dir @ heading < 0:
                 edge_dir = -edge_dir
             if edge_dir @ heading < cos_bend:
-                break  # sharp turn: cube has likely wandered off the feature
+                break  # sharp turn: box has likely wandered off the feature
 
-            # Re-centre: the vertex is the edge point nearest the cube centre.
+            # Keep side 0 = the plane closest to the running reference, so the
+            # two surfaces stay one colour each across steps and directions.
+            if abs(float(n_a @ ref_a)) >= abs(float(n_a @ ref_b)):
+                side = labels.astype(np.int8)
+                ref_a, ref_b = n_a, n_b
+            else:
+                side = (1 - labels).astype(np.int8)
+                ref_a, ref_b = n_b, n_a
+
+            # Re-centre: the vertex is the edge point nearest the box centre.
             vertex = point_on_line + float((tip - point_on_line) @ edge_dir) * edge_dir
             ev2, ev3 = _perp_basis(edge_dir)
             out.append({
                 "vertex": vertex,
                 "frame": np.stack([edge_dir, ev2, ev3]),
                 "box_idx": box_idx,
-                "side": _align_side(labels, self.normals[box_idx], self._global_axes),
+                "side": side,
                 "n_a": n_a,
                 "n_b": n_b,
             })
 
             # Step one cell along the local edge and re-orient to it.
-            tip = vertex + self.cell_size * edge_dir
+            tip = vertex + self.edge_length * edge_dir
             heading = edge_dir
 
         return out
@@ -300,6 +319,32 @@ class CreaseTracer:
         for step_no, r in enumerate(records):
             self.debug_point_cell[r["box_idx"]] = step_no
             self.debug_point_side[r["box_idx"]] = r["side"]
+
+
+# --------------------------------------------------------------------------- #
+# Perpendicular-size suggestion (for pre-filling the dialog)                   #
+# --------------------------------------------------------------------------- #
+
+
+def suggest_perpendicular(points, seed_xyz, target_points=120, cap=None):
+    """Suggest a ``perpendicular_size`` so a box at the seed holds enough points.
+
+    Pure and normals-free: the full width that brings ~``target_points`` points
+    within reach of the seed, via an O(N) k-th-nearest distance (no KD-tree
+    build), so it is cheap enough to call while the dialog opens. Returns
+    ``None`` if there are too few points.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) < 4:
+        return None
+    seed_xyz = np.asarray(seed_xyz, dtype=np.float64).reshape(3)
+    d2 = np.einsum("ij,ij->i", points - seed_xyz, points - seed_xyz)
+    k = min(int(target_points), len(d2) - 1)
+    radius = float(np.sqrt(np.partition(d2, k)[k]))
+    width = 2.0 * radius  # full box width ~ twice the reach
+    if cap is not None:
+        width = min(width, float(cap))
+    return width
 
 
 # --------------------------------------------------------------------------- #
@@ -339,25 +384,6 @@ def _split_two_planes_by_normal(normals: np.ndarray, max_iter: int = 10) -> np.n
     return labels
 
 
-def _align_side(labels, cell_normals, global_axes):
-    """Map a cube's local 0/1 split onto the *global* cluster identity.
-
-    The per-cube 2-means assigns label 0/1 by an arbitrary index, so the same
-    surface can be 0 in one cube and 1 in the next. Re-key against the global
-    plane orientations so 0 = global cluster A everywhere — making the normal
-    colours consistent and a per-cube mis-split visibly stand out. Returns int8
-    0/1 labels.
-    """
-    out = labels.astype(np.int8)
-    if global_axes is None or not (labels == 0).any():
-        return out
-    axis_a, axis_b = global_axes
-    cluster0 = _principal_axis(cell_normals[labels == 0])
-    if abs(float(cluster0 @ axis_b)) > abs(float(cluster0 @ axis_a)):
-        out = (1 - out).astype(np.int8)  # local cluster 0 is really global B
-    return out
-
-
 def _intersect_line(n_a, p_a, n_b, p_b):
     """Intersection line of two planes as ``(point_on_line, unit_direction)``,
     or ``None`` if the planes are parallel."""
@@ -370,8 +396,6 @@ def _intersect_line(n_a, p_a, n_b, p_b):
     direction = direction / norm
 
     # Solve [n_a; n_b; dir] x = [n_a·p_a, n_b·p_b, 0] for a point on the line.
-    # The three rows are independent (dir ⟂ both normals), so the system is
-    # well-conditioned away from the parallel case handled above.
     matrix = np.stack([n_a, n_b, direction])
     rhs = np.array([float(n_a @ p_a), float(n_b @ p_b), 0.0])
     try:
@@ -418,7 +442,7 @@ def _unit_rows(vecs: np.ndarray) -> np.ndarray:
 
 
 def _subsample(points: np.ndarray, seed) -> np.ndarray:
-    """Randomly cap a cube-side's points at ``_MAX_POINTS_PER_SIDE``."""
+    """Randomly cap a box-side's points at ``_MAX_POINTS_PER_SIDE``."""
     if len(points) <= _MAX_POINTS_PER_SIDE:
         return points
     rng = np.random.default_rng(seed)
@@ -454,12 +478,12 @@ def vertices_to_polyline_feature(vertices, color=None, closed: bool = False):
 # --------------------------------------------------------------------------- #
 # Debug overlays — one renderable wireframe branch per processing stage.       #
 #                                                                              #
-# trace() records, per march step, the oriented cube, the two fitted planes,   #
-# and per-point cube/side ids. These helpers turn that into render-only        #
+# trace() records, per march step, the oriented box, the two fitted planes,    #
+# and per-point box/side ids. These helpers turn that into render-only         #
 # VectorFeature wireframes so a plugin can add each stage ("cells", "planes",  #
 # "normals") as an ordinary controllable branch. Voxel POINTS are coloured per #
-# cube via debug_point_cell, which the plugin turns into a Clusters branch     #
-# (points are not wireframe geometry). All helpers are pure: no GUI access.    #
+# box via debug_point_cell, which the plugin turns into a Clusters branch.     #
+# All helpers are pure: no GUI access.                                         #
 # --------------------------------------------------------------------------- #
 
 _CELL_COLOR = np.array([0.1, 0.9, 0.9], dtype=np.float32)       # cyan
@@ -467,7 +491,7 @@ _PLANE_COLOR = np.array([1.0, 0.2, 1.0], dtype=np.float32)      # magenta
 _NORMAL_A_COLOR = np.array([1.0, 0.85, 0.1], dtype=np.float32)  # yellow (cluster A)
 _NORMAL_B_COLOR = np.array([0.2, 0.6, 1.0], dtype=np.float32)   # blue   (cluster B)
 
-# Cube corners centred on the origin (box-frame), scaled by cell_size at draw.
+# Box corners centred on the origin (box-frame), scaled by the box dims at draw.
 _CUBE_CORNERS = np.array(
     [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
      (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)], dtype=np.float64,
@@ -477,17 +501,18 @@ _CUBE_EDGES = [(0, 1), (1, 2), (2, 3), (3, 0),
                (0, 4), (1, 5), (2, 6), (3, 7)]
 
 
-def cells_to_vector_feature(cells, cell_size, color=None):
-    """Wireframe cubes for the per-step cells.
+def cells_to_vector_feature(cells, dims, color=None):
+    """Wireframe boxes for the per-step cells.
 
-    ``cells`` is a list of ``(center, R)`` where ``R`` rows are the cube's local
-    axes (edge tangent + two perpendiculars), so each cube is drawn centred on
-    the edge and rotated to follow it.
+    ``cells`` is a list of ``(center, R)`` where ``R`` rows are the box's local
+    axes (edge tangent + two perpendiculars). ``dims`` is ``(edge_length,
+    perpendicular_size, perpendicular_size)`` — the box is drawn centred on the
+    edge and rotated to follow it.
     """
     if not cells:
         return None
     verts, edges = [], []
-    corner_offsets = _CUBE_CORNERS * cell_size
+    corner_offsets = _CUBE_CORNERS * np.asarray(dims, dtype=np.float64)
     for center, rot in cells:
         corners = corner_offsets @ rot + np.asarray(center, dtype=np.float64)
         base = len(verts)
@@ -499,12 +524,12 @@ def cells_to_vector_feature(cells, cell_size, color=None):
     )
 
 
-def planes_to_vector_feature(planes, cell_size, color=None):
+def planes_to_vector_feature(planes, size, color=None):
     """Wireframe square patch (+ a short normal stub) for each fitted plane."""
     if not planes:
         return None
     verts, edges = [], []
-    half = cell_size * 0.5
+    half = size * 0.5
     for centre, n_a, n_b in planes:
         for normal in (n_a, n_b):
             u, v = _perp_basis(normal)
@@ -557,26 +582,27 @@ def debug_vector_features(tracer, show_cells, show_planes, show_normals):
     """Return ``[(branch_name, VectorFeature), ...]`` for the requested wireframe
     overlays, built from a traced ``CreaseTracer``'s recorded debug geometry."""
     out = []
+    edge_len = tracer.edge_length
+    perp = tracer.perpendicular_size
     if show_cells:
-        vf = cells_to_vector_feature(tracer.debug_cells, tracer.cell_size)
+        vf = cells_to_vector_feature(tracer.debug_cells, (edge_len, perp, perp))
         if vf is not None:
             out.append(("debug_cells", vf))
     if show_planes:
-        vf = planes_to_vector_feature(tracer.debug_planes, tracer.cell_size)
+        vf = planes_to_vector_feature(tracer.debug_planes, perp)
         if vf is not None:
             out.append(("debug_planes", vf))
     if show_normals and tracer.debug_point_side is not None:
-        # One branch per global cluster so the two surfaces' normals read in
-        # two consistent colours.
+        # One branch per cluster so the two surfaces' normals read in two colours.
         side = tracer.debug_point_side
+        scale = 0.4 * min(edge_len, perp)
         for value, name, col in (
             (0, "debug_normals_a", _NORMAL_A_COLOR),
             (1, "debug_normals_b", _NORMAL_B_COLOR),
         ):
             mask = side == value
             vf = normals_to_vector_feature(
-                tracer.points[mask], tracer.normals[mask],
-                tracer.cell_size * 0.4, col,
+                tracer.points[mask], tracer.normals[mask], scale, col
             )
             if vf is not None:
                 out.append((name, vf))
