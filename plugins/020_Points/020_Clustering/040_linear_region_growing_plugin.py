@@ -7,14 +7,17 @@ from seed points the user picks in the viewer.
 
 Workflow:
 1. User selects a PointCloud branch and polygon-/Shift-selects seed points along
-   one linear feature.
-2. The picked points seed a single growth via the shared ``LinearRegionGrower``
-   using the chosen growth mode (axis trace, linearity-connected, or hybrid).
-3. The result is a Clusters branch over the input cloud: label 0 = the grown
-   feature, -1 = everything else (same output shape as surface_region_growing).
+   one or more linear features.
+2. The picked points are grouped with DBSCAN (points close together = one line),
+   and each group is grown via the shared ``LinearRegionGrower`` using the chosen
+   growth mode (axis trace, linearity-connected, or hybrid). Grown groups that
+   turn out to be the same physical line are joined back together.
+3. The result is one Clusters branch over the input cloud: label 0, 1, 2, … = the
+   grown lines, -1 = everything else.
 
-One selection grows one feature. To trace several features, run the plugin once
-per feature.
+Several lines can be traced from a single selection. Optionally, each line's
+joined centerline (a polyline) and search cylinders are added as their own
+controllable branches.
 
 Growth modes:
 - **Axis Trace** — march a search cylinder along the fitted line; best for
@@ -34,13 +37,15 @@ from PyQt5.QtCore import Qt
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.clusters import Clusters
+from core.entities.point_cloud import PointCloud
 from core.services.eigenvalue_utils import EigenvalueUtils
 from core.services.linear_region_grower import (
     LinearRegionGrower,
     AXIS_TRACE,
     LINEARITY_CONNECTED,
     HYBRID,
-    debug_vector_features,
+    centerlines_to_vector_feature,
+    cylinders_to_vector_feature,
 )
 
 
@@ -72,6 +77,24 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                "(isolated features). Linearity-Connected / Hybrid "
                                "gate growth by per-point linearity (edges in a "
                                "surface) and require eigenvalues on the branch.",
+            },
+            "seed_eps": {
+                "type": "float",
+                "default": 0.10,
+                "min": 0.001,
+                "max": 10.0,
+                "label": "Seed Group Distance (m)",
+                "description": "Picked points closer than this are grouped as one "
+                               "line to grow. Increase if one line is split into "
+                               "several; decrease if separate lines get merged.",
+            },
+            "seed_min_samples": {
+                "type": "int",
+                "default": 2,
+                "min": 1,
+                "max": 50,
+                "label": "Min Seeds per Group",
+                "description": "Fewest picked points needed to start a line group.",
             },
             "ransac_threshold": {
                 "type": "float",
@@ -248,7 +271,25 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                 f"Need at least {_MIN_SEEDS}.")
             return
 
-        # --- Grow the feature from all picked seeds (single feature per run) ---
+        # --- Group the picked seeds into separate lines (DBSCAN) ---
+        seed_pts = pc_points[seed_indices]
+        seed_labels = np.asarray(PointCloud(points=seed_pts).dbscan(
+            eps=params.get("seed_eps", 0.10),
+            min_points=params.get("seed_min_samples", 2),
+        ))
+        seed_groups = [
+            seed_indices[seed_labels == lbl]
+            for lbl in sorted(set(int(l) for l in seed_labels))
+            if lbl != -1 and np.count_nonzero(seed_labels == lbl) >= _MIN_SEEDS
+        ]
+        if not seed_groups:
+            QMessageBox.warning(
+                main_window, "No Seed Groups",
+                "The picked points did not form any line group. Increase "
+                "'Seed Group Distance' or pick more points along each line.")
+            return
+
+        # --- Grow one line per group, joining groups that are the same line ---
         grower = LinearRegionGrower(
             all_points=pc_points,
             kdtree=tree_kd,
@@ -264,17 +305,20 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             linearity_threshold=params.get("linearity_threshold", 0.4),
             neighbor_k=params.get("neighbor_k", 16),
         )
-        feature_indices = grower.grow(seed_indices)
-        if len(feature_indices) == 0:
+        lines = grower.grow_lines(seed_groups)
+        if not lines:
             QMessageBox.warning(main_window, "No Feature Points",
                                 "Growing did not find any points. "
                                 "Try adjusting the parameters.")
             return
 
-        # --- Build a Clusters branch over the whole cloud: 0 = feature, -1 = rest ---
+        # --- Build one Clusters branch: label per line, -1 = rest ---
         labels = np.full(len(pc_points), -1, dtype=np.int32)
-        labels[feature_indices] = 0
-        clusters = Clusters(labels=labels, cluster_names={0: "Linear Feature"})
+        cluster_names = {}
+        for k, line in enumerate(lines):
+            labels[line.indices] = k
+            cluster_names[k] = f"Line {k + 1}"
+        clusters = Clusters(labels=labels, cluster_names=cluster_names)
         clusters.set_random_color()
 
         result_uid = controller.add_analysis_result(
@@ -297,22 +341,35 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         tree_widget.visibility_status[result_uid] = True
         tree_widget.blockSignals(False)
 
-        # --- Debug geometry as controllable branches (gated by the show_* boxes) ---
-        result_node = controller.get_node(result_uid)
-        tree_widget.blockSignals(True)
-        for name, feature in debug_vector_features(
-            grower, params.get("show_cylinders"), params.get("show_lines")
-        ):
-            vf_uid = controller.add_analysis_result(
-                feature, "vector_feature", [node.uid], result_node, name, params
-            )
-            tree_widget.add_branch(vf_uid, result_uid, name,
-                                   tooltip=f"linear_region_growing,{params}")
-            vf_item = tree_widget.branches_dict.get(vf_uid)
-            if vf_item:
-                vf_item.setCheckState(0, Qt.Checked)
-            tree_widget.visibility_status[vf_uid] = True
-        tree_widget.blockSignals(False)
+        # --- Optional geometry: one centerlines branch + one cylinders branch,
+        #     each holding all lines (gated by the show_* boxes) ---
+        extras = []
+        if params.get("show_lines"):
+            vf = centerlines_to_vector_feature([line.centerline for line in lines])
+            if vf is not None:
+                vf.cluster_reference = result_uid
+                extras.append(("centerlines", vf))
+        if params.get("show_cylinders"):
+            all_cylinders = [c for line in lines for c in line.cylinders]
+            vf = cylinders_to_vector_feature(all_cylinders)
+            if vf is not None:
+                vf.cluster_reference = result_uid
+                extras.append(("cylinders", vf))
+
+        if extras:
+            result_node = controller.get_node(result_uid)
+            tree_widget.blockSignals(True)
+            for name, feature in extras:
+                vf_uid = controller.add_analysis_result(
+                    feature, "vector_feature", [node.uid], result_node, name, params
+                )
+                tree_widget.add_branch(vf_uid, result_uid, name,
+                                       tooltip=f"linear_region_growing,{params}")
+                vf_item = tree_widget.branches_dict.get(vf_uid)
+                if vf_item:
+                    vf_item.setCheckState(0, Qt.Checked)
+                tree_widget.visibility_status[vf_uid] = True
+            tree_widget.blockSignals(False)
 
         # --- Render and clear selection ---
         main_window.render_visible_data(zoom_extent=False)
@@ -320,9 +377,10 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         viewer_widget._selection_polygons.clear()
         viewer_widget.update()
 
-        n_feature = int((labels == 0).sum())
+        n_feature = int((labels >= 0).sum())
         n_rest = len(labels) - n_feature
         QMessageBox.information(
             main_window, "Linear Region Growing Complete",
-            f"Grew 1 feature — {n_feature:,} feature points, {n_rest:,} remaining."
+            f"Grew {len(lines)} line(s) — {n_feature:,} feature points, "
+            f"{n_rest:,} remaining."
         )

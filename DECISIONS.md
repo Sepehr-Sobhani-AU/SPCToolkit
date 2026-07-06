@@ -78,3 +78,28 @@ DXF layer name equals the cluster's class string verbatim. SPCToolkit sets
 no color / linetype / lineweight — the drafter's AutoCAD template resolves
 visual properties from the layer name. Cluster UUID is round-tripped on
 each entity so AutoCAD → SPCToolkit re-import is possible later.
+
+## 2026-07-06 — Seed-DBSCAN reintroduced in linear region growing (on demonstrated need)
+`linear_region_growing` now clusters the picked seed points with DBSCAN and
+traces several linear features from one selection. This deliberately reverses
+the earlier call to strip seed-DBSCAN as scenario-specific machinery: the
+reversal is justified by a concrete demonstrated scenario (selecting multiple
+overhead lines in one go), which is how features earn their way into the
+toolkit.
+
+A single physical line is often split by clustering into several clusters. The
+first implementation recovered it by growing each cluster separately then
+MERGING grown lines with an endpoint/collinearity heuristic — this proved
+fragile (fused parallel side-by-side lines into one zig-zag centerline). It was
+replaced (user's proposal, simpler and more robust) with a GREEDY consume loop:
+grow from the largest remaining cluster; drop every cluster that growth
+consumed (>= `_CONSUME_FRAC` of its points ended up in the line); repeat. No
+merge heuristic — a cluster is joined only when the growth actually reached it,
+so parallel lines never fuse and a line split across many clusters comes out
+whole.
+
+Output is one Clusters branch (label per line). Centerlines and cylinders are
+both optional and each collapses to a SINGLE branch holding all lines: one
+"centerlines" branch (a mesh with one connected edge chain per line, no
+bridging between lines) and one "cylinders" branch. The plugin stays generic
+(any linear feature; cables were only an example).

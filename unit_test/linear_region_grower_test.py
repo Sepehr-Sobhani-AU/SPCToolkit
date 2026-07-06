@@ -165,6 +165,76 @@ def test_overlap_increases_cylinder_count():
     assert n_half > n0, f"overlap=0.5 ({n_half}) should yield more cylinders than 0.0 ({n0})"
 
 
+def _two_lines_cloud():
+    """Two parallel straight lines along +x, 5 m apart, with small noise."""
+    rng = np.random.default_rng(5)
+    n = 300
+    x = np.linspace(0, 20, n)
+    line_a = np.stack([x, np.zeros(n), np.zeros(n)], axis=1)      # y = 0
+    line_b = np.stack([x, np.full(n, 5.0), np.zeros(n)], axis=1)  # y = 5
+    for ln in (line_a, line_b):
+        ln += rng.normal(0, 0.005, ln.shape)
+    points = np.vstack([line_a, line_b]).astype(np.float64)
+    return points, np.arange(n), np.arange(n, 2 * n)
+
+
+def test_grow_lines_keeps_separate_lines():
+    """Two seed groups on two distinct lines must stay two separate lines."""
+    points, a_idx, b_idx = _two_lines_cloud()
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.1, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = grower.grow_lines([a_idx[:8], b_idx[:8]])
+    assert len(lines) == 2, f"expected 2 separate lines, got {len(lines)}"
+    for line in lines:
+        assert line.centerline is not None and len(line.centerline) >= 2
+    print("grow_lines: kept 2 separate lines")
+
+
+def test_grow_lines_parallel_offset_not_merged():
+    """Two parallel lines close together but laterally offset must NOT be joined
+    into one — this is the zig-zag centerline bug. Growth from one line's cluster
+    never reaches the other (their offset exceeds the cylinder radius), so the
+    greedy consume loop leaves them as two distinct features."""
+    rng = np.random.default_rng(7)
+    n = 300
+    z = np.linspace(0, 20, n)
+    line_a = np.stack([np.zeros(n), np.zeros(n), z], axis=1)      # x = 0
+    line_b = np.stack([np.full(n, 0.5), np.zeros(n), z], axis=1)  # x = 0.5, parallel
+    for ln in (line_a, line_b):
+        ln += rng.normal(0, 0.003, ln.shape)
+    points = np.vstack([line_a, line_b]).astype(np.float64)
+    a_idx, b_idx = np.arange(n), np.arange(n, 2 * n)
+
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.1, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = grower.grow_lines([a_idx[:8], b_idx[:8]])
+    assert len(lines) == 2, f"parallel-offset lines must stay separate, got {len(lines)}"
+    print("grow_lines: parallel-offset lines kept separate (no zig-zag)")
+
+
+def test_grow_lines_joins_split_groups():
+    """One physical line seeded by two disjoint groups (a gap in the picks)
+    must come back as ONE joined line with a single continuous centerline."""
+    points, line_idx = _straight_line_cloud()
+    left, right = line_idx[:8], line_idx[-8:]  # same line, far apart along it
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.1, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = grower.grow_lines([left, right])
+    assert len(lines) == 1, f"expected the two groups joined into 1, got {len(lines)}"
+    cl = lines[0].centerline
+    assert cl is not None and len(cl) >= 2
+    span_x = float(cl[:, 0].max() - cl[:, 0].min())
+    assert span_x > 15.0, f"joined centerline spans only {span_x:.1f} m"
+    print(f"grow_lines: joined 2 split groups into 1 line "
+          f"(centerline spans {span_x:.1f} m)")
+
+
 def test_debug_vector_features_built():
     points, line_idx = _straight_line_cloud()
     g = LinearRegionGrower(
@@ -191,5 +261,8 @@ if __name__ == "__main__":
     test_linearity_connected_stays_on_feature()
     test_linearity_mode_requires_linearity()
     test_overlap_increases_cylinder_count()
+    test_grow_lines_keeps_separate_lines()
+    test_grow_lines_parallel_offset_not_merged()
+    test_grow_lines_joins_split_groups()
     test_debug_vector_features_built()
     print("\nAll linear_region_grower tests passed.")

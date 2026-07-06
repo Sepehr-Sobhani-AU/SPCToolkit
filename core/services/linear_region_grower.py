@@ -24,7 +24,7 @@ This is an *orchestrator* over RANSAC, per ``DECISIONS.md`` 2026-05-26: it calls
 ``fit`` and owns the iteration policy. It is not a RANSAC variant.
 """
 
-from collections import deque
+from collections import deque, namedtuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -39,6 +39,19 @@ LINEARITY_CONNECTED = "linearity_connected"
 HYBRID = "hybrid"
 
 _LINEARITY_MODES = (LINEARITY_CONNECTED, HYBRID)
+
+# A cluster is considered consumed by a grown line (and dropped from the pool)
+# when at least this fraction of its points ended up in that line. Clusters that
+# a line merely crosses (a few shared points at an intersection) stay below this
+# and get their own growth pass.
+_CONSUME_FRAC = 0.5
+
+# One grown, possibly-joined linear feature.
+#   indices:    (K,) point indices into all_points belonging to the line.
+#   centerline: (M, 3) float32 ordered polyline down the line, or None (no
+#               centerline for the linearity-connected mode / empty growth).
+#   cylinders:  list of (tip, direction, radius, length) search cylinders.
+GrownLine = namedtuple("GrownLine", ["indices", "centerline", "cylinders"])
 
 
 class LinearRegionGrower:
@@ -140,6 +153,106 @@ class LinearRegionGrower:
         return self._grow_axis_trace(
             seed_indices, use_linearity_gate=(self.mode == HYBRID)
         )
+
+    def grow_lines(self, seed_groups) -> list:
+        """
+        Grow one line per physical feature, greedily, largest cluster first.
+
+        *seed_groups* is a list of index arrays (into ``all_points``), one per
+        cluster of the picked seeds (typically DBSCAN of the user's selection).
+        A single physical line is often split by clustering into several
+        clusters; this method recovers it without any merge heuristic:
+
+            1. Grow a line from the LARGEST remaining cluster.
+            2. Drop every remaining cluster that growth consumed (most of its
+               points ended up in the grown line) — those clusters were just
+               pieces of this same line.
+            3. Repeat until no clusters remain.
+
+        Because a cluster is removed only when the growth actually reached it,
+        parallel neighbouring lines are never fused (growth never crosses to
+        them) and a line split into many clusters comes out whole (the march
+        walks through all of them).
+
+        Returns a list of ``GrownLine``, one per physical line.
+        """
+        pool = [np.asarray(g, dtype=np.intp) for g in seed_groups
+                if np.asarray(g).size >= 2]
+        lines = []
+
+        while pool:
+            # Largest remaining cluster seeds the next line — the most seed
+            # points give the steadiest starting axis.
+            s = int(np.argmax([c.size for c in pool]))
+            seed_cluster = pool.pop(s)
+
+            # Grow in isolation so this line keeps only its own debug geometry.
+            self.debug_cylinders = []
+            self.debug_lines = []
+            grown = self.grow(seed_cluster)
+            if grown.size == 0:
+                continue
+
+            centerline = self._join_centerline(list(self.debug_lines))
+            lines.append(GrownLine(np.array(sorted(set(int(i) for i in grown)),
+                                            dtype=np.intp),
+                                   centerline, list(self.debug_cylinders)))
+
+            # Drop clusters this line consumed. A cluster is part of the line if
+            # most of its points were grown into it; clusters merely crossed
+            # (a few shared points at an intersection) are kept for their own
+            # pass. The seed cluster is always consumed (grow includes seeds),
+            # so the loop always shrinks.
+            pool = [c for c in pool
+                    if float(np.mean(np.isin(c, grown))) < _CONSUME_FRAC]
+        return lines
+
+    def _join_centerline(self, segments):
+        """Turn recorded ``(p0, p1)`` centerline segments into one ordered
+        polyline (``(M, 3)`` float32), or None if there is nothing to draw.
+
+        Segments from several joined groups (and both march directions) are
+        pooled, de-duplicated, then chained nearest-to-nearest from one end so
+        the result runs continuously down the whole line, bridging any gap
+        between originally-separate groups.
+        """
+        if not segments:
+            return None
+        pts = []
+        for p0, p1 in segments:
+            pts.append(np.asarray(p0, dtype=np.float64))
+            pts.append(np.asarray(p1, dtype=np.float64))
+        uniq = self._dedupe(np.asarray(pts))
+        if len(uniq) < 2:
+            return None
+        return self._order_polyline(uniq).astype(np.float32)
+
+    def _dedupe(self, pts):
+        """Drop near-coincident vertices (consecutive segments share an end)."""
+        tol = max(self.cylinder_length * 1e-3, 1e-6)
+        keys = np.round(pts / tol).astype(np.int64)
+        _, keep = np.unique(keys, axis=0, return_index=True)
+        return pts[np.sort(keep)]
+
+    @staticmethod
+    def _order_polyline(pts):
+        """Order points into a single chain: start at one PCA-axis extreme,
+        then repeatedly hop to the nearest unused point (handles curves and
+        bridges gaps between joined groups)."""
+        axis = LinearRegionGrower._principal_axis(pts)
+        proj = (pts - pts.mean(axis=0)) @ axis
+        n = len(pts)
+        used = np.zeros(n, dtype=bool)
+        cur = int(np.argmin(proj))
+        used[cur] = True
+        order = [cur]
+        for _ in range(n - 1):
+            d = np.linalg.norm(pts - pts[cur], axis=1)
+            d[used] = np.inf
+            cur = int(np.argmin(d))
+            used[cur] = True
+            order.append(cur)
+        return pts[order]
 
     # ------------------------------------------------------------------ #
     # Axis-trace (cylinder march)                                        #
@@ -385,6 +498,31 @@ def cylinders_to_vector_feature(cylinders, color=None, n_segments=12):
     return _wireframe_vector_feature(
         "Search Cylinders", verts, edges,
         _CYLINDER_COLOR if color is None else color,
+    )
+
+
+def centerlines_to_vector_feature(centerlines, color=None):
+    """One VectorFeature holding several joined centerlines.
+
+    *centerlines* is a list of ordered ``(M, 3)`` polylines (one per grown
+    line). Each becomes its own connected edge chain in a single mesh — so the
+    separate lines draw connected within themselves, with no spurious edge
+    bridging one line to the next. Returns None if nothing is drawable.
+    """
+    verts = []
+    edges = []
+    for cl in centerlines:
+        if cl is None or len(cl) < 2:
+            continue
+        base = len(verts)
+        verts.extend(np.asarray(cl, dtype=np.float64))
+        for i in range(len(cl) - 1):
+            edges.append([base + i, base + i + 1])
+    if not edges:
+        return None
+    return _wireframe_vector_feature(
+        "Centerlines", verts, edges,
+        _CENTERLINE_COLOR if color is None else color,
     )
 
 
