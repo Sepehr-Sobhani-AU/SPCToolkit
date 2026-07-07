@@ -46,6 +46,7 @@ from core.services.linear_region_grower import (
     HYBRID,
     centerlines_to_vector_feature,
     cylinders_to_vector_feature,
+    _END_CYLINDER_COLOR,
 )
 
 
@@ -182,6 +183,14 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "default": False,
                 "label": "Show Centerlines",
                 "description": "Overlay the traced centerline in the viewer (debug; axis-trace / hybrid only)",
+            },
+            "show_end_cylinders": {
+                "type": "bool",
+                "default": False,
+                "label": "Show Stop Cylinders (red)",
+                "description": "Draw the last search cylinder at each end of every "
+                               "line in red — shows where and why growth stopped "
+                               "(axis-trace / hybrid only)",
             },
         }
 
@@ -355,6 +364,15 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             if vf is not None:
                 vf.cluster_reference = result_uid
                 extras.append(("cylinders", vf))
+        if params.get("show_end_cylinders"):
+            all_end_cylinders = [c for line in lines for c in line.end_cylinders]
+            vf = cylinders_to_vector_feature(
+                all_end_cylinders, color=_END_CYLINDER_COLOR,
+                symbol_type="Stop Cylinders",
+            )
+            if vf is not None:
+                vf.cluster_reference = result_uid
+                extras.append(("line_ends", vf))
 
         if extras:
             result_node = controller.get_node(result_uid)

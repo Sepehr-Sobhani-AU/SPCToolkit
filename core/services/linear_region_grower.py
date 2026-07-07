@@ -47,11 +47,16 @@ _LINEARITY_MODES = (LINEARITY_CONNECTED, HYBRID)
 _CONSUME_FRAC = 0.5
 
 # One grown, possibly-joined linear feature.
-#   indices:    (K,) point indices into all_points belonging to the line.
-#   centerline: (M, 3) float32 ordered polyline down the line, or None (no
-#               centerline for the linearity-connected mode / empty growth).
-#   cylinders:  list of (tip, direction, radius, length) search cylinders.
-GrownLine = namedtuple("GrownLine", ["indices", "centerline", "cylinders"])
+#   indices:       (K,) point indices into all_points belonging to the line.
+#   centerline:    (M, 3) float32 ordered polyline down the line, or None (no
+#                  centerline for the linearity-connected mode / empty growth).
+#   cylinders:     list of (tip, direction, radius, length) search cylinders.
+#   end_cylinders: the last search cylinder from each march direction — the
+#                  cylinder at each end of the line where growth stopped. Up to
+#                  two per line (one per end); shows why the march ended there.
+GrownLine = namedtuple(
+    "GrownLine", ["indices", "centerline", "cylinders", "end_cylinders"]
+)
 
 
 class LinearRegionGrower:
@@ -112,9 +117,12 @@ class LinearRegionGrower:
 
         # Debug geometry recorded during axis-trace marching, for visualization.
         # Accumulates across grow() calls: (tip, direction, radius, length) per
-        # search cylinder, and (p0, p1) per centerline segment.
+        # search cylinder, and (p0, p1) per centerline segment. debug_end_cylinders
+        # holds only the last cylinder of each march direction — the stop point at
+        # each end of the line.
         self.debug_cylinders = []
         self.debug_lines = []
+        self.debug_end_cylinders = []
 
         self.linearity = None if linearity is None else np.asarray(linearity)
         self.linearity_threshold = linearity_threshold
@@ -189,6 +197,7 @@ class LinearRegionGrower:
             # Grow in isolation so this line keeps only its own debug geometry.
             self.debug_cylinders = []
             self.debug_lines = []
+            self.debug_end_cylinders = []
             grown = self.grow(seed_cluster)
             if grown.size == 0:
                 continue
@@ -196,7 +205,8 @@ class LinearRegionGrower:
             centerline = self._join_centerline(list(self.debug_lines))
             lines.append(GrownLine(np.array(sorted(set(int(i) for i in grown)),
                                             dtype=np.intp),
-                                   centerline, list(self.debug_cylinders)))
+                                   centerline, list(self.debug_cylinders),
+                                   list(self.debug_end_cylinders)))
 
             # Drop clusters this line consumed. A cluster is part of the line if
             # most of its points were grown into it; clusters merely crossed
@@ -327,6 +337,7 @@ class LinearRegionGrower:
 
     def _march(self, tip, direction, use_linearity_gate) -> set:
         collected = set()
+        start_n = len(self.debug_cylinders)
         half_len = self.cylinder_length / 2.0
         search_radius = np.sqrt(self.cylinder_radius ** 2 + half_len ** 2)
 
@@ -400,6 +411,12 @@ class LinearRegionGrower:
             current_tip = next_tip
             current_dir = new_dir
 
+        # The last cylinder searched in this direction is the stop point at this
+        # end of the line — the march ended just beyond it (too few points, a
+        # sharp bend, or empty space). Record it so the end can be drawn.
+        if len(self.debug_cylinders) > start_n:
+            self.debug_end_cylinders.append(self.debug_cylinders[-1])
+
         return collected
 
     # ------------------------------------------------------------------ #
@@ -452,8 +469,9 @@ class LinearRegionGrower:
 # path) rather than as an ad-hoc viewer overlay. They are pure: no GUI access.  #
 # --------------------------------------------------------------------------- #
 
-_CYLINDER_COLOR = np.array([0.1, 0.7, 1.0], dtype=np.float32)    # light blue
-_CENTERLINE_COLOR = np.array([1.0, 0.9, 0.1], dtype=np.float32)  # yellow
+_CYLINDER_COLOR = np.array([0.1, 0.7, 1.0], dtype=np.float32)      # light blue
+_CENTERLINE_COLOR = np.array([1.0, 0.9, 0.1], dtype=np.float32)    # yellow
+_END_CYLINDER_COLOR = np.array([1.0, 0.1, 0.1], dtype=np.float32)  # red (stop)
 
 
 def _perp_basis(direction):
@@ -467,7 +485,8 @@ def _perp_basis(direction):
     return u, v
 
 
-def cylinders_to_vector_feature(cylinders, color=None, n_segments=12):
+def cylinders_to_vector_feature(cylinders, color=None, n_segments=12,
+                                symbol_type="Search Cylinders"):
     """Wireframe VectorFeature: two end rings + a few longitudinals per cylinder."""
     if not cylinders:
         return None
@@ -496,7 +515,7 @@ def cylinders_to_vector_feature(cylinders, color=None, n_segments=12):
             edges.append([base0 + i, top0 + i])    # longitudinal
 
     return _wireframe_vector_feature(
-        "Search Cylinders", verts, edges,
+        symbol_type, verts, edges,
         _CYLINDER_COLOR if color is None else color,
     )
 
