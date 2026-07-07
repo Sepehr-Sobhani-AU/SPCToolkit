@@ -53,6 +53,8 @@ class PCDViewerWidget(
         - ESC: Cancel zoom window / polygon mode (if active), or deselect all selected points after confirmation.
         - + / =: Increase point size (geometric scaling x1.2).
         - -: Decrease point size (geometric scaling /1.2, min 0.5).
+        - SHIFT + +: Increase vector-feature line width (geometric scaling x1.2).
+        - SHIFT + -: Decrease vector-feature line width (geometric scaling /1.2, min 1.0).
         - C: Split the selected clusters (runs the "split_clusters" action plugin).
         - M: Merge the selected clusters (runs the "merge_clusters" action plugin).
         - Delete: Remove the selected clusters (runs the "remove_clusters" action plugin).

@@ -14,6 +14,9 @@ class ViewerPropertiesMixin:
         self._POINT_SIZE_MIN = 0.5
         self._POINT_SIZE_MAX = 20.0
         self._POINT_SIZE_FACTOR = 1.2  # geometric scaling per keystroke
+        self._line_width = 1.0  # width of rendered vector-feature line geometry
+        self._LINE_WIDTH_MIN = 1.0
+        self._LINE_WIDTH_MAX = 20.0
         self._axis_line_length = 5
         self._axis_line_width = 5
         self._picking_point_threshold_factor = 1.0
@@ -57,6 +60,20 @@ class ViewerPropertiesMixin:
     def point_size(self, value):
         if value > 0:
             self._point_size = value
+            self.update()
+
+    @property
+    def line_width(self):
+        """
+        float: Width of rendered vector-feature line geometry (mesh wireframes,
+        CAD polylines). Can be set to make thin overlay lines easier to see.
+        """
+        return self._line_width
+
+    @line_width.setter
+    def line_width(self, value):
+        if value > 0:
+            self._line_width = value
             self.update()
 
     @property

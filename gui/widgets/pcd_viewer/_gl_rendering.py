@@ -195,7 +195,7 @@ class GLRenderingMixin:
         if self.line_vertices is None or self.line_indices is None:
             return
 
-        glLineWidth(1.0)
+        glLineWidth(self.line_width)
 
         glEnableClientState(GL_VERTEX_ARRAY)
         glVertexPointer(3, GL_FLOAT, 0, self.line_vertices)

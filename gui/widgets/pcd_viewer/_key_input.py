@@ -61,12 +61,21 @@ class KeyInputMixin:
             self.reset_view()
         elif event.key() == Qt.Key_F:
             self.zoom_to_extent()
-        elif event.key() in (Qt.Key_Plus, Qt.Key_Equal):
-            new_size = min(self._point_size * self._POINT_SIZE_FACTOR, self._POINT_SIZE_MAX)
-            self.point_size = new_size
-        elif event.key() == Qt.Key_Minus:
-            new_size = max(self._point_size / self._POINT_SIZE_FACTOR, self._POINT_SIZE_MIN)
-            self.point_size = new_size
+        elif event.key() in (Qt.Key_Plus, Qt.Key_Equal, Qt.Key_Minus, Qt.Key_Underscore):
+            # +/- adjust point size; Shift + +/- adjust vector-feature line width.
+            # (On most layouts '+' is Shift+'=' and '_' is Shift+'-', so the
+            #  Shift modifier is what distinguishes the two families of keys.)
+            increase = event.key() in (Qt.Key_Plus, Qt.Key_Equal)
+            if event.modifiers() & Qt.ShiftModifier:
+                if increase:
+                    self.line_width = min(self._line_width * self._POINT_SIZE_FACTOR, self._LINE_WIDTH_MAX)
+                else:
+                    self.line_width = max(self._line_width / self._POINT_SIZE_FACTOR, self._LINE_WIDTH_MIN)
+            else:
+                if increase:
+                    self.point_size = min(self._point_size * self._POINT_SIZE_FACTOR, self._POINT_SIZE_MAX)
+                else:
+                    self.point_size = max(self._point_size / self._POINT_SIZE_FACTOR, self._POINT_SIZE_MIN)
         elif event.key() == Qt.Key_C:
             main_window = global_variables.global_main_window
             if main_window:
