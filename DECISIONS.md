@@ -6,6 +6,44 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-07-09 — Linear march: decouple fit-length from reach; keep plain PCA (reject density normalization)
+Two follow-ups to the prior-gated march. (1) **Fit window vs search reach are
+decoupled** via a `reach_factor` knob: `cylinder_length` is now only the fit
+window / step (kept short so a straight per-step fit does not chord-cut a curve
+and drift outward), while the tube is searched out to `reach = cylinder_length ×
+reach_factor`. When the near window is empty the march **bridges the gap** —
+jumps the tip forward to the nearest collinear cluster within reach, keeping the
+heading (no data in the gap) — so fragmented features trace through. The lateral
+on-axis gate means a bridge can only follow the same line longitudinally, never
+hop to a parallel neighbour; `reach_factor = 1` disables bridging. (2) A
+**density-normalized per-step fit** (equal weight per along-axis section) was
+implemented and then **rejected on measurement**: the step estimator is
+variance-weighted PCA, which already maximizes spread (so it inherently prefers
+the longest-extent structure — the user's "fit-length" term) and down-weights a
+compact dense off-axis cluster (a stub/bracket/junction near the seed) by its low
+leverage. Forcing equal-per-section weight *re-inflated* exactly such clusters
+and made a controlled case worse (1.3°→2.4° off-axis). The user's two goals are
+already met by the current design: PCA's max-spread objective is the fit-length
+term, and the on-axis gate + max-angle check is the prior-alignment term — so
+plain PCA is kept.
+
+## 2026-07-08 — Linear march step: prior-gated PCA, not a free per-step RANSAC
+The axis-trace march no longer runs a fresh RANSAC line fit each step. A free
+fit locks onto whichever chord has the most inliers, so wherever the search tube
+overlaps other geometry (a crossing feature, a pole, the surface the feature
+sits on) a denser off-axis clutter chord wins — tilting the march off the feature
+or, via the `min_inlier_ratio` gate, wrongly reporting "fit failed" on a clearly
+visible line (the user's `stop_fit_failed` complaint). During a march the current
+heading is a strong prior (RANSAC is only justified at the seed, where there is
+none): each step now keeps the tube points within the fit threshold of the
+CURRENT axis, takes the next direction from a PCA of just those points (rejecting
+turns > max_angle as a bend), then collects tube points within the threshold of
+the UPDATED axis so curves are still hugged fully. This matches the existing
+surface-region-growing pattern (calls RANSAC with `min_inlier_ratio=0.0` and
+"applies its own filters"). The `fit_failed` stop reason is retired (no per-step
+fit can fail); stop reasons are now too-few-points, sharp-bend, empty-space and
+step-cap, each drawn as its own coloured end-cylinder branch.
+
 ## 2026-07-07 — Adopt existing standards for deliverable structure, don't invent a taxonomy
 The deliverable/cartography structure is *adopted* from open, internationally-portable standards rather than authored from scratch (no client mandate → portability is the tie-breaker over US/UK vendor schemes): **ISO 13567** for CAD layer structure, **Uniclass 2015** as a per-feature classification *code attribute* (not the layer), **ISO 19650-2** for file/container naming, and the **ISO 128 family** (ISO 128 lines/widths, 128-50 hatching, ISO 3098 text, ISO 129 dims, ISO 5455 scales, ISO 5457 sheets, ISO 7200 title block) for drafting cartography. All four presentation concerns collapse into one **class-keyed style table** (`feature.class → layer, class_code, color/linetype/lineweight, hatch, text style`), which is the OGC-SLD / ISO 19117 *portrayal* idea resolved into DXF entity properties instead of an SLD XML — style stays decoupled from geometry and lives in config, so no new taxonomy and no code taxonomy.
 

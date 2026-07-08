@@ -109,6 +109,129 @@ def test_axis_trace_cylinders_match_search():
     print(f"search cylinders: all {len(cyls)} match length={cyl_len} radius={cyl_rad}")
 
 
+def test_axis_trace_survives_clutter_in_tube():
+    """A clear straight line that the search tube shares with a patch of
+    non-linear clutter in the middle. The clutter makes the line a MINORITY of
+    the tube's points there — the old "line must be >=20% of the tube" ratio gate
+    reported 'fit failed' and stopped the march mid-line, even though the line is
+    obviously present. MSAC still locks onto the line (scattered clutter never
+    accumulates line-inliers), so the march must cross the patch and finish."""
+    rng = np.random.default_rng(11)
+    n_line = 400
+    x = np.linspace(0, 20, n_line)
+    line = np.stack([x, np.zeros(n_line), np.zeros(n_line)], axis=1)
+    line += rng.normal(0, 0.004, line.shape)
+
+    # A dense blob straddling the line around x=10, offset 0.04-0.09 m sideways:
+    # inside the 0.1 m search tube, but well outside the 0.03 m fit threshold, so
+    # it is gathered by the tube yet never counts as a line inlier. ~95 clutter
+    # points per 0.5 m step vs ~10 line points -> line is <15% of the tube.
+    n_clut = 150
+    cx = rng.uniform(9.6, 10.4, n_clut)
+    r = rng.uniform(0.04, 0.09, n_clut)
+    a = rng.uniform(0, 2 * np.pi, n_clut)
+    clutter = np.stack([cx, r * np.cos(a), r * np.sin(a)], axis=1)
+    points = np.vstack([line, clutter]).astype(np.float64)
+    line_idx = np.arange(n_line)
+
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.03,
+        cylinder_radius=0.1, cylinder_length=0.5, overlap=0.0,
+        min_points=3, max_angle_deg=20.0,
+    )
+    grown = set(grower.grow(line_idx[:10]).tolist())          # seed at the x=0 end
+    line_set = set(line_idx.tolist())
+    recovered = len(grown & line_set) / len(line_set)
+    max_x = float(points[sorted(grown), 0].max())
+    print(f"clutter-in-tube: recovered {recovered:.0%} of line, reached x={max_x:.1f}")
+    assert recovered > 0.9, (
+        f"march stopped early in clutter: recovered only {recovered:.0%} "
+        "(the old inlier-ratio gate would false-fail here)")
+    assert max_x > 18.0, f"march did not cross the clutter patch (reached x={max_x:.1f})"
+
+
+def test_plain_pca_step_resists_dense_near_patch():
+    """Documents why the per-step heading uses plain variance-weighted PCA (not a
+    density-normalized fit). The feature runs +x; near the seed sits a dense,
+    compact patch tilted 20 deg off-axis (a stub / bracket). Because PCA weights
+    by spread, the compact patch has low leverage and the long +x run wins — the
+    heading stays within a few degrees of +x. (Equal-per-section density
+    normalization was measured to make this WORSE, re-inflating the patch.)"""
+    rng = np.random.default_rng(21)
+    far = np.stack([np.linspace(0.15, 0.60, 12),          # sparse true +x run
+                    np.zeros(12), np.zeros(12)], axis=1)
+    s = np.linspace(0.0, 0.15, 200)                        # dense tilted patch,
+    tilt = np.radians(20.0)                                # 20 deg off +x
+    patch = np.stack([s * np.cos(tilt), s * np.sin(tilt), np.zeros(200)], axis=1)
+    patch += rng.normal(0, 0.002, patch.shape)
+    pts = np.vstack([far, patch])
+
+    d = LinearRegionGrower._principal_axis(pts)
+    d = d / np.linalg.norm(d)
+    off = np.degrees(np.arccos(min(1.0, abs(float(d @ np.array([1.0, 0.0, 0.0]))))))
+    print(f"plain PCA step: heading {off:.1f} deg off +x despite the dense patch")
+    assert off < 5.0, f"plain PCA heading {off:.1f} deg off +x — patch hijacked it"
+
+
+def test_gap_bridging_crosses_fragment_gap():
+    """A straight line with a 1 m gap in the middle. With reach > gap the march
+    bridges it and reaches the far end; with reach = fit window it stops at the
+    gap. Proves the fit-window / search-reach decoupling."""
+    rng = np.random.default_rng(23)
+    n = 400
+    x = np.linspace(0, 20, n)
+    line = np.stack([x, np.zeros(n), np.zeros(n)], axis=1)
+    line += rng.normal(0, 0.004, line.shape)
+    pts = line[(x < 9.5) | (x > 10.5)]                   # 1.0 m gap in the middle
+    seed = np.where(pts[:, 0] < 1.0)[0]                  # seeds at the x=0 end
+
+    def run(reach_factor):
+        g = LinearRegionGrower(
+            pts, mode=AXIS_TRACE, ransac_threshold=0.05, cylinder_radius=0.1,
+            cylinder_length=0.5, reach_factor=reach_factor, min_points=3,
+            max_angle_deg=20.0,
+        )
+        grown = sorted(g.grow(seed))
+        return float(pts[grown, 0].max())
+
+    max_x3 = run(3.0)   # reach 1.5 m > 1.0 m gap  -> bridges
+    max_x1 = run(1.0)   # reach 0.5 m < 1.0 m gap  -> stops
+    print(f"gap bridging: reach x3 -> max_x {max_x3:.1f}; reach x1 -> max_x {max_x1:.1f}")
+    assert max_x3 > 18.0, f"reach=3 failed to cross the gap (max_x {max_x3:.1f})"
+    assert max_x1 < 10.5, f"reach=1 should stop at the gap but reached {max_x1:.1f}"
+
+
+def test_gap_bridging_stays_on_own_line():
+    """Two parallel lines 0.5 m apart, the near one broken by a gap. Bridging the
+    gap must follow the SAME line longitudinally, never hop to the neighbour."""
+    rng = np.random.default_rng(29)
+    n = 300
+    x = np.linspace(0, 20, n)
+    a = np.stack([x, np.zeros(n), np.zeros(n)], axis=1)       # line A, y = 0
+    b = np.stack([x, np.full(n, 0.5), np.zeros(n)], axis=1)   # line B, y = 0.5
+    for ln in (a, b):
+        ln += rng.normal(0, 0.004, ln.shape)
+    a = a[(x < 9.5) | (x > 10.5)]                             # gap in A only
+    pts = np.vstack([a, b])
+    n_a = len(a)
+    a_seed = np.where((pts[:, 0] < 1.0) & (np.arange(len(pts)) < n_a))[0]
+    b_seed = np.where((pts[:, 0] < 1.0) & (np.arange(len(pts)) >= n_a))[0]
+
+    g = LinearRegionGrower(
+        pts, mode=AXIS_TRACE, ransac_threshold=0.05, cylinder_radius=0.1,
+        cylinder_length=0.5, reach_factor=3.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = g.grow_lines([a_seed, b_seed])
+    assert len(lines) == 2, f"expected 2 lines, got {len(lines)}"
+    for line in lines:
+        ys = pts[line.indices, 1]
+        assert ys.max() - ys.min() < 0.2, "a line absorbed the parallel neighbour"
+    spans = [float(pts[line.indices, 0].max() - pts[line.indices, 0].min())
+             for line in lines]
+    assert max(spans) > 18.0, "the gapped line did not bridge across its gap"
+    print("gap bridging: stayed on own line, bridged the gap")
+
+
 def test_linearity_connected_stays_on_feature():
     """A linear kerb embedded in a planar ground patch; linearity separates them."""
     rng = np.random.default_rng(1)
@@ -258,6 +381,10 @@ if __name__ == "__main__":
     test_axis_trace_collects_line()
     test_axis_trace_long_curved_seeds()
     test_axis_trace_cylinders_match_search()
+    test_axis_trace_survives_clutter_in_tube()
+    test_plain_pca_step_resists_dense_near_patch()
+    test_gap_bridging_crosses_fragment_gap()
+    test_gap_bridging_stays_on_own_line()
     test_linearity_connected_stays_on_feature()
     test_linearity_mode_requires_linearity()
     test_overlap_increases_cylinder_count()

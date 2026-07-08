@@ -46,7 +46,7 @@ from core.services.linear_region_grower import (
     HYBRID,
     centerlines_to_vector_feature,
     cylinders_to_vector_feature,
-    _END_CYLINDER_COLOR,
+    STOP_REASONS,
 )
 
 
@@ -127,7 +127,20 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "min": 0.01,
                 "max": 50.0,
                 "label": "Cylinder Length",
-                "description": "Axis-trace search cylinder length per step (m)",
+                "description": "Length of the per-step fit window (m). This is where "
+                               "the line is fit and how far the tip advances. Keep "
+                               "it short on curved features (a long window fits a "
+                               "chord and drifts outward); Search Reach handles gaps",
+            },
+            "reach_factor": {
+                "type": "float",
+                "default": 3.0,
+                "min": 1.0,
+                "max": 10.0,
+                "label": "Search Reach ×",
+                "description": "How far ahead the march looks for the next points, as "
+                               "a multiple of Cylinder Length. >1 bridges gaps in "
+                               "fragmented features; 1 = no bridging",
             },
             "cylinder_overlap": {
                 "type": "float",
@@ -187,10 +200,12 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             "show_end_cylinders": {
                 "type": "bool",
                 "default": False,
-                "label": "Show Stop Cylinders (red)",
+                "label": "Show Stop Cylinders",
                 "description": "Draw the last search cylinder at each end of every "
-                               "line in red — shows where and why growth stopped "
-                               "(axis-trace / hybrid only)",
+                               "line, split into one coloured branch per stop reason "
+                               "(red=too few points, orange=sharp bend, "
+                               "magenta=empty space, white=step cap) — shows where "
+                               "and why growth stopped (axis-trace / hybrid only)",
             },
         }
 
@@ -307,6 +322,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             max_iterations=params.get("ransac_iterations", 100),
             cylinder_radius=params.get("cylinder_radius", 0.03),
             cylinder_length=params.get("cylinder_length", 0.5),
+            reach_factor=params.get("reach_factor", 3.0),
             overlap=params.get("cylinder_overlap", 0.0) / 100.0,
             min_points=params.get("min_points", 5),
             max_angle_deg=params.get("max_angle", 20.0),
@@ -365,14 +381,22 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 vf.cluster_reference = result_uid
                 extras.append(("cylinders", vf))
         if params.get("show_end_cylinders"):
-            all_end_cylinders = [c for line in lines for c in line.end_cylinders]
-            vf = cylinders_to_vector_feature(
-                all_end_cylinders, color=_END_CYLINDER_COLOR,
-                symbol_type="Stop Cylinders",
-            )
-            if vf is not None:
-                vf.cluster_reference = result_uid
-                extras.append(("line_ends", vf))
+            # One branch per stop reason, each in its own colour, so you can see
+            # at a glance why every line ended where it did.
+            cylinders_by_reason = {}
+            for line in lines:
+                for reason, cyl in line.end_cylinders:
+                    cylinders_by_reason.setdefault(reason, []).append(cyl)
+            for reason, cyls in cylinders_by_reason.items():
+                label, color = STOP_REASONS.get(
+                    reason, (reason, np.array([1.0, 1.0, 1.0], dtype=np.float32))
+                )
+                vf = cylinders_to_vector_feature(
+                    cyls, color=color, symbol_type=f"Stop: {label}"
+                )
+                if vf is not None:
+                    vf.cluster_reference = result_uid
+                    extras.append((f"stop_{reason}", vf))
 
         if extras:
             result_node = controller.get_node(result_uid)
@@ -397,8 +421,17 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
         n_feature = int((labels >= 0).sum())
         n_rest = len(labels) - n_feature
+
+        # Per-line stop reasons: why each end of each line stopped growing.
+        stop_lines = []
+        for k, line in enumerate(lines):
+            reasons = [STOP_REASONS.get(r, (r, None))[0] for r, _ in line.end_cylinders]
+            if reasons:
+                stop_lines.append(f"Line {k + 1}: stopped on {', '.join(reasons)}")
+        stop_summary = ("\n\nStop reasons:\n" + "\n".join(stop_lines)) if stop_lines else ""
+
         QMessageBox.information(
             main_window, "Linear Region Growing Complete",
             f"Grew {len(lines)} line(s) — {n_feature:,} feature points, "
-            f"{n_rest:,} remaining."
+            f"{n_rest:,} remaining." + stop_summary
         )

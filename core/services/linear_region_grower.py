@@ -51,9 +51,9 @@ _CONSUME_FRAC = 0.5
 #   centerline:    (M, 3) float32 ordered polyline down the line, or None (no
 #                  centerline for the linearity-connected mode / empty growth).
 #   cylinders:     list of (tip, direction, radius, length) search cylinders.
-#   end_cylinders: the last search cylinder from each march direction — the
-#                  cylinder at each end of the line where growth stopped. Up to
-#                  two per line (one per end); shows why the march ended there.
+#   end_cylinders: list of (stop_reason, cylinder) for each march direction —
+#                  the last cylinder at each end of the line plus WHY growth
+#                  stopped there (a STOP_* key). Up to two per line (one per end).
 GrownLine = namedtuple(
     "GrownLine", ["indices", "centerline", "cylinders", "end_cylinders"]
 )
@@ -73,6 +73,9 @@ class LinearRegionGrower:
         cylinder_length: Axis-trace search cylinder length per step (m).
         overlap: Fraction (0–0.9) each step's cylinder overlaps the previous; the
             tip advances by (1 - overlap) of a cylinder length per step.
+        reach_factor: Search reach as a multiple of *cylinder_length* (>= 1). The
+            march looks this far ahead for the next points, so a short fit window
+            still bridges gaps in fragmented features. 1.0 = no bridging.
         min_points: Stop the axis march if fewer points fall in the cylinder.
         max_angle_deg: Max direction change per step before stopping (m).
         max_steps: Safety cap on axis-march steps per direction.
@@ -94,6 +97,7 @@ class LinearRegionGrower:
         cylinder_radius: float = 0.03,
         cylinder_length: float = 0.5,
         overlap: float = 0.0,
+        reach_factor: float = 3.0,
         min_points: int = 5,
         max_angle_deg: float = 20.0,
         max_steps: int = 500,
@@ -111,6 +115,10 @@ class LinearRegionGrower:
         self.cylinder_radius = cylinder_radius
         self.cylinder_length = cylinder_length
         self.overlap = overlap
+        # Search reach as a multiple of the fit window. reach >= cylinder_length,
+        # so a short window (curve fidelity) can still look far enough ahead to
+        # bridge gaps in fragmented features. 1.0 disables bridging.
+        self.reach_factor = max(1.0, reach_factor)
         self.min_points = min_points
         self.max_angle_cos = np.cos(np.radians(max_angle_deg))
         self.max_steps = max_steps
@@ -338,84 +346,145 @@ class LinearRegionGrower:
     def _march(self, tip, direction, use_linearity_gate) -> set:
         collected = set()
         start_n = len(self.debug_cylinders)
-        half_len = self.cylinder_length / 2.0
-        search_radius = np.sqrt(self.cylinder_radius ** 2 + half_len ** 2)
+        # The fit window is one cylinder_length; the search reach looks further so
+        # a short window can still bridge gaps in fragmented features.
+        reach = self.cylinder_length * self.reach_factor
+        reach_half = reach / 2.0
+        reach_radius = np.sqrt(self.cylinder_radius ** 2 + reach_half ** 2)
 
         current_tip = np.asarray(tip, dtype=float).copy()
         current_dir = np.asarray(direction, dtype=float).copy()
 
+        # Why this direction stopped. Defaults to the step cap: if the loop runs
+        # all max_steps without breaking, that is the reason. Otherwise each break
+        # below sets its own reason before stopping.
+        reason = STOP_STEP_CAP
+
         for _ in range(self.max_steps):
-            # Place the search centre ahead of the current tip.
-            centre = current_tip + half_len * current_dir
-            candidate_idx = self.kdtree.query_ball_point(centre, search_radius)
+            # Search the tube ahead out to the full reach (not just the fit
+            # window), so we can see points across a gap.
+            centre = current_tip + reach_half * current_dir
+            candidate_idx = self.kdtree.query_ball_point(centre, reach_radius)
             if not candidate_idx:
+                reason = STOP_EMPTY_SPACE  # nothing at all within reach
                 break
 
             candidate_idx = np.asarray(candidate_idx, dtype=np.intp)
             pts = self.all_points[candidate_idx]
 
-            # Keep points inside the forward half-cylinder.
+            # Project onto the CURRENT axis. perp_dist is each point's distance to
+            # that axis; it gates the tube radius and (tighter) on-feature status.
             vecs = pts - current_tip
             along = vecs @ current_dir
-            length_mask = (along > 0) & (along < self.cylinder_length)
             perp = vecs - np.outer(along, current_dir)
-            radius_mask = np.linalg.norm(perp, axis=1) < self.cylinder_radius
-            valid_mask = length_mask & radius_mask
+            perp_dist = np.linalg.norm(perp, axis=1)
 
+            tube_mask = (along > 0) & (along <= reach) & (perp_dist < self.cylinder_radius)
             if use_linearity_gate:
-                valid_mask &= self.linearity[candidate_idx] >= self.linearity_threshold
-
-            if np.count_nonzero(valid_mask) < self.min_points:
+                tube_mask &= self.linearity[candidate_idx] >= self.linearity_threshold
+            if not np.any(tube_mask):
+                reason = STOP_EMPTY_SPACE
                 break
 
-            valid_idx = candidate_idx[valid_mask]
-            valid_pts = pts[valid_mask]
+            # Points that hug the CURRENT heading (within the fit threshold of the
+            # axis). Gating by the known direction — instead of a FREE per-step
+            # RANSAC — stops the fit locking onto a denser off-axis clutter chord
+            # (a crossing feature, a pole, the surface the feature sits on).
+            on_axis_mask = tube_mask & (perp_dist < self.ransac_threshold)
 
-            new_model, inlier_mask = self._fit_line(
-                valid_pts, min_inlier_ratio=0.2
-            )
-            if new_model is None:
-                break
+            # Split the tube into the near fit window and the far reach zone.
+            near_mask = tube_mask & (along <= self.cylinder_length)
+            near_on_axis = near_mask & on_axis_mask
 
-            new_dir = new_model.direction
-            if np.dot(new_dir, current_dir) < 0:
-                new_dir = -new_dir
-            # Stop on a sharp bend (e.g. a pole or feature end).
-            if np.dot(new_dir, current_dir) < self.max_angle_cos:
-                break
+            if np.count_nonzero(near_mask) >= self.min_points:
+                # Enough points in the near window to take a normal fitting step.
+                if np.count_nonzero(near_on_axis) < self.min_points:
+                    # Points ahead, but none continue straight along the current
+                    # heading: the feature turned away (or only clutter is ahead).
+                    reason = STOP_SHARP_BEND
+                    break
 
-            inlier_idx = valid_idx[inlier_mask]
-            collected.update(int(i) for i in inlier_idx)
+                feat_pts = pts[near_on_axis]
+                # Plain variance-weighted PCA. It maximizes spread, so it already
+                # (a) prefers the longest-extent structure in the window — the
+                # "fit length" term — and (b) down-weights a compact dense near
+                # cluster (low spread = low leverage), so a stub/bracket near the
+                # seed cannot hijack the heading. Forcing equal weight per
+                # along-axis section (density normalization) was measured to make
+                # this WORSE by re-inflating exactly such compact off-axis
+                # clusters, so it is deliberately not used (see DECISIONS).
+                new_dir = self._principal_axis(feat_pts)
+                if np.dot(new_dir, current_dir) < 0:
+                    new_dir = -new_dir
+                # Stop on a sharp bend (e.g. a pole or feature end).
+                if np.dot(new_dir, current_dir) < self.max_angle_cos:
+                    reason = STOP_SHARP_BEND  # direction turned more than max_angle
+                    break
+                new_point = feat_pts.mean(axis=0)  # a point on the local feature
 
-            # Record the EXACT selection cylinder this step searched: base at the
-            # current tip, axis along the current search direction, full
-            # cylinder_length and cylinder_radius. This is precisely the forward
-            # half-cylinder the filter above selected points from, so the drawn
-            # cylinder matches the real selection region — even where consecutive
-            # cylinders overlap (overlap > 0) or step across a bend.
-            self.debug_cylinders.append(
-                (current_tip.copy(), current_dir.copy(),
-                 self.cylinder_radius, self.cylinder_length)
-            )
+                # Collect the near tube points within the fit threshold of the
+                # UPDATED axis (through new_point along new_dir). The direction was
+                # already chosen robustly above, so collecting against the refined
+                # axis cannot be pulled onto clutter; it just hugs curves fully.
+                # Bounded to the fit window so we never scoop the far cluster early.
+                near_idx = candidate_idx[near_mask]
+                rel = pts[near_mask] - new_point
+                along_new = rel @ new_dir
+                perp_new = np.linalg.norm(rel - np.outer(along_new, new_dir), axis=1)
+                collected.update(
+                    int(i) for i in near_idx[perp_new < self.ransac_threshold]
+                )
 
-            # Advance one step. The step is (1 - overlap) of a cylinder length.
-            # Re-project the new tip onto the freshly fitted local axis so the
-            # march stays ON the feature through curves (instead of drifting to
-            # the outside of each bend). Both the old and new tips lie on local
-            # fit lines — i.e. on the cable — so the centerline runs down it.
-            step = self.cylinder_length * (1.0 - self.overlap)
-            foot_t = float((current_tip - new_model.point) @ new_dir)
-            next_tip = new_model.point + (foot_t + step) * new_dir
-            self.debug_lines.append((current_tip.copy(), next_tip.copy()))
+                # Record the EXACT selection cylinder this step searched: base at
+                # the current tip, axis along the current search direction, full
+                # cylinder_length and cylinder_radius — so the drawn cylinder
+                # matches the real selection region.
+                self.debug_cylinders.append(
+                    (current_tip.copy(), current_dir.copy(),
+                     self.cylinder_radius, self.cylinder_length)
+                )
 
-            current_tip = next_tip
-            current_dir = new_dir
+                # Advance one step. The step is (1 - overlap) of a cylinder length.
+                # Re-project the new tip onto the local feature so the march stays
+                # ON the feature through curves instead of drifting outward.
+                step = self.cylinder_length * (1.0 - self.overlap)
+                foot_t = float((current_tip - new_point) @ new_dir)
+                next_tip = new_point + (foot_t + step) * new_dir
+                self.debug_lines.append((current_tip.copy(), next_tip.copy()))
+
+                current_tip = next_tip
+                current_dir = new_dir
+
+            else:
+                # Near window essentially empty: a gap (or the end). Keep any
+                # on-axis points we do have near — they belong to the line even if
+                # too few to fit.
+                collected.update(int(i) for i in candidate_idx[near_on_axis])
+
+                # Bridge the gap only toward a real collinear cluster: require at
+                # least min_points on-axis points somewhere in the far reach zone.
+                # The lateral on-axis gate means this can only follow the SAME line
+                # longitudinally, never hop onto a parallel neighbour.
+                far_on_axis = on_axis_mask & (along > self.cylinder_length)
+                if np.count_nonzero(far_on_axis) < self.min_points:
+                    reason = STOP_TOO_FEW_POINTS  # nothing collinear within reach
+                    break
+
+                # Jump the tip forward to just before the nearest far point (keep
+                # the heading — there is no data in the gap to re-fit). Landing the
+                # nearest point a little inside the fit window lets the next
+                # iteration capture the whole cluster and fit it normally.
+                a_next = float(along[far_on_axis].min())
+                jump = a_next - 0.1 * self.cylinder_length
+                next_tip = current_tip + jump * current_dir
+                self.debug_lines.append((current_tip.copy(), next_tip.copy()))
+                current_tip = next_tip
 
         # The last cylinder searched in this direction is the stop point at this
-        # end of the line — the march ended just beyond it (too few points, a
-        # sharp bend, or empty space). Record it so the end can be drawn.
+        # end of the line — the march ended just beyond it. Record it together
+        # with WHY it stopped (reason), so ends can be split by reason and drawn.
         if len(self.debug_cylinders) > start_n:
-            self.debug_end_cylinders.append(self.debug_cylinders[-1])
+            self.debug_end_cylinders.append((reason, self.debug_cylinders[-1]))
 
         return collected
 
@@ -471,7 +540,21 @@ class LinearRegionGrower:
 
 _CYLINDER_COLOR = np.array([0.1, 0.7, 1.0], dtype=np.float32)      # light blue
 _CENTERLINE_COLOR = np.array([1.0, 0.9, 0.1], dtype=np.float32)    # yellow
-_END_CYLINDER_COLOR = np.array([1.0, 0.1, 0.1], dtype=np.float32)  # red (stop)
+
+# Why an axis march stopped at an end. One key per break condition in _march.
+# Each maps to (human label, RGB colour) so ends can be split into one coloured
+# branch per reason and named in the summary.
+STOP_TOO_FEW_POINTS = "too_few_points"
+STOP_SHARP_BEND = "sharp_bend"
+STOP_EMPTY_SPACE = "empty_space"
+STOP_STEP_CAP = "step_cap"
+
+STOP_REASONS = {
+    STOP_TOO_FEW_POINTS: ("too few points", np.array([1.0, 0.1, 0.1], dtype=np.float32)),   # red
+    STOP_SHARP_BEND:     ("sharp bend",      np.array([1.0, 0.5, 0.0], dtype=np.float32)),   # orange
+    STOP_EMPTY_SPACE:    ("empty space",     np.array([1.0, 0.0, 1.0], dtype=np.float32)),   # magenta
+    STOP_STEP_CAP:       ("step cap",        np.array([1.0, 1.0, 1.0], dtype=np.float32)),   # white
+}
 
 
 def _perp_basis(direction):
