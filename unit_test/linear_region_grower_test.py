@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from core.services.linear_region_grower import (
     LinearRegionGrower, AXIS_TRACE, LINEARITY_CONNECTED, HYBRID,
-    debug_vector_features,
+    debug_vector_features, STOP_SHARP_BEND,
 )
 
 
@@ -201,6 +201,34 @@ def test_gap_bridging_crosses_fragment_gap():
     assert max_x1 < 10.5, f"reach=1 should stop at the gap but reached {max_x1:.1f}"
 
 
+def test_noisy_patch_not_mistaken_for_bend():
+    """A dead-straight line with a laterally-scattered patch in the middle (points
+    present in the tube, but spread beyond the fit threshold of the axis). The old
+    count-based test flagged this as a sharp bend and stopped mid-line; the march
+    must instead recognise the line continues straight and trace through, and no
+    end must be labelled a sharp bend."""
+    rng = np.random.default_rng(31)
+    n = 400
+    x = np.linspace(0, 20, n)
+    line = np.stack([x, np.zeros(n), np.zeros(n)], axis=1)
+    line += rng.normal(0, 0.004, line.shape)
+    patch = (x > 9.5) & (x < 10.5)                       # scatter this stretch
+    m = int(patch.sum())
+    line[patch, 1] = np.sign(rng.uniform(-1, 1, m)) * rng.uniform(0.06, 0.09, m)
+    seed = np.where(x < 1.0)[0]
+
+    g = LinearRegionGrower(
+        line, mode=AXIS_TRACE, ransac_threshold=0.05, cylinder_radius=0.1,
+        cylinder_length=0.5, reach_factor=3.0, min_points=3, max_angle_deg=20.0,
+    )
+    grown = sorted(g.grow(seed))
+    max_x = float(line[grown, 0].max())
+    reasons = [r for r, _ in g.debug_end_cylinders]
+    print(f"noisy patch: reached x={max_x:.1f}, stop reasons={reasons}")
+    assert max_x > 18.0, f"march stopped at the noisy patch (reached x={max_x:.1f})"
+    assert STOP_SHARP_BEND not in reasons, "noisy straight patch mislabelled a bend"
+
+
 def test_gap_bridging_stays_on_own_line():
     """Two parallel lines 0.5 m apart, the near one broken by a gap. Bridging the
     gap must follow the SAME line longitudinally, never hop to the neighbour."""
@@ -384,6 +412,7 @@ if __name__ == "__main__":
     test_axis_trace_survives_clutter_in_tube()
     test_plain_pca_step_resists_dense_near_patch()
     test_gap_bridging_crosses_fragment_gap()
+    test_noisy_patch_not_mistaken_for_bend()
     test_gap_bridging_stays_on_own_line()
     test_linearity_connected_stays_on_feature()
     test_linearity_mode_requires_linearity()

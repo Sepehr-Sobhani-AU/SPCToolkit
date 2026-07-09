@@ -396,14 +396,13 @@ class LinearRegionGrower:
             near_mask = tube_mask & (along <= self.cylinder_length)
             near_on_axis = near_mask & on_axis_mask
 
-            if np.count_nonzero(near_mask) >= self.min_points:
-                # Enough points in the near window to take a normal fitting step.
-                if np.count_nonzero(near_on_axis) < self.min_points:
-                    # Points ahead, but none continue straight along the current
-                    # heading: the feature turned away (or only clutter is ahead).
-                    reason = STOP_SHARP_BEND
-                    break
-
+            if np.count_nonzero(near_on_axis) >= self.min_points:
+                # Enough points hug the current heading to take a normal fitting
+                # step. A genuine turn is detected below by the FITTED direction,
+                # never by a point count — a sparse or laterally-scattered straight
+                # patch (few points tight on the axis, but the line clearly
+                # continues) must NOT be mistaken for a bend. That case falls
+                # through to the reach branch, which bridges past it.
                 feat_pts = pts[near_on_axis]
                 # Plain variance-weighted PCA. It maximizes spread, so it already
                 # (a) prefers the longest-extent structure in the window — the
@@ -456,15 +455,19 @@ class LinearRegionGrower:
                 current_dir = new_dir
 
             else:
-                # Near window essentially empty: a gap (or the end). Keep any
-                # on-axis points we do have near — they belong to the line even if
-                # too few to fit.
+                # Too few points hug the heading in the near window: an empty gap,
+                # a sparse/scattered patch, or a genuine turn. Keep any near
+                # on-axis points (they belong to the line) and look further ahead
+                # ALONG THE CURRENT HEADING within the search reach to tell these
+                # apart — a straight line still has collinear points beyond the
+                # patch, a real bend does not.
                 collected.update(int(i) for i in candidate_idx[near_on_axis])
 
-                # Bridge the gap only toward a real collinear cluster: require at
-                # least min_points on-axis points somewhere in the far reach zone.
-                # The lateral on-axis gate means this can only follow the SAME line
-                # longitudinally, never hop onto a parallel neighbour.
+                # Bridge only toward a real collinear cluster: require at least
+                # min_points on-axis points somewhere in the far reach zone. The
+                # lateral on-axis gate means this can only follow the SAME line
+                # longitudinally, never hop onto a parallel neighbour, and a real
+                # bend (points turned off the heading) finds none and stops.
                 far_on_axis = on_axis_mask & (along > self.cylinder_length)
                 if np.count_nonzero(far_on_axis) < self.min_points:
                     reason = STOP_TOO_FEW_POINTS  # nothing collinear within reach
