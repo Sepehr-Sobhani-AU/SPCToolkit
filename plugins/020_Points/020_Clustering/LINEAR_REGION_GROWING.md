@@ -22,6 +22,8 @@ The same `LinearRegionGrower` (in `AXIS_TRACE` mode) backs the `power_line_detec
 
 One selection grows one feature. To trace several features, run the plugin once per feature. After running, the input branch is hidden and the result is shown.
 
+**Progress & cancellation:** growing runs on a background thread (like [Surface Region Growing](SURFACE_REGION_GROWING.md)). While it runs the menus and tree are disabled, a status-bar progress bar reports how many lines have been traced, and a **Cancel** button stops the trace early — the lines grown so far are still saved as a result branch, and the completion message notes that it was cancelled. The 3D viewer stays interactive for camera manipulation throughout.
+
 ---
 
 ## Growth modes
