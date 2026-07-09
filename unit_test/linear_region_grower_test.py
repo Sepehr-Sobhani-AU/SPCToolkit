@@ -201,6 +201,36 @@ def test_gap_bridging_crosses_fragment_gap():
     assert max_x1 < 10.5, f"reach=1 should stop at the gap but reached {max_x1:.1f}"
 
 
+def test_wide_band_axis_stays_centred():
+    """A wide, laterally-scattered straight band traced from a slightly off-centre,
+    tilted heading. A single gate+fit per step selects a biased slice on one side
+    and walks the axis off the band (stopping early with a false 'too few points'
+    and drawing the cylinders off the line). The per-step re-centring must keep the
+    axis on the band centre and trace the whole length."""
+    rng = np.random.default_rng(41)
+    n = 1200
+    x = np.linspace(0, 20, n)
+    band = np.stack([x, rng.normal(0, 0.06, n), rng.normal(0, 0.01, n)], axis=1)
+
+    g = LinearRegionGrower(
+        band, mode=AXIS_TRACE, ransac_threshold=0.03, cylinder_radius=0.15,
+        cylinder_length=0.5, reach_factor=3.0, min_points=5, max_angle_deg=20.0,
+    )
+    # Deliberately biased start: tip off-centre in y, heading tilted a few degrees.
+    tilt = np.radians(5.0)
+    grown = sorted(g._march(np.array([0.2, 0.02, 0.0]),
+                            np.array([np.cos(tilt), np.sin(tilt), 0.0]), False))
+    reached = float(band[grown, 0].max()) if grown else 0.0
+    base_off = max(float(np.hypot(b[1], b[2])) for b, *_ in g.debug_cylinders)
+    print(f"wide band: reached x={reached:.1f}, "
+          f"max cylinder centre offset {base_off:.3f} m")
+    # A centred axis stays within centroid sampling noise (~band_sigma/sqrt(pts
+    # per window) ~= 0.01 m, a few times that at worst) of y=z=0; a drifting axis
+    # walks off toward cylinder_radius (0.15 m) and stops early.
+    assert reached > 18.0, f"axis drifted / stopped early (reached x={reached:.1f})"
+    assert base_off < 0.06, f"cylinder axis drifted {base_off:.3f} m off the band centre"
+
+
 def test_noisy_patch_not_mistaken_for_bend():
     """A dead-straight line with a laterally-scattered patch in the middle (points
     present in the tube, but spread beyond the fit threshold of the axis). The old
@@ -412,6 +442,7 @@ if __name__ == "__main__":
     test_axis_trace_survives_clutter_in_tube()
     test_plain_pca_step_resists_dense_near_patch()
     test_gap_bridging_crosses_fragment_gap()
+    test_wide_band_axis_stays_centred()
     test_noisy_patch_not_mistaken_for_bend()
     test_gap_bridging_stays_on_own_line()
     test_linearity_connected_stays_on_feature()

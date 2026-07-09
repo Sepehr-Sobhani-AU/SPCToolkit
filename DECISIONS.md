@@ -6,6 +6,24 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-07-09 — Linear march: fit the per-step axis from the full band, not a threshold-wide stripe
+The per-step axis (direction + centre) is fit from ALL near-tube points (within
+`cylinder_radius`), not from the `ransac_threshold`-wide "on-axis" subset. Gating
+the fit by the tight threshold silently assumes the feature is thinner than the
+threshold; on a real line whose lateral scatter EXCEEDS it, the threshold picks a
+diagonal *stripe* through the band and PCA follows that stripe's tilt, so the axis
+walks off to one side, the drawn cylinder hangs off the points, and the march
+stops early with a false "too few points" (both symptoms the user hit). Fitting
+the whole band gives its true long axis (along-extent dwarfs lateral scatter) and
+a centroid that re-centres the tip each step; `ransac_threshold` is kept only to
+pick members and clutter beyond `cylinder_radius` is excluded by the tube. This
+does not reintroduce the old free-RANSAC chord-locking (that was minimal-sample
+RANSAC; global PCA of a symmetric band/annulus still returns the long axis). Gap
+bridging likewise looks for the continuation within the tube radius, not the
+stripe, so wide bands are not falsely stopped at minor sparsities. Search
+cylinders are now drawn on the fitted (centred) axis so the debug overlay sits on
+the points.
+
 ## 2026-07-09 — Linear march: decouple fit-length from reach; keep plain PCA (reject density normalization)
 Two follow-ups to the prior-gated march. (1) **Fit window vs search reach are
 decoupled** via a `reach_factor` knob: `cylinder_length` is now only the fit

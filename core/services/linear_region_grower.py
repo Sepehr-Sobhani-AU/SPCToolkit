@@ -396,63 +396,50 @@ class LinearRegionGrower:
             near_mask = tube_mask & (along <= self.cylinder_length)
             near_on_axis = near_mask & on_axis_mask
 
-            if np.count_nonzero(near_on_axis) >= self.min_points:
-                # Enough points hug the current heading to take a normal fitting
-                # step. A genuine turn is detected below by the FITTED direction,
-                # never by a point count — a sparse or laterally-scattered straight
-                # patch (few points tight on the axis, but the line clearly
-                # continues) must NOT be mistaken for a bend. That case falls
-                # through to the reach branch, which bridges past it.
-                feat_pts = pts[near_on_axis]
-                # Plain variance-weighted PCA. It maximizes spread, so it already
-                # (a) prefers the longest-extent structure in the window — the
-                # "fit length" term — and (b) down-weights a compact dense near
-                # cluster (low spread = low leverage), so a stub/bracket near the
-                # seed cannot hijack the heading. Forcing equal weight per
-                # along-axis section (density normalization) was measured to make
-                # this WORSE by re-inflating exactly such compact off-axis
-                # clusters, so it is deliberately not used (see DECISIONS).
-                new_dir = self._principal_axis(feat_pts)
-                if np.dot(new_dir, current_dir) < 0:
-                    new_dir = -new_dir
-                # Stop on a sharp bend (e.g. a pole or feature end).
-                if np.dot(new_dir, current_dir) < self.max_angle_cos:
+            if np.count_nonzero(near_mask) >= self.min_points:
+                # Fit direction AND centre from the FULL near band (cylinder_radius),
+                # not a thin ransac_threshold stripe. This is the crux of not
+                # drifting off the line: on a band WIDER than the threshold, gating
+                # the fit by the threshold selects a diagonal stripe whose PCA
+                # follows the stripe's tilt, so the axis walks off to one side (and
+                # the drawn cylinder with it) and eventually loses the line. PCA of
+                # the whole band returns its true long axis (the along-extent dwarfs
+                # the lateral scatter) and its centroid is the band centre, so the
+                # tip re-centres each step. Clutter beyond cylinder_radius is
+                # excluded by the tube; ransac_threshold is used only to pick members
+                # below. (Plain variance-weighted PCA already supplies the "fit
+                # length" term and discounts a compact off-axis stub; density
+                # normalization was measured to make that worse — see DECISIONS.)
+                band = pts[near_mask]
+                fit_dir = self._principal_axis(band)
+                if np.dot(fit_dir, current_dir) < 0:
+                    fit_dir = -fit_dir
+                fit_point = band.mean(axis=0)  # the band centre
+
+                # Stop on a genuine (measured) bend of the fitted axis.
+                if np.dot(fit_dir, current_dir) < self.max_angle_cos:
                     reason = STOP_SHARP_BEND  # direction turned more than max_angle
                     break
-                new_point = feat_pts.mean(axis=0)  # a point on the local feature
 
-                # Collect the near tube points within the fit threshold of the
-                # UPDATED axis (through new_point along new_dir). The direction was
-                # already chosen robustly above, so collecting against the refined
-                # axis cannot be pulled onto clutter; it just hugs curves fully.
-                # Bounded to the fit window so we never scoop the far cluster early.
+                # Members: near band points within the fit threshold of the axis.
                 near_idx = candidate_idx[near_mask]
-                rel = pts[near_mask] - new_point
-                along_new = rel @ new_dir
-                perp_new = np.linalg.norm(rel - np.outer(along_new, new_dir), axis=1)
-                collected.update(
-                    int(i) for i in near_idx[perp_new < self.ransac_threshold]
-                )
+                rel = band - fit_point
+                perp_m = np.linalg.norm(rel - np.outer(rel @ fit_dir, fit_dir), axis=1)
+                collected.update(int(i) for i in near_idx[perp_m < self.ransac_threshold])
 
-                # Record the EXACT selection cylinder this step searched: base at
-                # the current tip, axis along the current search direction, full
-                # cylinder_length and cylinder_radius — so the drawn cylinder
-                # matches the real selection region.
+                # Draw the search cylinder on the fitted (centred) axis — base at
+                # the foot of the current tip on it — so it sits ON the points, not
+                # off to one side, and advance along that axis from the band centre.
+                base = fit_point + float((current_tip - fit_point) @ fit_dir) * fit_dir
                 self.debug_cylinders.append(
-                    (current_tip.copy(), current_dir.copy(),
-                     self.cylinder_radius, self.cylinder_length)
+                    (base, fit_dir.copy(), self.cylinder_radius, self.cylinder_length)
                 )
-
-                # Advance one step. The step is (1 - overlap) of a cylinder length.
-                # Re-project the new tip onto the local feature so the march stays
-                # ON the feature through curves instead of drifting outward.
                 step = self.cylinder_length * (1.0 - self.overlap)
-                foot_t = float((current_tip - new_point) @ new_dir)
-                next_tip = new_point + (foot_t + step) * new_dir
-                self.debug_lines.append((current_tip.copy(), next_tip.copy()))
+                next_tip = base + step * fit_dir
+                self.debug_lines.append((base.copy(), next_tip.copy()))
 
                 current_tip = next_tip
-                current_dir = new_dir
+                current_dir = fit_dir
 
             else:
                 # Too few points hug the heading in the near window: an empty gap,
@@ -463,21 +450,24 @@ class LinearRegionGrower:
                 # patch, a real bend does not.
                 collected.update(int(i) for i in candidate_idx[near_on_axis])
 
-                # Bridge only toward a real collinear cluster: require at least
-                # min_points on-axis points somewhere in the far reach zone. The
-                # lateral on-axis gate means this can only follow the SAME line
-                # longitudinally, never hop onto a parallel neighbour, and a real
-                # bend (points turned off the heading) finds none and stops.
-                far_on_axis = on_axis_mask & (along > self.cylinder_length)
-                if np.count_nonzero(far_on_axis) < self.min_points:
-                    reason = STOP_TOO_FEW_POINTS  # nothing collinear within reach
+                # Bridge only toward a real continuation of the band: require at
+                # least min_points somewhere in the far reach zone WITHIN THE TUBE
+                # (cylinder_radius of the current heading, same width used to fit).
+                # The tube gate keeps this on the SAME line longitudinally — a
+                # parallel neighbour beyond the radius is excluded — and a real bend
+                # (points turned off the heading) finds none within the tube and
+                # stops. After the jump the normal step re-fits and re-checks the
+                # bend, so a crossing feature met across the gap is rejected there.
+                far_band = tube_mask & (along > self.cylinder_length)
+                if np.count_nonzero(far_band) < self.min_points:
+                    reason = STOP_TOO_FEW_POINTS  # no band continuation within reach
                     break
 
                 # Jump the tip forward to just before the nearest far point (keep
                 # the heading — there is no data in the gap to re-fit). Landing the
                 # nearest point a little inside the fit window lets the next
                 # iteration capture the whole cluster and fit it normally.
-                a_next = float(along[far_on_axis].min())
+                a_next = float(along[far_band].min())
                 jump = a_next - 0.1 * self.cylinder_length
                 next_tip = current_tip + jump * current_dir
                 self.debug_lines.append((current_tip.copy(), next_tip.copy()))
