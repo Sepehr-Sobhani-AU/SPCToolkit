@@ -416,6 +416,53 @@ def test_grow_lines_joins_split_groups():
           f"(centerline spans {span_x:.1f} m)")
 
 
+class _Flag:
+    """Minimal threading.Event stand-in: only .is_set() is needed by the grower."""
+    def __init__(self, value=False):
+        self._v = value
+
+    def is_set(self):
+        return self._v
+
+
+def test_grow_lines_progress_cb_called_per_line():
+    """progress_cb fires once per grown line with monotonic 'done' counts."""
+    points, a_idx, b_idx = _two_lines_cloud()
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.1, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    calls = []
+    lines = grower.grow_lines(
+        [a_idx[:8], b_idx[:8]],
+        progress_cb=lambda done, total, msg: calls.append((done, total, msg)),
+    )
+    assert len(calls) == len(lines), (
+        f"expected one progress call per line, got {len(calls)} for {len(lines)} lines"
+    )
+    dones = [c[0] for c in calls]
+    assert dones == sorted(dones) and dones[-1] == len(lines), f"non-monotonic: {dones}"
+    assert all(c[1] == 2 for c in calls), "total should be the initial group count (2)"
+    print(f"grow_lines progress_cb: {len(calls)} call(s), done={dones}")
+
+
+def test_grow_lines_cancel_returns_partial():
+    """A pre-set cancel_event stops growing immediately and returns no lines;
+    an unset event grows normally — proving the event is what gates it."""
+    points, a_idx, b_idx = _two_lines_cloud()
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.1, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    cancelled = grower.grow_lines([a_idx[:8], b_idx[:8]], cancel_event=_Flag(True))
+    assert cancelled == [], f"pre-cancelled grow should return no lines, got {len(cancelled)}"
+    # The cancel handle must be cleared after the call (no leak into later runs).
+    assert grower._cancel_event is None
+    normal = grower.grow_lines([a_idx[:8], b_idx[:8]], cancel_event=_Flag(False))
+    assert len(normal) == 2, f"unset event should grow normally, got {len(normal)}"
+    print("grow_lines cancel: pre-set event returns partial, unset grows normally")
+
+
 def test_debug_vector_features_built():
     points, line_idx = _straight_line_cloud()
     g = LinearRegionGrower(
@@ -451,5 +498,7 @@ if __name__ == "__main__":
     test_grow_lines_keeps_separate_lines()
     test_grow_lines_parallel_offset_not_merged()
     test_grow_lines_joins_split_groups()
+    test_grow_lines_progress_cb_called_per_line()
+    test_grow_lines_cancel_returns_partial()
     test_debug_vector_features_built()
     print("\nAll linear_region_grower tests passed.")

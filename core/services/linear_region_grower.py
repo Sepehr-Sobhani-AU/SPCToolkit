@@ -145,6 +145,12 @@ class LinearRegionGrower:
         self.debug_lines = []
         self.debug_end_cylinders = []
 
+        # Optional cooperative-cancel handle (any object with .is_set()), set for
+        # the duration of a grow_lines() call so the march can bail out promptly
+        # on a long trace. None disables the check. The engine stays GUI-free —
+        # the caller owns the event (e.g. global_variables.global_cancel_event).
+        self._cancel_event = None
+
         self.linearity = None if linearity is None else np.asarray(linearity)
         self.linearity_threshold = linearity_threshold
         self.neighbor_radius = neighbor_radius
@@ -183,7 +189,7 @@ class LinearRegionGrower:
             seed_indices, use_linearity_gate=(self.mode == HYBRID)
         )
 
-    def grow_lines(self, seed_groups) -> list:
+    def grow_lines(self, seed_groups, *, progress_cb=None, cancel_event=None) -> list:
         """
         Grow one line per physical feature, greedily, largest cluster first.
 
@@ -203,39 +209,60 @@ class LinearRegionGrower:
         them) and a line split into many clusters comes out whole (the march
         walks through all of them).
 
+        *progress_cb*, if given, is called ``progress_cb(done, total, message)``
+        after each line — ``done`` lines finished, ``total`` the initial cluster
+        count (an upper bound; consumption shrinks it), ``message`` a short
+        status string. *cancel_event*, if given, is any object with
+        ``.is_set()``; it is polled before each line and inside the march, and
+        when set the method stops early and returns the lines grown so far
+        (partial result). Both default off, so existing callers are unaffected.
+
         Returns a list of ``GrownLine``, one per physical line.
         """
         pool = [np.asarray(g, dtype=np.intp) for g in seed_groups
                 if np.asarray(g).size >= 2]
         lines = []
+        total = len(pool)
+        self._cancel_event = cancel_event
 
-        while pool:
-            # Largest remaining cluster seeds the next line — the most seed
-            # points give the steadiest starting axis.
-            s = int(np.argmax([c.size for c in pool]))
-            seed_cluster = pool.pop(s)
+        try:
+            while pool:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
 
-            # Grow in isolation so this line keeps only its own debug geometry.
-            self.debug_cylinders = []
-            self.debug_lines = []
-            self.debug_end_cylinders = []
-            grown = self.grow(seed_cluster)
-            if grown.size == 0:
-                continue
+                # Largest remaining cluster seeds the next line — the most seed
+                # points give the steadiest starting axis.
+                s = int(np.argmax([c.size for c in pool]))
+                seed_cluster = pool.pop(s)
 
-            centerline = self._join_centerline(list(self.debug_lines))
-            lines.append(GrownLine(np.array(sorted(set(int(i) for i in grown)),
-                                            dtype=np.intp),
-                                   centerline, list(self.debug_cylinders),
-                                   list(self.debug_end_cylinders)))
+                # Grow in isolation so this line keeps only its own debug geometry.
+                self.debug_cylinders = []
+                self.debug_lines = []
+                self.debug_end_cylinders = []
+                grown = self.grow(seed_cluster)
+                if grown.size == 0:
+                    continue
 
-            # Drop clusters this line consumed. A cluster is part of the line if
-            # most of its points were grown into it; clusters merely crossed
-            # (a few shared points at an intersection) are kept for their own
-            # pass. The seed cluster is always consumed (grow includes seeds),
-            # so the loop always shrinks.
-            pool = [c for c in pool
-                    if float(np.mean(np.isin(c, grown))) < _CONSUME_FRAC]
+                centerline = self._join_centerline(list(self.debug_lines))
+                lines.append(GrownLine(np.array(sorted(set(int(i) for i in grown)),
+                                                dtype=np.intp),
+                                       centerline, list(self.debug_cylinders),
+                                       list(self.debug_end_cylinders)))
+
+                if progress_cb is not None:
+                    progress_cb(len(lines), total,
+                                f"Growing lines — {len(lines)} traced, "
+                                f"{len(pool)} seed group(s) left")
+
+                # Drop clusters this line consumed. A cluster is part of the line if
+                # most of its points were grown into it; clusters merely crossed
+                # (a few shared points at an intersection) are kept for their own
+                # pass. The seed cluster is always consumed (grow includes seeds),
+                # so the loop always shrinks.
+                pool = [c for c in pool
+                        if float(np.mean(np.isin(c, grown))) < _CONSUME_FRAC]
+        finally:
+            self._cancel_event = None
         return lines
 
     def _join_centerline(self, segments):
@@ -383,6 +410,8 @@ class LinearRegionGrower:
         reason = STOP_STEP_CAP
 
         for _ in range(self.max_steps):
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                break  # cooperative cancel — keep whatever was collected so far
             tube = self._query_tube(
                 current_tip, current_dir, reach, reach_half, reach_radius,
                 use_linearity_gate,
