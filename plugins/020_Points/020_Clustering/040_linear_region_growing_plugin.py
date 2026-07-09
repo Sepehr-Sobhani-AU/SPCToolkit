@@ -28,10 +28,13 @@ Growth modes:
   recomputed here.
 """
 
+import time
+import threading
+
 import numpy as np
 from scipy.spatial import cKDTree
 from typing import Dict, Any
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QMessageBox, QApplication
 from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
@@ -215,25 +218,89 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         tree_widget = global_variables.global_tree_structure_widget
 
         mode = _MODE_MAP.get(params.get("growth_mode", "Axis Trace"), AXIS_TRACE)
-        needs_linearity = mode in (LINEARITY_CONNECTED, HYBRID)
 
+        # --- Validate + reconstruct the selected branch ---
+        prep = self._validate_and_reconstruct(controller, viewer_widget, main_window, mode, params)
+        if prep is None:
+            return
+        selected_uid, node, point_cloud, linearity = prep
+        pc_points = point_cloud.points
+
+        # --- Map the picked seeds and group them into separate lines ---
+        seeds = self._resolve_seed_groups(viewer_widget, pc_points, params, main_window)
+        if seeds is None:
+            return
+        seed_groups, tree_kd = seeds
+
+        # --- Grow one line per group on a background thread (progress + cancel) ---
+        grower = LinearRegionGrower(
+            all_points=pc_points,
+            kdtree=tree_kd,
+            mode=mode,
+            ransac_threshold=params.get("ransac_threshold", 0.03),
+            max_iterations=params.get("ransac_iterations", 100),
+            cylinder_radius=params.get("cylinder_radius", 0.03),
+            cylinder_length=params.get("cylinder_length", 0.5),
+            reach_factor=params.get("reach_factor", 3.0),
+            overlap=params.get("cylinder_overlap", 0.0) / 100.0,
+            min_points=params.get("min_points", 5),
+            max_angle_deg=params.get("max_angle", 20.0),
+            linearity=linearity,
+            linearity_threshold=params.get("linearity_threshold", 0.4),
+            neighbor_k=params.get("neighbor_k", 16),
+        )
+        lines, stopped_early = self._grow_threaded(main_window, grower, seed_groups)
+        if lines is None:  # error during grow — message already shown
+            return
+        if not lines:
+            QMessageBox.warning(main_window, "No Feature Points",
+                                "Growing did not find any points. "
+                                "Try adjusting the parameters." if not stopped_early
+                                else "Cancelled before any line was grown.")
+            return
+
+        # --- Build the result Clusters branch and optional debug branches ---
+        result_uid, labels = self._build_result_branch(
+            controller, tree_widget, selected_uid, node, pc_points, lines, params
+        )
+        self._build_debug_branches(controller, tree_widget, node, result_uid, lines, params)
+
+        # --- Render and clear selection ---
+        main_window.render_visible_data(zoom_extent=False)
+        viewer_widget.picked_points_indices.clear()
+        viewer_widget._selection_polygons.clear()
+        viewer_widget.update()
+
+        self._show_summary(main_window, labels, lines, stopped_early)
+
+    # ------------------------------------------------------------------ #
+    # execute() steps                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _validate_and_reconstruct(self, controller, viewer_widget, main_window, mode, params):
+        """Validate the selection + picks, reconstruct the branch, and consume
+        upstream linearity for the linearity modes.
+
+        Returns ``(selected_uid, node, point_cloud, linearity)`` or ``None`` when
+        a check fails (a QMessageBox has been shown).
+        """
         # --- Validate: one branch selected ---
         selected_branches = controller.selected_branches
         if not selected_branches:
             QMessageBox.warning(main_window, "No Branch Selected",
                                 "Please select a PointCloud branch first.")
-            return
+            return None
         if len(selected_branches) > 1:
             QMessageBox.warning(main_window, "Multiple Branches",
                                 "Please select only ONE branch at a time.")
-            return
+            return None
 
         selected_uid = selected_branches[0]
         node = controller.get_node(selected_uid)
         if node is None:
             QMessageBox.warning(main_window, "Invalid Branch",
                                 "Could not find the selected branch.")
-            return
+            return None
 
         # --- Validate: enough seed points selected ---
         selected_indices = viewer_widget.picked_points_indices
@@ -242,7 +309,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                 f"Please select at least {_MIN_SEEDS} seed points along "
                                 "the linear feature using polygon selection (P key) "
                                 "or Shift+Click.")
-            return
+            return None
 
         # --- Reconstruct selected branch ---
         try:
@@ -250,13 +317,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         except Exception as e:
             QMessageBox.critical(main_window, "Reconstruction Error",
                                  f"Failed to reconstruct branch:\n{str(e)}")
-            return
-
-        pc_points = point_cloud.points
+            return None
 
         # --- Consume upstream linearity for the linearity-based modes ---
         linearity = None
-        if needs_linearity:
+        if mode in (LINEARITY_CONNECTED, HYBRID):
             eigenvalues = point_cloud.attributes.get("eigenvalues")
             if eigenvalues is None:
                 QMessageBox.warning(
@@ -264,10 +329,20 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                     f"'{params.get('growth_mode')}' mode needs per-point linearity.\n"
                     "Run Compute Eigenvalues on this branch first, then select the "
                     "eigenvalues node and re-run.")
-                return
+                return None
             linearity = EigenvalueUtils().compute_geometric_features(eigenvalues)["linearity"]
 
+        return selected_uid, node, point_cloud, linearity
+
+    def _resolve_seed_groups(self, viewer_widget, pc_points, params, main_window):
+        """Map the picked viewer points to reconstructed-cloud indices (coord
+        match + polygon re-test) and group them into separate lines with DBSCAN.
+
+        Returns ``(seed_groups, tree_kd)`` — the KD-tree is reused by the grower —
+        or ``None`` when no usable seed group is found (a QMessageBox is shown).
+        """
         # --- Map picked points to reconstructed cloud via coordinate matching ---
+        selected_indices = viewer_widget.picked_points_indices
         picked_coords = []
         for idx in selected_indices:
             if idx < len(viewer_widget.points):
@@ -275,7 +350,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         if not picked_coords:
             QMessageBox.warning(main_window, "No Points",
                                 "Could not retrieve coordinates for selected points.")
-            return
+            return None
         picked_coords = np.array(picked_coords, dtype=np.float32)
 
         tree_kd = cKDTree(pc_points)
@@ -293,7 +368,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             QMessageBox.warning(main_window, "Not Enough Points",
                                 f"Only {len(seed_indices)} seed points mapped. "
                                 f"Need at least {_MIN_SEEDS}.")
-            return
+            return None
 
         # --- Group the picked seeds into separate lines (DBSCAN) ---
         seed_pts = pc_points[seed_indices]
@@ -311,33 +386,69 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 main_window, "No Seed Groups",
                 "The picked points did not form any line group. Increase "
                 "'Seed Group Distance' or pick more points along each line.")
-            return
+            return None
 
-        # --- Grow one line per group, joining groups that are the same line ---
-        grower = LinearRegionGrower(
-            all_points=pc_points,
-            kdtree=tree_kd,
-            mode=mode,
-            ransac_threshold=params.get("ransac_threshold", 0.03),
-            max_iterations=params.get("ransac_iterations", 100),
-            cylinder_radius=params.get("cylinder_radius", 0.03),
-            cylinder_length=params.get("cylinder_length", 0.5),
-            reach_factor=params.get("reach_factor", 3.0),
-            overlap=params.get("cylinder_overlap", 0.0) / 100.0,
-            min_points=params.get("min_points", 5),
-            max_angle_deg=params.get("max_angle", 20.0),
-            linearity=linearity,
-            linearity_threshold=params.get("linearity_threshold", 0.4),
-            neighbor_k=params.get("neighbor_k", 16),
-        )
-        lines = grower.grow_lines(seed_groups)
-        if not lines:
-            QMessageBox.warning(main_window, "No Feature Points",
-                                "Growing did not find any points. "
-                                "Try adjusting the parameters.")
-            return
+        return seed_groups, tree_kd
 
-        # --- Build one Clusters branch: label per line, -1 = rest ---
+    def _grow_threaded(self, main_window, grower, seed_groups):
+        """Run ``grower.grow_lines`` on a daemon thread with a status-bar progress
+        bar and cancel button (matching surface_region_growing's UX).
+
+        Returns ``(lines, stopped_early)``. ``lines`` is ``None`` on error (a
+        QMessageBox has been shown); on cancel it holds whatever was grown before
+        the user stopped, and ``stopped_early`` is True.
+        """
+        main_window.disable_menus()
+        main_window.disable_tree()
+        main_window.show_progress("Growing linear features...")
+        main_window.show_cancel_button()  # clears any stale cancel flag
+
+        cancel_event = global_variables.global_cancel_event
+        state = {"lines": None, "error": None, "done": False}
+
+        def _progress(done, total, message):
+            percent = int(100 * done / total) if total else None
+            global_variables.global_progress = (percent, message)
+
+        def _work():
+            try:
+                state["lines"] = grower.grow_lines(
+                    seed_groups, progress_cb=_progress, cancel_event=cancel_event
+                )
+            except Exception as e:
+                state["error"] = str(e)
+            finally:
+                state["done"] = True
+
+        thread = threading.Thread(target=_work, daemon=True)
+        thread.start()
+
+        while not state["done"]:
+            percent, msg = global_variables.global_progress
+            if msg:
+                main_window.show_progress(msg, percent)
+            QApplication.processEvents()
+            time.sleep(0.1)
+
+        # Read the cancel flag BEFORE hide_cancel_button clears it.
+        global_variables.global_progress = (None, "")
+        stopped_early = cancel_event.is_set()
+        main_window.hide_cancel_button()
+        main_window.clear_progress()
+        main_window.enable_menus()
+        main_window.enable_tree()
+
+        if state["error"]:
+            QMessageBox.critical(main_window, "Linear Region Growing Failed",
+                                 state["error"])
+            return None, stopped_early
+        return state["lines"] or [], stopped_early
+
+    def _build_result_branch(self, controller, tree_widget, selected_uid, node,
+                             pc_points, lines, params):
+        """Build the one Clusters branch (label per line, -1 = rest), register it,
+        and toggle visibility (hide input, show result). Returns
+        ``(result_uid, labels)``."""
         labels = np.full(len(pc_points), -1, dtype=np.int32)
         cluster_names = {}
         for k, line in enumerate(lines):
@@ -366,8 +477,12 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         tree_widget.visibility_status[result_uid] = True
         tree_widget.blockSignals(False)
 
-        # --- Optional geometry: one centerlines branch + one cylinders branch,
-        #     each holding all lines (gated by the show_* boxes) ---
+        return result_uid, labels
+
+    def _build_debug_branches(self, controller, tree_widget, node, result_uid, lines, params):
+        """Add the optional debug geometry branches (one centerlines branch, one
+        cylinders branch, and one end-cylinder branch per stop reason), each
+        gated by its ``show_*`` box and holding all lines."""
         extras = []
         if params.get("show_lines"):
             vf = centerlines_to_vector_feature([line.centerline for line in lines])
@@ -398,27 +513,26 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                     vf.cluster_reference = result_uid
                     extras.append((f"stop_{reason}", vf))
 
-        if extras:
-            result_node = controller.get_node(result_uid)
-            tree_widget.blockSignals(True)
-            for name, feature in extras:
-                vf_uid = controller.add_analysis_result(
-                    feature, "vector_feature", [node.uid], result_node, name, params
-                )
-                tree_widget.add_branch(vf_uid, result_uid, name,
-                                       tooltip=f"linear_region_growing,{params}")
-                vf_item = tree_widget.branches_dict.get(vf_uid)
-                if vf_item:
-                    vf_item.setCheckState(0, Qt.Checked)
-                tree_widget.visibility_status[vf_uid] = True
-            tree_widget.blockSignals(False)
+        if not extras:
+            return
 
-        # --- Render and clear selection ---
-        main_window.render_visible_data(zoom_extent=False)
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget._selection_polygons.clear()
-        viewer_widget.update()
+        result_node = controller.get_node(result_uid)
+        tree_widget.blockSignals(True)
+        for name, feature in extras:
+            vf_uid = controller.add_analysis_result(
+                feature, "vector_feature", [node.uid], result_node, name, params
+            )
+            tree_widget.add_branch(vf_uid, result_uid, name,
+                                   tooltip=f"linear_region_growing,{params}")
+            vf_item = tree_widget.branches_dict.get(vf_uid)
+            if vf_item:
+                vf_item.setCheckState(0, Qt.Checked)
+            tree_widget.visibility_status[vf_uid] = True
+        tree_widget.blockSignals(False)
 
+    def _show_summary(self, main_window, labels, lines, stopped_early):
+        """Show the completion message: feature/rest counts and per-line stop
+        reasons, noting if the user cancelled."""
         n_feature = int((labels >= 0).sum())
         n_rest = len(labels) - n_feature
 
@@ -429,9 +543,13 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             if reasons:
                 stop_lines.append(f"Line {k + 1}: stopped on {', '.join(reasons)}")
         stop_summary = ("\n\nStop reasons:\n" + "\n".join(stop_lines)) if stop_lines else ""
+        cancel_note = ("\n\nCancelled early — partial result saved."
+                       if stopped_early else "")
 
         QMessageBox.information(
-            main_window, "Linear Region Growing Complete",
+            main_window,
+            "Linear Region Growing Cancelled" if stopped_early
+            else "Linear Region Growing Complete",
             f"Grew {len(lines)} line(s) — {n_feature:,} feature points, "
-            f"{n_rest:,} remaining." + stop_summary
+            f"{n_rest:,} remaining." + stop_summary + cancel_note
         )
