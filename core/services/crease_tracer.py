@@ -40,6 +40,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from core.services.ransac import fit
+from core.services.geometry_utils import unit, unit_rows, perp_basis, dominant_direction
 from core.entities.vector_feature import VectorFeature
 
 
@@ -200,8 +201,8 @@ class CreaseTracer:
         model_b = self._fit_plane(self.points[side_b])
         if model_a is None or model_b is None:
             return None
-        n_a = _unit(model_a.normal)
-        n_b = _unit(model_b.normal)
+        n_a = unit(model_a.normal)
+        n_b = unit(model_b.normal)
         if abs(float(n_a @ n_b)) > np.cos(np.radians(self.min_dihedral_deg)):
             return None
 
@@ -228,7 +229,7 @@ class CreaseTracer:
         cos_bend = np.cos(np.radians(_MAX_ANGLE_DEG))
 
         tip = np.asarray(start, dtype=np.float64).copy()
-        heading = _unit(direction)
+        heading = unit(direction)
         ref_a, ref_b = ref_axes
         out = []
 
@@ -237,7 +238,7 @@ class CreaseTracer:
             if len(cand) < 2 * _MIN_POINTS_PER_SIDE:
                 break
             cand = np.asarray(cand, dtype=np.intp)
-            u2, u3 = _perp_basis(heading)
+            u2, u3 = perp_basis(heading)
             rot = np.stack([heading, u2, u3])  # rows = box axes
             local = np.abs((self.points[cand] - tip) @ rot.T)
             in_box = (local[:, 0] <= half_len) & (local[:, 1] <= half_perp) & (local[:, 2] <= half_perp)
@@ -256,8 +257,8 @@ class CreaseTracer:
             model_b = self._fit_plane(self.points[side_b])
             if model_a is None or model_b is None:
                 break
-            n_a = _unit(model_a.normal)
-            n_b = _unit(model_b.normal)
+            n_a = unit(model_a.normal)
+            n_b = unit(model_b.normal)
             if abs(float(n_a @ n_b)) > cos_dihedral:
                 break  # near-parallel: one surface, not a crease
 
@@ -281,7 +282,7 @@ class CreaseTracer:
 
             # Re-centre: the vertex is the edge point nearest the box centre.
             vertex = point_on_line + float((tip - point_on_line) @ edge_dir) * edge_dir
-            ev2, ev3 = _perp_basis(edge_dir)
+            ev2, ev3 = perp_basis(edge_dir)
             out.append({
                 "vertex": vertex,
                 "frame": np.stack([edge_dir, ev2, ev3]),
@@ -360,15 +361,15 @@ def _split_two_planes_by_normal(normals: np.ndarray, max_iter: int = 10) -> np.n
     ``|n·c|`` and each centroid is the dominant eigenvector of its cluster's
     normal scatter matrix. Returns a ``(N,)`` array of 0/1 cluster labels.
     """
-    n = _unit_rows(np.asarray(normals, dtype=np.float64))
+    n = unit_rows(np.asarray(normals, dtype=np.float64))
     if len(n) < 2:
         return np.zeros(len(n), dtype=np.intp)
 
     # Seed 0: the dominant orientation of all normals. Seed 1: the normal most
     # perpendicular to it (the best candidate for a second plane).
-    c0 = _principal_axis(n)
+    c0 = dominant_direction(n)
     c1 = n[int(np.argmin(np.abs(n @ c0)))]
-    centroids = np.stack([c0, _unit(c1)])
+    centroids = np.stack([c0, unit(c1)])
 
     labels = np.zeros(len(n), dtype=np.intp)
     for _ in range(max_iter):
@@ -380,15 +381,15 @@ def _split_two_planes_by_normal(normals: np.ndarray, max_iter: int = 10) -> np.n
         for k in (0, 1):
             grp = n[labels == k]
             if len(grp) > 0:
-                centroids[k] = _principal_axis(grp)
+                centroids[k] = dominant_direction(grp)
     return labels
 
 
 def _intersect_line(n_a, p_a, n_b, p_b):
     """Intersection line of two planes as ``(point_on_line, unit_direction)``,
     or ``None`` if the planes are parallel."""
-    n_a = _unit(n_a)
-    n_b = _unit(n_b)
+    n_a = unit(n_a)
+    n_b = unit(n_b)
     direction = np.cross(n_a, n_b)
     norm = float(np.linalg.norm(direction))
     if norm < _EPS:
@@ -414,31 +415,6 @@ def _dedup(vertices: np.ndarray, tol: float) -> np.ndarray:
         if np.linalg.norm(v - kept[-1]) >= tol:
             kept.append(v)
     return np.asarray(kept, dtype=np.float64)
-
-
-def _principal_axis(pts: np.ndarray) -> np.ndarray:
-    """Unit eigenvector of the largest covariance eigenvalue of *pts*."""
-    cov = pts.T @ pts
-    _, eigvecs = np.linalg.eigh(cov)
-    return _unit(eigvecs[:, -1])
-
-
-def _perp_basis(direction):
-    """Two orthonormal vectors spanning the plane perpendicular to *direction*."""
-    d = _unit(direction)
-    ref = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-    u = _unit(np.cross(d, ref))
-    v = np.cross(d, u)
-    return u, v
-
-
-def _unit(vec: np.ndarray) -> np.ndarray:
-    vec = np.asarray(vec, dtype=np.float64)
-    return vec / (np.linalg.norm(vec) + 1e-12)
-
-
-def _unit_rows(vecs: np.ndarray) -> np.ndarray:
-    return vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12)
 
 
 def _subsample(points: np.ndarray, seed) -> np.ndarray:
@@ -532,7 +508,7 @@ def planes_to_vector_feature(planes, size, color=None):
     half = size * 0.5
     for centre, n_a, n_b in planes:
         for normal in (n_a, n_b):
-            u, v = _perp_basis(normal)
+            u, v = perp_basis(normal)
             base = len(verts)
             verts.extend([
                 centre - half * u - half * v,
@@ -544,7 +520,7 @@ def planes_to_vector_feature(planes, size, color=None):
                       [base + 2, base + 3], [base + 3, base]]
             stub = len(verts)
             verts.extend([np.asarray(centre, dtype=np.float64),
-                          np.asarray(centre, dtype=np.float64) + _unit(normal) * half])
+                          np.asarray(centre, dtype=np.float64) + unit(normal) * half])
             edges.append([stub, stub + 1])
     return _wireframe_vector_feature(
         "debug_planes", verts, edges, _PLANE_COLOR if color is None else color
@@ -555,7 +531,7 @@ def normals_to_vector_feature(points, normals, scale, color):
     """One short line segment per point, from the point along its normal."""
     if len(points) == 0:
         return None
-    units = _unit_rows(np.asarray(normals, dtype=np.float64))
+    units = unit_rows(np.asarray(normals, dtype=np.float64))
     verts, edges = [], []
     for p, nrm in zip(np.asarray(points, dtype=np.float64), units):
         base = len(verts)

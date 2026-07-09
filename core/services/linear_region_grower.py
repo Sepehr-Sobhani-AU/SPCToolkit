@@ -30,6 +30,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from core.services.ransac import fit
+from core.services.geometry_utils import unit, perp_basis, principal_axis
 from core.entities.vector_feature import VectorFeature
 
 
@@ -313,12 +314,11 @@ class LinearRegionGrower:
 
     @staticmethod
     def _principal_axis(pts):
-        """Unit dominant axis of *pts* (eigenvector of the largest covariance
-        eigenvalue). Always defined, even when the points are not collinear."""
-        centered = pts - pts.mean(axis=0)
-        _, eigvecs = np.linalg.eigh(centered.T @ centered)
-        axis = eigvecs[:, -1]
-        return axis / (np.linalg.norm(axis) + 1e-12)
+        """Unit dominant axis of *pts* (eigenvector of the largest mean-centred
+        covariance eigenvalue). Always defined, even when the points are not
+        collinear. Thin delegate to ``geometry_utils.principal_axis`` (kept as a
+        staticmethod for callers/tests that reference it here)."""
+        return principal_axis(pts)
 
     def _seed_anchor_and_direction(self, seed_pts, projections, axis):
         """Start point + initial heading for the axis march.
@@ -341,7 +341,7 @@ class LinearRegionGrower:
             )
             if local_model is not None:
                 direction = local_model.direction
-        return anchor, direction / (np.linalg.norm(direction) + 1e-12)
+        return anchor, unit(direction)
 
     def _march(self, tip, direction, use_linearity_gate) -> set:
         collected = set()
@@ -550,17 +550,6 @@ STOP_REASONS = {
 }
 
 
-def _perp_basis(direction):
-    """Two orthonormal vectors spanning the plane perpendicular to *direction*."""
-    d = np.asarray(direction, dtype=np.float64)
-    d = d / (np.linalg.norm(d) + 1e-12)
-    ref = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-    u = np.cross(d, ref)
-    u /= (np.linalg.norm(u) + 1e-12)
-    v = np.cross(d, u)
-    return u, v
-
-
 def cylinders_to_vector_feature(cylinders, color=None, n_segments=12,
                                 symbol_type="Search Cylinders"):
     """Wireframe VectorFeature: two end rings + a few longitudinals per cylinder."""
@@ -573,9 +562,8 @@ def cylinders_to_vector_feature(cylinders, color=None, n_segments=12,
 
     for tip, direction, radius, length in cylinders:
         tip = np.asarray(tip, dtype=np.float64)
-        d = np.asarray(direction, dtype=np.float64)
-        d = d / (np.linalg.norm(d) + 1e-12)
-        u, v = _perp_basis(d)
+        d = unit(direction)
+        u, v = perp_basis(d)
         ring = radius * np.array([np.cos(a) * u + np.sin(a) * v for a in angles])
 
         base0 = len(verts)
