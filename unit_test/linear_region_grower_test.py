@@ -79,34 +79,67 @@ def test_axis_trace_long_curved_seeds():
     assert leaked == 0, f"curved-seed trace leaked {leaked} clutter points"
 
 
-def test_axis_trace_cylinders_match_search():
-    """The drawn search cylinders must be the ACTUAL selection cylinders: each
-    has the full cylinder_length and cylinder_radius the march searched with —
-    not a shortened tip-to-tip segment — so the overlay matches the real
-    selection region even when overlap > 0 shortens the per-step advance."""
-    rng = np.random.default_rng(3)
-    R = 8.0
-    n = 500
+def _dense_arc(seed=3, R=8.0, n=500):
+    """A clean, dense arc (no gaps -> no bridges) for the geometry-chain tests."""
+    rng = np.random.default_rng(seed)
     theta = np.linspace(np.radians(40), np.radians(140), n)
     arc = np.stack([R * np.cos(theta), R * np.sin(theta), np.zeros(n)], axis=1)
     arc += rng.normal(0, 0.003, arc.shape)
-    seeds = np.arange(n)[::n // 12]
+    return arc
 
-    cyl_len, cyl_rad = 0.5, 0.2
-    g = LinearRegionGrower(
-        arc, mode=AXIS_TRACE, ransac_threshold=0.05,
-        cylinder_radius=cyl_rad, cylinder_length=cyl_len, overlap=0.5,  # step != length
-        min_points=3, max_angle_deg=25.0,
+
+def _march_one_direction(arc, **kwargs):
+    """Drive a single march from the arc midpoint (one monotonic chain of
+    cylinders/segments — grow()'s two opposite marches would meet at the anchor
+    and not abut there, so tests that check abutment use one direction)."""
+    g = LinearRegionGrower(arc, mode=AXIS_TRACE, **kwargs)
+    mid = len(arc) // 2
+    start = arc[mid]
+    direction = LinearRegionGrower._principal_axis(arc[mid - 3:mid + 3])
+    g._march(start, direction, False)
+    return g
+
+
+def test_cylinders_abut_end_to_end():
+    """Consecutive search cylinders must connect: the end centre of each is the
+    start centre of the next. Both hang off the shared fitted-line midpoints, so
+    the drawn tube is one continuous chain with no sideways jog (the whole point
+    of building the geometry on midpoints). Radius stays the search radius and
+    each axis is unit length. (This replaces the old fixed-length assertion, which
+    the midpoint scheme deliberately reverses.)"""
+    cyl_rad = 0.2
+    g = _march_one_direction(
+        _dense_arc(), ransac_threshold=0.05, cylinder_radius=cyl_rad,
+        cylinder_length=0.5, overlap=0.5, min_points=3, max_angle_deg=25.0,
     )
-    g.grow(seeds)
     cyls = g.debug_cylinders
     assert len(cyls) > 4, f"expected several cylinders, got {len(cyls)}"
 
-    for _base, direction, radius, length in cyls:
-        assert abs(length - cyl_len) < 1e-9, f"cylinder length {length} != search length {cyl_len}"
-        assert abs(radius - cyl_rad) < 1e-9, f"cylinder radius {radius} != search radius {cyl_rad}"
-        assert abs(np.linalg.norm(direction) - 1.0) < 1e-6, "cylinder axis must be unit length"
-    print(f"search cylinders: all {len(cyls)} match length={cyl_len} radius={cyl_rad}")
+    for _tip, direction, radius, _length in cyls:
+        assert abs(radius - cyl_rad) < 1e-9, f"cylinder radius {radius} != {cyl_rad}"
+        assert abs(np.linalg.norm(direction) - 1.0) < 1e-6, "cylinder axis must be unit"
+    for (t0, d0, _r0, l0), (t1, *_rest) in zip(cyls, cyls[1:]):
+        end0 = np.asarray(t0) + l0 * np.asarray(d0)
+        assert np.allclose(end0, t1, atol=1e-9), (
+            f"cylinders do not abut: end {end0} != next start {t1}")
+    print(f"cylinders abut end-to-end: {len(cyls)} cylinders form one chain")
+
+
+def test_centerline_is_continuous():
+    """The recorded centerline segments must chain vertex-to-vertex: the end of
+    each segment is the exact start of the next (they share the fitted-line
+    midpoints), so the centerline is one continuous polyline with no per-junction
+    gap or sideways jog."""
+    g = _march_one_direction(
+        _dense_arc(), ransac_threshold=0.05, cylinder_radius=0.2,
+        cylinder_length=0.5, min_points=3, max_angle_deg=25.0,
+    )
+    segs = g.debug_lines
+    assert len(segs) > 4, f"expected several segments, got {len(segs)}"
+    for (_p0, p1), (q0, _q1) in zip(segs, segs[1:]):
+        assert np.array_equal(p1, q0), (
+            f"centerline broken: segment end {p1} != next start {q0}")
+    print(f"centerline continuous: {len(segs)} segments chain end-to-end")
 
 
 def test_axis_trace_survives_clutter_in_tube():
@@ -485,7 +518,8 @@ def test_debug_vector_features_built():
 if __name__ == "__main__":
     test_axis_trace_collects_line()
     test_axis_trace_long_curved_seeds()
-    test_axis_trace_cylinders_match_search()
+    test_cylinders_abut_end_to_end()
+    test_centerline_is_continuous()
     test_axis_trace_survives_clutter_in_tube()
     test_plain_pca_step_resists_dense_near_patch()
     test_gap_bridging_crosses_fragment_gap()

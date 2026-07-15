@@ -388,10 +388,17 @@ class LinearRegionGrower:
 
         Each step: search the reach-tube ahead (``_query_tube``); if the near
         fit window holds enough points, fit the local axis (``_fit_step``),
-        collect its members (``_collect_members``) and advance
-        (``_advance_cylinder``); otherwise try to bridge a gap
-        (``_bridge_gap``). Stops on a sharp bend, an empty tube, no band
-        continuation, or the step cap, recording why at this end of the line.
+        collect its members (``_collect_members``), record the output geometry on
+        the midpoint chain (``_record_step``) and advance the search tip
+        (``_advance_tip``); otherwise try to bridge a gap (``_bridge_gap``). Stops
+        on a sharp bend, an empty tube, no band continuation, or the step cap,
+        recording why at this end of the line.
+
+        Output geometry (centerline + cylinders) is built on the MIDPOINTS of the
+        per-step fitted lines (band centroids), connected in order, so it forms
+        one continuous chain with matched vertices. The final segment is extended
+        from the last midpoint to the END of the last fitted line, so the line
+        reaches the feature's end instead of stopping half a window short.
         """
         collected = set()
         start_n = len(self.debug_cylinders)
@@ -403,6 +410,15 @@ class LinearRegionGrower:
 
         current_tip = np.asarray(tip, dtype=float).copy()
         current_dir = np.asarray(direction, dtype=float).copy()
+
+        # Output geometry hangs off the fitted-line midpoints. prev_mid starts at
+        # the (on-feature) march anchor, so the first segment ties the line back to
+        # it. last_end is the far end of the most recent fitted line (used to
+        # extend the final segment); just_bridged suppresses the cylinder over a
+        # bridged gap.
+        prev_mid = current_tip.copy()
+        last_end = None
+        just_bridged = False
 
         # Why this direction stopped. Defaults to the step cap: if the loop runs
         # all max_steps without breaking, that is the reason. Otherwise each break
@@ -437,7 +453,16 @@ class LinearRegionGrower:
                 collected.update(
                     self._collect_members(band, near_idx, fit_point, fit_dir)
                 )
-                current_tip = self._advance_cylinder(current_tip, fit_point, fit_dir)
+                # Record on the midpoint chain. A segment spanning a just-bridged
+                # gap gets no cylinder (nothing was searched inside the gap).
+                self._record_step(prev_mid, fit_point,
+                                  record_cylinder=not just_bridged)
+                prev_mid = fit_point
+                just_bridged = False
+                # Far end of this fitted line, for extending the final segment.
+                last_end = fit_point + float(
+                    ((band - fit_point) @ fit_dir).max()) * fit_dir
+                current_tip = self._advance_tip(current_tip, fit_point, fit_dir)
                 current_dir = fit_dir
 
             else:
@@ -454,6 +479,13 @@ class LinearRegionGrower:
                     reason = STOP_TOO_FEW_POINTS  # no band continuation within reach
                     break
                 current_tip = next_tip
+                just_bridged = True
+
+        # Extend the final segment from the last midpoint to the end of the last
+        # fitted line, so the centerline (and its tube) reach the feature's end
+        # rather than stopping at the last midpoint, half a window short.
+        if last_end is not None:
+            self._record_step(prev_mid, last_end)
 
         # The last cylinder searched in this direction is the stop point at this
         # end of the line — the march ended just beyond it. Record it together
@@ -524,22 +556,34 @@ class LinearRegionGrower:
         perp_m = np.linalg.norm(rel - np.outer(rel @ fit_dir, fit_dir), axis=1)
         return [int(i) for i in near_idx[perp_m < self.ransac_threshold]]
 
-    def _advance_cylinder(self, current_tip, fit_point, fit_dir):
-        """Record the search cylinder + centerline segment on the fitted
-        (centred) axis and return the next tip.
+    def _record_step(self, prev_mid, mid, record_cylinder=True):
+        """Record output geometry on the MIDPOINT chain: a centerline segment from
+        the previous midpoint to *mid*, and (unless this segment spans a bridged
+        gap) a search cylinder over it.
 
-        The cylinder base is the foot of the current tip on the fitted axis, so
-        it sits ON the points rather than off to one side; the tip then advances
-        one step (a cylinder_length, less any overlap) along that axis.
+        Both hang off the fitted-line midpoints (band centroids), which sit on the
+        points and are shared vertex-for-vertex by consecutive steps — so the
+        centerline is one continuous chain and the cylinders abut end-to-end,
+        instead of each starting off to one side on its own freshly-fitted line.
         """
+        self.debug_lines.append((prev_mid.copy(), mid.copy()))
+        if not record_cylinder:
+            return
+        seg = mid - prev_mid
+        length = float(np.linalg.norm(seg))
+        if length > 1e-9:
+            self.debug_cylinders.append(
+                (prev_mid.copy(), seg / length, self.cylinder_radius, length)
+            )
+
+    def _advance_tip(self, current_tip, fit_point, fit_dir):
+        """Advance the SEARCH tip one step along the fitted axis, re-centred onto
+        it (the foot of the tip on the axis) so the next window sits on the
+        points. Drives the search only; output geometry is recorded separately on
+        the midpoint chain by ``_record_step``."""
         base = fit_point + float((current_tip - fit_point) @ fit_dir) * fit_dir
-        self.debug_cylinders.append(
-            (base, fit_dir.copy(), self.cylinder_radius, self.cylinder_length)
-        )
         step = self.cylinder_length * (1.0 - self.overlap)
-        next_tip = base + step * fit_dir
-        self.debug_lines.append((base.copy(), next_tip.copy()))
-        return next_tip
+        return base + step * fit_dir
 
     def _bridge_gap(self, current_tip, current_dir, along, tube_mask):
         """Jump the tip toward the nearest far-band continuation within the tube.
@@ -559,7 +603,6 @@ class LinearRegionGrower:
         a_next = float(along[far_band].min())
         jump = a_next - _GAP_LANDING_FRAC * self.cylinder_length
         next_tip = current_tip + jump * current_dir
-        self.debug_lines.append((current_tip.copy(), next_tip.copy()))
         return next_tip
 
     # ------------------------------------------------------------------ #
