@@ -6,6 +6,32 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-07-17 — Contours via a generic field-agnostic brick, keyed on cloud edges
+Contour lines are one generic `contour_growing` brick over *any* per-point field
+(the `services/point_fields` dropdown), never a per-field plugin — height
+contours, slope-break lines and intensity edges are outcomes of picking a
+different field, and whether a given field makes a meaningful line is the user's
+call, not the plugin's. Locked design: the seed pick sets the level (its own field
+value) and the start; per step a ball is PCA-flattened, Delaunay-triangulated and
+marched; **every crossing is keyed by the pair of cloud point indices whose edge
+it lies on**, so overlapping balls dedupe exactly, meeting ends join, and loops
+close with no distance tolerance anywhere — and since a cloud point is a ball
+centre at most once, the flood is finite and stops by itself. Two triangle cuts
+earn their keep: longer than `max_triangle_edge` (Delaunay fills its convex hull,
+so it invents surface across holes) and circumcircle leaving the ball (rim
+triangles are built from points whose real neighbours the ball never saw).
+Crossings are capped at two segments because neighbouring balls fit slightly
+different local planes and Delaunay flips near-tie diagonals between them — the
+vertices agree exactly, only the pairing differs, so a third segment is a second
+opinion on a settled pairing, and allowing it forked a curved-surface test into 11
+fragments instead of 1 closed loop. ALL lines in a ball are kept and every open
+end grown, not only the seeded line (user's explicit call): the seed picks the
+level and where to start, not which line survives. Output is ONE branch holding
+every contour, as `geometry_type="mesh"` with vertices+edges (as
+`centerlines_to_vector_feature` already does) — the `"polyline"` schema holds only
+one line per node, and a closed contour needs no `closed` flag since it is simply
+a chain returning to its first vertex.
+
 ## 2026-07-09 — Linear march: fit the per-step axis from the full band, not a threshold-wide stripe
 The per-step axis (direction + centre) is fit from ALL near-tube points (within
 `cylinder_radius`), not from the `ransac_threshold`-wide "on-axis" subset. Gating
