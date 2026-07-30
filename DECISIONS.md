@@ -192,3 +192,31 @@ both optional and each collapses to a SINGLE branch holding all lines: one
 "centerlines" branch (a mesh with one connected edge chain per line, no
 bridging between lines) and one "cylinders" branch. The plugin stays generic
 (any linear feature; cables were only an example).
+
+## 2026-07-30 — "Growth reached this cluster" is a SWEPT-region test, not a membership test
+Fixes duplicate lines (two centerlines drawn on top of one cable) from
+`linear_region_growing`. The greedy consume loop of 2026-07-06 asked "did the
+grown line CLAIM this cluster's points?" — the wrong question, for two reasons:
+
+1. Membership is gated at `ransac_threshold`, while the search tube is
+   `cylinder_radius` wide. Whenever radius > threshold (the normal setting for a
+   thick or noisy cable — `power_line_detection` ships 0.5 vs 0.3), a march can
+   drive straight through a cluster and claim none of its points. The cluster
+   stays in the pool and regrows the same feature.
+2. The test only ran BEFORE a cluster grew, so it could not catch a cluster that
+   legitimately survived — e.g. one sitting past the point where the first line
+   stopped — and then marched BACK over that line, since every march runs both
+   ways from its anchor.
+
+Locked: the grower now records the region it SWEPT (every point inside a step's
+fit window, member or not; `swept_indices()`), and `grow_lines` tests against
+the sweep accumulated over the kept lines — both to drop clusters from the pool
+(`_CONSUME_FRAC`) and, after growing, to discard a line that retraces a kept one
+(`_DUPLICATE_FRAC`). The sweep, not the membership, is what "growth reached
+here" means. No merge heuristic was reintroduced, so the 2026-07-06 guarantees
+hold: parallel features never fuse, and collinear features separated by more
+than the search reach stay separate.
+
+`power_line_detection` still runs its own pre-growth `already_grown` check
+against member points and has no post-growth check, so it retains bug (1) and
+(2). Left alone deliberately — not in this fix's scope.

@@ -42,10 +42,25 @@ HYBRID = "hybrid"
 _LINEARITY_MODES = (LINEARITY_CONNECTED, HYBRID)
 
 # A cluster is considered consumed by a grown line (and dropped from the pool)
-# when at least this fraction of its points ended up in that line. Clusters that
-# a line merely crosses (a few shared points at an intersection) stay below this
-# and get their own growth pass.
+# when at least this fraction of its points fall in the region that line SWEPT.
+# Clusters that a line merely crosses (a few shared points at an intersection)
+# stay below this and get their own growth pass.
+#
+# The test is against the swept region, NOT the line's member points: membership
+# is gated at ransac_threshold while the march searches out to cylinder_radius,
+# so a march can drive straight through a cluster and claim none of its points
+# (any point further off-axis than the threshold). Testing membership there
+# leaves the cluster in the pool, and it regrows the same feature as a duplicate
+# line lying on top of the first one.
 _CONSUME_FRAC = 0.5
+
+# A freshly grown line is discarded as a duplicate when at least this fraction of
+# its points lie in the region already swept by the lines kept before it. This is
+# the backstop for the consume test above: that test runs BEFORE a cluster grows,
+# so it cannot catch a cluster that legitimately survived (e.g. it sits past the
+# point where the first line stopped) and then retraces the feature backwards —
+# each march runs in both directions from its anchor.
+_DUPLICATE_FRAC = 0.5
 
 # Minimum inlier ratio for the one-off RANSAC line fit that seeds the initial
 # march heading (a loose gate — the march re-fits every step afterwards).
@@ -145,6 +160,13 @@ class LinearRegionGrower:
         self.debug_lines = []
         self.debug_end_cylinders = []
 
+        # Point indices the last grow() SWEPT — every point inside a step's fit
+        # window, whether or not it became a member of the line. Membership is
+        # gated at ransac_threshold, the search at the wider cylinder_radius, so
+        # the swept region (not the members) is what "growth reached here" means.
+        # Held as a list of per-step index arrays; read via swept_indices().
+        self._swept_chunks = []
+
         # Optional cooperative-cancel handle (any object with .is_set()), set for
         # the duration of a grow_lines() call so the march can bail out promptly
         # on a long trace. None disables the check. The engine stays GUI-free —
@@ -180,14 +202,30 @@ class LinearRegionGrower:
         into ``self.all_points``), always including the seeds.
         """
         seed_indices = np.asarray(seed_indices, dtype=np.intp)
+        self._swept_chunks = []
         if seed_indices.size == 0:
             return seed_indices
         if self.mode == LINEARITY_CONNECTED:
-            return self._grow_linearity_connected(seed_indices)
+            region = self._grow_linearity_connected(seed_indices)
+            # No march, so no wider search region: the region IS what was swept.
+            self._swept_chunks = [region]
+            return region
         # AXIS_TRACE and HYBRID both march along the axis; HYBRID adds the gate.
         return self._grow_axis_trace(
             seed_indices, use_linearity_gate=(self.mode == HYBRID)
         )
+
+    def swept_indices(self) -> np.ndarray:
+        """Unique point indices the last ``grow()`` swept — everything that fell
+        inside a step's fit window, members and non-members alike.
+
+        Wider than the returned line (membership is gated at ransac_threshold,
+        the search at cylinder_radius), and the right set for asking "did this
+        growth already reach that cluster?" — see ``_CONSUME_FRAC``.
+        """
+        if not self._swept_chunks:
+            return np.empty(0, dtype=np.intp)
+        return np.unique(np.concatenate(self._swept_chunks)).astype(np.intp)
 
     def grow_lines(self, seed_groups, *, progress_cb=None, cancel_event=None) -> list:
         """
@@ -199,15 +237,22 @@ class LinearRegionGrower:
         clusters; this method recovers it without any merge heuristic:
 
             1. Grow a line from the LARGEST remaining cluster.
-            2. Drop every remaining cluster that growth consumed (most of its
-               points ended up in the grown line) — those clusters were just
-               pieces of this same line.
-            3. Repeat until no clusters remain.
+            2. Discard that line if it mostly retraces ground the lines kept so
+               far already swept (``_DUPLICATE_FRAC``).
+            3. Drop every remaining cluster that growth consumed (most of its
+               points fall in the region swept so far) — those clusters were
+               just pieces of this same line.
+            4. Repeat until no clusters remain.
 
         Because a cluster is removed only when the growth actually reached it,
         parallel neighbouring lines are never fused (growth never crosses to
         them) and a line split into many clusters comes out whole (the march
         walks through all of them).
+
+        Steps 2–3 both test against the SWEPT region accumulated over the kept
+        lines, not their member points — see ``_CONSUME_FRAC`` and
+        ``_DUPLICATE_FRAC`` for why each is needed to keep one physical feature
+        from coming back as two lines drawn on top of each other.
 
         *progress_cb*, if given, is called ``progress_cb(done, total, message)``
         after each line — ``done`` lines finished, ``total`` the initial cluster
@@ -224,6 +269,11 @@ class LinearRegionGrower:
         lines = []
         total = len(pool)
         self._cancel_event = cancel_event
+
+        # Everything the KEPT lines have swept, as a per-point flag (cheap to
+        # test, and cumulative — a cluster half-covered by one line and half by
+        # the next is still recognised as already grown).
+        swept_mask = np.zeros(len(self.all_points), dtype=bool)
 
         try:
             while pool:
@@ -243,6 +293,27 @@ class LinearRegionGrower:
                 if grown.size == 0:
                     continue
 
+                # Retracing a kept line? A cluster can legitimately survive the
+                # consume test below (e.g. it lies past the point where the first
+                # line stopped) and then march BACK over that line — each march
+                # runs both ways from its anchor. Drop the duplicate rather than
+                # drawing a second centerline on top of the first.
+                duplicate = float(np.mean(swept_mask[grown])) >= _DUPLICATE_FRAC
+
+                # Mark this growth's sweep whether or not the line is kept, then
+                # drop the clusters it consumed. A cluster is part of an
+                # already-grown feature if most of its points fall in the swept
+                # region; clusters merely crossed (a few shared points at an
+                # intersection) stay for their own pass. A discarded duplicate
+                # still swept real ground — any cluster in there would only
+                # retrace the same feature again. The loop always shrinks: this
+                # iteration's seed cluster was popped whatever the outcome.
+                swept_mask[self.swept_indices()] = True
+                pool = [c for c in pool
+                        if float(np.mean(swept_mask[c])) < _CONSUME_FRAC]
+                if duplicate:
+                    continue
+
                 centerline = self._join_centerline(list(self.debug_lines))
                 lines.append(GrownLine(np.array(sorted(set(int(i) for i in grown)),
                                                 dtype=np.intp),
@@ -253,14 +324,6 @@ class LinearRegionGrower:
                     progress_cb(len(lines), total,
                                 f"Growing lines — {len(lines)} traced, "
                                 f"{len(pool)} seed group(s) left")
-
-                # Drop clusters this line consumed. A cluster is part of the line if
-                # most of its points were grown into it; clusters merely crossed
-                # (a few shared points at an intersection) are kept for their own
-                # pass. The seed cluster is always consumed (grow includes seeds),
-                # so the loop always shrinks.
-                pool = [c for c in pool
-                        if float(np.mean(np.isin(c, grown))) < _CONSUME_FRAC]
         finally:
             self._cancel_event = None
         return lines
@@ -450,6 +513,9 @@ class LinearRegionGrower:
                     break
 
                 near_idx = candidate_idx[near_mask]
+                # The whole fit window was swept, not just the points close
+                # enough to the axis to become members.
+                self._swept_chunks.append(near_idx)
                 collected.update(
                     self._collect_members(band, near_idx, fit_point, fit_dir)
                 )

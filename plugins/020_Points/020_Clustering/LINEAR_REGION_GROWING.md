@@ -20,7 +20,20 @@ The same `LinearRegionGrower` (in `AXIS_TRACE` mode) backs the `power_line_detec
 - A single `Clusters` branch (`linear_region_growing`) over the input cloud: label `0` = the grown feature, `-1` = everything else — the same output shape as [Surface Region Growing](SURFACE_REGION_GROWING.md), ready to classify (cluster → class → DXF layer).
 - If **Show Search Cylinders** / **Show Centerlines** are ticked, render-only `vector_feature` branches (`search_cylinders`, `centerlines`) are added under the result and shown — wireframe geometry, fully controllable in the tree (toggle, delete) like any other branch. Everything drawn lives in a branch; nothing is an ad-hoc viewer overlay.
 
-One selection grows one feature. To trace several features, run the plugin once per feature. After running, the input branch is hidden and the result is shown.
+Several features can be traced from one selection — the picked points are grouped with DBSCAN (`seed_eps`) and each group grows its own line. After running, the input branch is hidden and the result is shown.
+
+### One line per physical feature
+
+DBSCAN routinely splits the picks on *one* feature into several groups (sparse picks, a small `seed_eps`), and growing each of those would draw duplicate lines on top of each other. The greedy loop in `grow_lines` prevents that without any merge heuristic:
+
+1. Grow a line from the **largest** remaining seed group.
+2. **Discard** that line if most of its points lie in the region already **swept** by the lines kept so far — it is retracing a feature that is already traced.
+3. **Drop** every remaining seed group whose points mostly fall in the swept region — those groups were pieces of a feature already grown.
+4. Repeat until no groups remain.
+
+Both tests use the **swept region** (everything that fell inside a step's fit window) rather than the lines' member points. Membership is gated at `ransac_threshold` while the search tube is `cylinder_radius` wide, so a march can drive straight *through* a seed group and claim none of its points — testing membership would leave that group in the pool to regrow the same feature. Step 2 is the backstop for the case step 3 cannot see: a group that legitimately survives (it sits past the point where the first line stopped) and then marches *back* over that line, since every march runs both ways from its anchor.
+
+Because a group is only ever dropped when growth genuinely reached it, parallel neighbouring features are never fused (growth never crosses the gap to them), collinear features separated by more than the search reach stay separate, and a feature split across many groups comes out whole.
 
 **Progress & cancellation:** growing runs on a background thread (like [Surface Region Growing](SURFACE_REGION_GROWING.md)). While it runs the menus and tree are disabled, a status-bar progress bar reports how many lines have been traced, and a **Cancel** button stops the trace early — the lines grown so far are still saved as a result branch, and the completion message notes that it was cancelled. The 3D viewer stays interactive for camera manipulation throughout.
 
@@ -68,7 +81,7 @@ The Axis-Trace march with the linearity gate additionally applied to candidate p
 | `show_cylinders`      | `off`   | Add the axis-trace search cylinders as a controllable wireframe branch (debug). |
 | `show_lines`          | `off`   | Add the traced centerline as a controllable wireframe branch (debug). |
 
-All picked points seed a single feature; RANSAC robustly ignores the occasional stray pick when fitting the initial line direction. To trace multiple features, run the plugin once per feature.
+Picked points are grouped into one seed group per feature by `seed_eps` / `seed_min_samples`, and each group grows a line; RANSAC robustly ignores the occasional stray pick when fitting the initial line direction. Groups that turn out to be the same physical feature collapse into one line (see [One line per feature](#one-line-per-physical-feature)) — so an over-small `seed_eps` costs a little time, not duplicate lines.
 
 ---
 

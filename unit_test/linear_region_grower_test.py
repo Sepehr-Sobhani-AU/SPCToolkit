@@ -449,6 +449,91 @@ def test_grow_lines_joins_split_groups():
           f"(centerline spans {span_x:.1f} m)")
 
 
+def test_grow_lines_no_duplicate_when_seeds_off_axis():
+    """A seed group the march drove straight through — but whose points sit
+    further off the axis than ransac_threshold, so none became line members —
+    must NOT regrow the same feature as a second line on top of the first.
+
+    Membership is gated at ransac_threshold while the search tube is
+    cylinder_radius wide, so 'did growth reach this cluster?' has to be asked of
+    the SWEPT region, not of the member points."""
+    rng = np.random.default_rng(0)
+    n = 400
+    x = np.linspace(0, 20, n)
+    core = np.stack([x, np.zeros(n), np.zeros(n)], axis=1)
+    core += rng.normal(0, 0.01, core.shape)          # tight core, traces end to end
+    # Mid-cable seed group 0.3 m off the axis: inside cylinder_radius (0.5) so it
+    # IS searched, outside ransac_threshold (0.05) so it is never a member.
+    mid = np.stack([np.linspace(9.5, 10.5, 8), np.full(8, 0.3), np.zeros(8)], axis=1)
+    points = np.vstack([core, mid])
+    core_idx, mid_idx = np.arange(n), np.arange(n, n + 8)
+
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.5, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = grower.grow_lines([core_idx[:8], mid_idx])
+    assert len(lines) == 1, \
+        f"off-axis seed group regrew the same feature: got {len(lines)} lines"
+    span_x = float(np.ptp(lines[0].centerline[:, 0]))
+    assert span_x > 15.0, f"centerline spans only {span_x:.1f} m"
+
+    # The mid group is swept by the march but claimed by none of it — exactly the
+    # gap the swept region closes.
+    claimed = set(lines[0].indices.tolist())
+    assert not (claimed & set(mid_idx.tolist())), "off-axis group became a member"
+    grower.grow(core_idx[:8])
+    swept = set(grower.swept_indices().tolist())
+    assert set(mid_idx.tolist()) <= swept, "off-axis group was not swept"
+    print(f"grow_lines: off-axis seed group did not duplicate the line "
+          f"(1 line, spans {span_x:.1f} m, group swept but unclaimed)")
+
+
+def test_grow_lines_no_duplicate_after_early_stop():
+    """When the first line stops short of a seed group (here a bend measured at
+    the ragged cable end), the leftover group grows a line that marches BACK over
+    the first one. That retrace must be discarded, not drawn as a second line."""
+    rng = np.random.default_rng(0)
+    n = 400
+    x = np.linspace(0, 20, n)
+    points = np.stack([x, np.zeros(n), np.zeros(n)], axis=1)
+    points += rng.normal(0, 0.10, points.shape)  # thick, noisy cable: stops early
+    idx = np.arange(n)
+
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.5, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = grower.grow_lines([idx[:8], idx[-8:]])
+    assert len(lines) == 1, \
+        f"leftover group retraced the cable: got {len(lines)} lines"
+    print(f"grow_lines: early stop did not duplicate the line "
+          f"({len(lines)} line, {len(lines[0].indices)} pts of {len(points)})")
+
+
+def test_grow_lines_collinear_separate_features_kept():
+    """The duplicate check must not swallow a genuinely separate feature. Two
+    collinear cables end to end with a gap wider than the search reach stay two
+    lines: the second's growth never enters the region the first swept."""
+    rng = np.random.default_rng(3)
+    n = 200
+    a = np.stack([np.linspace(0, 10, n), np.zeros(n), np.zeros(n)], axis=1)
+    b = np.stack([np.linspace(16, 26, n), np.zeros(n), np.zeros(n)], axis=1)
+    for ln in (a, b):
+        ln += rng.normal(0, 0.005, ln.shape)
+    points = np.vstack([a, b])                      # 6 m gap >> reach (3 x 1.0 m)
+    a_idx, b_idx = np.arange(n), np.arange(n, 2 * n)
+
+    grower = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05,
+        cylinder_radius=0.1, cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = grower.grow_lines([a_idx[:8], b_idx[:8]])
+    assert len(lines) == 2, \
+        f"collinear separate features must stay 2 lines, got {len(lines)}"
+    print("grow_lines: collinear features across a wide gap kept as 2 lines")
+
+
 class _Flag:
     """Minimal threading.Event stand-in: only .is_set() is needed by the grower."""
     def __init__(self, value=False):
@@ -532,6 +617,9 @@ if __name__ == "__main__":
     test_grow_lines_keeps_separate_lines()
     test_grow_lines_parallel_offset_not_merged()
     test_grow_lines_joins_split_groups()
+    test_grow_lines_no_duplicate_when_seeds_off_axis()
+    test_grow_lines_no_duplicate_after_early_stop()
+    test_grow_lines_collinear_separate_features_kept()
     test_grow_lines_progress_cb_called_per_line()
     test_grow_lines_cancel_returns_partial()
     test_debug_vector_features_built()
