@@ -54,17 +54,19 @@ class CameraControlMixin:
         This method is used to update the centre of rotation of the point cloud view based on a double-click event
         at a specific mouse position. It reads the depth value at the mouse position, unprojects the screen coordinates
         to world coordinates, and sets the centre of rotation to the closest point in the point cloud if it lies within
-        a specified threshold.
+        a specified threshold. When there is no cloud to snap to — a lines-only scene, or a click landing outside the
+        snap threshold — the unprojected position itself becomes the centre, so double-clicking vector geometry works.
 
         Args:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
         """
 
-        min_distance_index, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
-        if min_distance_index is not None:
+        _, new_center = self._unproject_mouse_to_nearest_point(mouse_pos)
+        if new_center is None:
+            new_center = self._unproject_mouse_to_world(mouse_pos)
+        if new_center is not None:
             # Save old center before updating
             old_center = self.center.copy()
-            new_center = self.points[min_distance_index, :3].copy()
 
             # Adjust pan to compensate for center change (prevents view shift)
             # paintGL applies: P_view = R*P + (pan + center - R*center) + (0,0,-cam_dist)

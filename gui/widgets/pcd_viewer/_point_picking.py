@@ -41,11 +41,17 @@ class PointPickingMixin:
 
         return screen_x, screen_y, valid_mask
 
-    def _unproject_mouse_to_nearest_point(self, mouse_pos):
-        """Unproject a mouse position through the depth buffer and find the nearest point.
+    def _unproject_mouse_to_world(self, mouse_pos):
+        """Unproject a mouse position through the depth buffer to world coordinates.
+
+        Resolves whatever geometry was drawn at that pixel — points, lines, or
+        anything else — so it carries no dependency on point data.
+
+        Args:
+            mouse_pos (QPoint): The position of the mouse click in widget coordinates.
 
         Returns:
-            tuple: (point_index, point_3d_coords) or (None, None) if no point found.
+            numpy.ndarray: (3,) world coordinates, or None if the pixel is empty.
         """
         self.makeCurrent()
 
@@ -60,10 +66,25 @@ class PointPickingMixin:
         win_z = z_buffer[0][0]
 
         if win_z == 1.0:
-            return None, None
+            return None
 
         world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
-        pick_point = np.array(world_coords[:3])
+        return np.array(world_coords[:3])
+
+    def _unproject_mouse_to_nearest_point(self, mouse_pos):
+        """Unproject a mouse position through the depth buffer and find the nearest point.
+
+        Returns:
+            tuple: (point_index, point_3d_coords) or (None, None) if no point found.
+        """
+        # Line geometry renders independently of point branches, so a filled
+        # depth pixel does not imply there is a cloud to snap to.
+        if self.points is None or self.max_extent is None:
+            return None, None
+
+        pick_point = self._unproject_mouse_to_world(mouse_pos)
+        if pick_point is None:
+            return None, None
 
         threshold = self.max_extent * self.picking_point_threshold_factor
 
@@ -176,6 +197,11 @@ class PointPickingMixin:
         Args:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
         """
+
+        # Picked indices outlive the branches they came from, so the cloud may
+        # be gone while the selection list is still populated.
+        if self.points is None or not self.picked_points_indices:
+            return
 
         # Ensure OpenGL context is current
         self.makeCurrent()

@@ -14,9 +14,31 @@ class ZoomWindowMixin:
         self._zoom_window_start = None   # (x, y) on mouse press
         self._zoom_window_current = None  # (x, y) during drag
 
+    def _zoom_window_geometry(self):
+        """Collect the visible geometry a zoom rectangle can be measured against.
+
+        Points and line vertices render independently and either may be the only
+        thing on screen, so both are candidates.
+
+        Returns:
+            numpy.ndarray: (N, 3) float64 world coordinates, or None if nothing
+            is visible.
+        """
+        sources = []
+        if self.points is not None and len(self.points) > 0:
+            sources.append(self.points[:, :3].astype(np.float64))
+        if self.line_vertices is not None and len(self.line_vertices) > 0:
+            sources.append(np.asarray(self.line_vertices, dtype=np.float64))
+
+        if not sources:
+            return None
+        if len(sources) == 1:
+            return sources[0]
+        return np.concatenate(sources, axis=0)
+
     def enter_zoom_window_mode(self):
         """Activate zoom window mode. User drags a rectangle to zoom into that region."""
-        if self.points is None:
+        if self._zoom_window_geometry() is None:
             return
         if self._polygon_mode:
             self.exit_polygon_mode()
@@ -35,12 +57,13 @@ class ZoomWindowMixin:
         self.update()
 
     def _execute_zoom_window(self):
-        """Project all visible points to screen, find those in rectangle, zoom to their 3D bbox."""
+        """Project all visible geometry to screen, find what is in the rectangle, zoom to its 3D bbox."""
         if self._zoom_window_start is None or self._zoom_window_current is None:
             self.exit_zoom_window_mode()
             return
 
-        if self.points is None or len(self.points) == 0:
+        pts_3d = self._zoom_window_geometry()
+        if pts_3d is None:
             self.exit_zoom_window_mode()
             return
 
@@ -59,7 +82,6 @@ class ZoomWindowMixin:
         rect_bottom = max(y1, y2)
 
         # Project all 3D points to screen coordinates
-        pts_3d = self.points[:, :3].astype(np.float64)
         mv = np.array(self.model_view_matrix, dtype=np.float64)
         proj = np.array(self.projection_matrix, dtype=np.float64)
         screen_x, screen_y, valid_mask = self._project_points_to_screen(
