@@ -29,6 +29,19 @@ class Clusters:
                                                   E.g., {0: "Car", 1: "Tree", 2: "Car"}
         cluster_colors (Dict[str, np.ndarray], optional): Mapping from names to RGB colors.
                                                           E.g., {"Car": [1, 0, 0], "Tree": [0, 1, 0]}
+        line_traces (Dict, optional): For clusters produced by linear region
+            growing — everything needed to CONTINUE a short trace in a later
+            session instead of re-growing it from scratch::
+
+                {"params": {...},                     # rebuilds the grower
+                 "lines": [{"label": 0,
+                            "centerline": [[x, y, z], ...],
+                            "stops": [{"tip": [...], "direction": [...],
+                                       "reason": str, "resolved": bool}]}]}
+
+            Plain data on purpose: it outlives the session inside the project
+            file, so it must not depend on any service class staying importable
+            at the same path.
     """
 
     def __init__(
@@ -38,7 +51,8 @@ class Clusters:
         cluster_names: Optional[Dict[int, str]] = None,
         cluster_colors: Optional[Dict[str, np.ndarray]] = None,
         locked_clusters: Optional[Dict[int, set]] = None,
-        custom_colors: Optional[Dict[int, np.ndarray]] = None
+        custom_colors: Optional[Dict[int, np.ndarray]] = None,
+        line_traces: Optional[Dict] = None
     ):
         # Type conversion
         self.labels = labels.astype(np.int32)
@@ -47,6 +61,7 @@ class Clusters:
         self.cluster_colors = cluster_colors if cluster_colors is not None else {}
         self.locked_clusters = locked_clusters if locked_clusters is not None else {}
         self.custom_colors = custom_colors if custom_colors is not None else {}
+        self.line_traces = line_traces if line_traces is not None else {}
 
         # Validate labels
         if not isinstance(self.labels, np.ndarray):
@@ -85,6 +100,9 @@ class Clusters:
         if name == "custom_colors":
             self.custom_colors = {}
             return self.custom_colors
+        if name == "line_traces":
+            self.line_traces = {}
+            return self.line_traces
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def has_names(self) -> bool:
