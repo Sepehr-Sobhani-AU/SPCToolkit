@@ -22,6 +22,8 @@ which the project permits (only *custom* pyqtSignals are disallowed).
 import logging
 from typing import Optional
 
+import numpy as np
+from scipy.spatial import cKDTree
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
@@ -123,3 +125,33 @@ def selection_present(kind: Optional[str]) -> bool:
     if kind == EITHER:
         return has_points or has_branches
     return True
+
+
+def picked_cloud_indices(viewer, pc_points, kdtree=None):
+    """Map the viewer's current point picks onto indices into *pc_points*.
+
+    The viewer renders a possibly sub-sampled copy of the branch, so a picked
+    index is not an index into the reconstructed cloud. Picks are matched back by
+    coordinate, then the stored selection polygons are re-tested against the full
+    cloud so a polygon selection covers every point it encloses rather than only
+    the sub-sampled ones the user could see.
+
+    Pass *kdtree* (a ``cKDTree`` over *pc_points*) when the caller already has
+    one. Returns a sorted index array, or ``None`` when the picks could not be
+    resolved to any coordinate at all — which callers report as "no points".
+    """
+    coords = [viewer.points[i, :3] for i in viewer.picked_points_indices
+              if i < len(viewer.points)]
+    if not coords:
+        return None
+
+    if kdtree is None:
+        kdtree = cKDTree(pc_points)
+    _dist, local = kdtree.query(np.asarray(coords, dtype=np.float32))
+    picked = set(int(i) for i in np.atleast_1d(local))
+
+    polygon_mask = viewer.retest_polygon_selection(pc_points)
+    if polygon_mask is not None:
+        picked |= set(int(i) for i in np.where(polygon_mask)[0])
+
+    return np.array(sorted(picked), dtype=np.intp)

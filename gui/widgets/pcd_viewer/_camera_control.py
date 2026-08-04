@@ -215,6 +215,41 @@ class CameraControlMixin:
             logger.error(f"  Traceback:\n{traceback.format_exc()}")
             raise
 
+    def focus_on(self, point, extent, preserve_rotation=True):
+        """Centre the camera on *point*, framing a neighbourhood *extent* metres
+        across.
+
+        The counterpart to ``zoom_to_extent`` for inspecting one spot rather than
+        the whole scene — used when stepping through the stops of a traced line,
+        where each stop must be brought into view without disturbing the
+        orientation the user has settled on (hence preserve_rotation default).
+        """
+        point = np.asarray(point, dtype=float)
+        if point.shape != (3,) or not np.all(np.isfinite(point)):
+            return
+        extent = max(float(extent), 1e-3)
+
+        self.center = point
+        self.max_extent = extent
+        half_fov_rad = np.radians(self.fov / 2)
+        self.camera_distance = (
+            extent / (2 * np.tan(half_fov_rad)) * self._CAMERA_DISTANCE_PADDING
+        )
+
+        self.pan_x = -point[0]
+        self.pan_y = -point[1]
+        self.pan_z = -point[2]
+
+        if not preserve_rotation:
+            self.rot_x = self.default_rot_x
+            self.rot_y = self.default_rot_y
+            self.rot_z = self.default_rot_z
+
+        # A zoom window may have raised the cap; this framing replaces it.
+        self._zoom_max_factor = 1.0
+        self.zoom_factor = 1.0
+        self.update()
+
     def show_point_cloud(self, visible=True):
         """Show or hide the point cloud by setting visibility and updating the view."""
         if self.visible != visible:
