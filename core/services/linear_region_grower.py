@@ -74,6 +74,20 @@ _GAP_LANDING_FRAC = 0.1
 _DEDUPE_REL_TOL = 1e-3
 _DEDUPE_ABS_TOL = 1e-6
 
+# When ranking stops by "is there anything ahead worth extending into?", look
+# this many times further than the march's own search reach and this many times
+# wider than its tube. Deliberately more generous than the march: the march
+# already failed inside its own tube, so anything it could have used is by
+# definition NOT there. What the user picks lives just outside — a few metres
+# further on, or far enough off-axis that the tube missed it.
+_RANK_REACH_FACTOR = 3.0
+_RANK_RADIUS_FACTOR = 3.0
+
+# Safety margin on the reach an extension is granted to arrive at the user's
+# picks: the landing lands slightly short of the target, so the reach must
+# clear the pick distance rather than exactly meet it.
+_REACH_MARGIN = 1.2
+
 # One grown, possibly-joined linear feature.
 #   indices:       (K,) point indices into all_points belonging to the line.
 #   centerline:    (M, 3) float32 ordered polyline down the line, or None (no
@@ -82,9 +96,25 @@ _DEDUPE_ABS_TOL = 1e-6
 #   end_cylinders: list of (stop_reason, cylinder) for each march direction —
 #                  the last cylinder at each end of the line plus WHY growth
 #                  stopped there (a STOP_* key). Up to two per line (one per end).
+#                  Display geometry; ``stops`` is the machine-readable version.
+#   stops:         list of MarchStop — where and why each end gave up, the handle
+#                  the guided-extension workflow steps through.
 GrownLine = namedtuple(
-    "GrownLine", ["indices", "centerline", "cylinders", "end_cylinders"]
+    "GrownLine", ["indices", "centerline", "cylinders", "end_cylinders", "stops"],
+    defaults=((),),
 )
+
+# Where and why one march direction gave up.
+#   tip:       the search tip when it stopped — the point the march was looking
+#              ahead from, i.e. the end of what it managed to trace.
+#   direction: the heading it was travelling on (unit).
+#   reason:    a STOP_* key.
+#
+# Distinct from ``end_cylinders``, which holds midpoint-CHAIN geometry for
+# drawing and is recorded only when at least one step succeeded. A march that
+# dies on its first step produces no cylinder but still produces a MarchStop —
+# and those ends are exactly the ones worth re-seeding.
+MarchStop = namedtuple("MarchStop", ["tip", "direction", "reason"])
 
 
 class LinearRegionGrower:
@@ -167,6 +197,11 @@ class LinearRegionGrower:
         # Held as a list of per-step index arrays; read via swept_indices().
         self._swept_chunks = []
 
+        # Where each march direction of the last grow() gave up: one MarchStop
+        # per direction. Read via march_stops(). These are what the guided
+        # extension workflow steps through — see march_stops().
+        self._march_stops = []
+
         # Optional cooperative-cancel handle (any object with .is_set()), set for
         # the duration of a grow_lines() call so the march can bail out promptly
         # on a long trace. None disables the check. The engine stays GUI-free —
@@ -194,15 +229,25 @@ class LinearRegionGrower:
     # Public                                                             #
     # ------------------------------------------------------------------ #
 
-    def grow(self, seed_indices: np.ndarray) -> np.ndarray:
+    def grow(self, seed_indices: np.ndarray, only_direction=None) -> np.ndarray:
         """
         Grow a single linear feature from *seed_indices*.
 
         Returns an array of point indices belonging to the feature (indices
         into ``self.all_points``), always including the seeds.
+
+        *only_direction*, when given, restricts the axis march to the single
+        heading pointing that way instead of both. Used when continuing an
+        existing trace, where the opposite march would only re-walk line that is
+        already traced: it costs a second full march and leaves redundant
+        vertices in the joined centerline (measured: 37 vertices vs 26 for the
+        same feature). The result is equivalent either way — the union and the
+        centerline join both absorb the retrace — so this is about cost, not
+        correctness.
         """
         seed_indices = np.asarray(seed_indices, dtype=np.intp)
         self._swept_chunks = []
+        self._march_stops = []
         if seed_indices.size == 0:
             return seed_indices
         if self.mode == LINEARITY_CONNECTED:
@@ -212,7 +257,8 @@ class LinearRegionGrower:
             return region
         # AXIS_TRACE and HYBRID both march along the axis; HYBRID adds the gate.
         return self._grow_axis_trace(
-            seed_indices, use_linearity_gate=(self.mode == HYBRID)
+            seed_indices, use_linearity_gate=(self.mode == HYBRID),
+            only_direction=only_direction,
         )
 
     def swept_indices(self) -> np.ndarray:
@@ -226,6 +272,272 @@ class LinearRegionGrower:
         if not self._swept_chunks:
             return np.empty(0, dtype=np.intp)
         return np.unique(np.concatenate(self._swept_chunks)).astype(np.intp)
+
+    def march_stops(self) -> list:
+        """The ``MarchStop`` for each direction of the last ``grow()`` — where
+        and why the trace gave up.
+
+        This is the handle for continuing a short trace: re-seed with the points
+        around a stop plus points the user picks beyond it, and call ``grow()``
+        again. Empty for the linearity-connected mode (it does not march).
+        """
+        return list(self._march_stops)
+
+    # ------------------------------------------------------------------ #
+    # Guided extension — continue a short trace from one of its stops     #
+    #                                                                    #
+    # A trace that gave up early is not re-grown from scratch: the user   #
+    # picks a few points beyond the stop, those are unioned with the      #
+    # line's own points around the stop, and the SAME grow() runs on the  #
+    # combined seed body. The existing points carry the established       #
+    # heading; the picks say where the feature goes. Growth is never      #
+    # loosened to reach further — the picks are the evidence that the     #
+    # feature continues. See LINEAR_REGION_GROWING.md.                    #
+    # ------------------------------------------------------------------ #
+
+    def unclaimed_ahead(self, stop, claimed_mask) -> np.ndarray:
+        """Indices of points lying ahead of *stop* that no line has claimed.
+
+        Searched wider and further than the march itself (see
+        ``_RANK_REACH_FACTOR`` / ``_RANK_RADIUS_FACTOR``): the march already
+        established there was nothing usable inside its own tube, so anything
+        worth extending into is by definition outside it.
+
+        Deliberately not routed through ``_query_tube`` — that gates on
+        ``cylinder_radius``, the very limit this needs to exceed.
+        """
+        reach = self.cylinder_length * self.reach_factor * _RANK_REACH_FACTOR
+        radius = self.cylinder_radius * _RANK_RADIUS_FACTOR
+        half = reach / 2.0
+
+        tip = np.asarray(stop.tip, dtype=float)
+        direction = unit(np.asarray(stop.direction, dtype=float))
+        candidate_idx = self.kdtree.query_ball_point(
+            tip + half * direction, np.sqrt(radius ** 2 + half ** 2)
+        )
+        if not candidate_idx:
+            return np.empty(0, dtype=np.intp)
+
+        candidate_idx = np.asarray(candidate_idx, dtype=np.intp)
+        vecs = self.all_points[candidate_idx] - tip
+        along = vecs @ direction
+        perp_dist = np.linalg.norm(vecs - np.outer(along, direction), axis=1)
+
+        ahead = (along > 0) & (along <= reach) & (perp_dist < radius)
+        ahead &= ~np.asarray(claimed_mask, dtype=bool)[candidate_idx]
+        return candidate_idx[ahead]
+
+    def rank_stops(self, stops, claimed_mask) -> list:
+        """Order *stops* by how many unclaimed points lie ahead of each, most
+        first, so genuine feature ends sink to the bottom of the queue.
+
+        Returns ``[(stop, n_ahead), ...]``. With up to two ends per line, thirty
+        features produce sixty stops and most are real ends — without ranking the
+        user would step through all of them to find the few worth extending.
+        """
+        scored = [(stop, int(self.unclaimed_ahead(stop, claimed_mask).size))
+                  for stop in stops]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored
+
+    def stop_seed_indices(self, stop, line_indices) -> np.ndarray:
+        """The line's own points around *stop* — the traced body a re-seed
+        inherits its heading from.
+
+        Union these with the user's fresh picks and hand the result to
+        ``grow()``: PCA orders the combined body, the anchor lands in its middle,
+        and the march traverses it under the same cylinder rule as any other
+        growth (see ``_grow_axis_trace``). One search reach of already-traced
+        line is enough body to fix the direction.
+        """
+        line_indices = np.asarray(line_indices, dtype=np.intp)
+        if line_indices.size == 0:
+            return line_indices
+        radius = self.cylinder_length * self.reach_factor
+        dist = np.linalg.norm(
+            self.all_points[line_indices] - np.asarray(stop.tip, dtype=float), axis=1
+        )
+        return line_indices[dist <= radius]
+
+    def _pick_bounded_search(self, stop, picks):
+        """How far and how wide an extension must search to actually ARRIVE at
+        the user's *picks*. Returns ``(reach_factor, cylinder_radius)``.
+
+        The normal search is tuned to bridge incidental gaps blindly, so it is
+        deliberately short and narrow — a re-seed under it stops dead at the very
+        hole the user just pointed across. The picks are explicit evidence that
+        the feature continues there, so the search is authorised to travel far
+        enough and wide enough to see the furthest one, and no further. Both
+        relaxations are bounded by the user's own gesture rather than by a guess.
+
+        The width matters as much as the distance, and less obviously: the tube
+        is aimed along the heading the march *drifted* to, and any angular error
+        is amplified by how far it reaches. A heading 2 degrees off — routine
+        after a few re-fits — misses by 0.2 m at 6 m and by 0.85 m at 25 m. Grant
+        the reach without the width and the tube sails straight past the points
+        the user picked, which is exactly the failure this method exists to stop.
+        """
+        if picks.size == 0:
+            return self.reach_factor, self.cylinder_radius
+
+        tip = np.asarray(stop.tip, dtype=float)
+        direction = unit(np.asarray(stop.direction, dtype=float))
+        vecs = self.all_points[picks] - tip
+
+        needed = float(np.linalg.norm(vecs, axis=1).max()) * _REACH_MARGIN
+        along = vecs @ direction
+        perp = float(np.linalg.norm(vecs - np.outer(along, direction), axis=1).max())
+        return (max(self.reach_factor, needed / self.cylinder_length),
+                max(self.cylinder_radius, perp * _REACH_MARGIN))
+
+    def rollback_stop(self, line, stop, n_steps):
+        """Discard the last *n_steps* of march from the end of *line* at *stop*,
+        returning ``(trimmed_line, new_stop)``.
+
+        A march often stops because the last step or two went wrong, not because
+        the feature ended: the fit window caught a neighbouring object, the axis
+        drifted off the centre, and the heading that came out of it points
+        somewhere the feature never went. Extending from that tip inherits the
+        bad heading and repeats the mistake. Rolling the end back to before the
+        damage gives the re-seed a clean body and a clean direction.
+
+        Trimming is done on the centerline by ARC LENGTH, not by slicing the
+        recorded cylinder list: cylinders accumulate across both march directions
+        and any earlier extensions, so their order no longer identifies "the last
+        few of this end". Arc length along the polyline does, and it follows
+        curves correctly.
+
+        Returns ``None`` when the rollback would consume the whole line (nothing
+        left to re-seed from) or when there is no centerline to trim.
+        """
+        if n_steps <= 0:
+            return line, stop
+        centerline = line.centerline
+        if centerline is None or len(centerline) < 2:
+            return None
+
+        # Orient the polyline so the end being trimmed is last.
+        pts = np.asarray(centerline, dtype=float)
+        tip = np.asarray(stop.tip, dtype=float)
+        if np.linalg.norm(pts[0] - tip) < np.linalg.norm(pts[-1] - tip):
+            pts = pts[::-1]
+
+        # The march advances by this much per step, so N steps is this far back.
+        distance = n_steps * self.cylinder_length * (1.0 - self.overlap)
+
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        if distance >= seg.sum():
+            return None  # would trim away the whole line
+
+        # Walk back from the trimmed end until *distance* of arc is consumed,
+        # then cut partway along the segment we land in.
+        walked = 0.0
+        cut_i = len(pts) - 1
+        for i in range(len(seg) - 1, -1, -1):
+            if walked + seg[i] >= distance:
+                cut_i = i
+                break
+            walked += seg[i]
+        remainder = distance - walked
+        frac = 0.0 if seg[cut_i] <= 1e-12 else remainder / seg[cut_i]
+        cut_point = pts[cut_i + 1] + (pts[cut_i] - pts[cut_i + 1]) * frac
+
+        kept = np.vstack([pts[:cut_i + 1], cut_point[None, :]])
+        if len(kept) < 2:
+            return None
+
+        heading = unit(kept[-1] - kept[-2])  # still pointing outward
+        new_stop = MarchStop(cut_point, heading, stop.reason)
+
+        # Drop the points the trimmed stretch had collected. Scoped to the
+        # neighbourhood of the cut so the far side of a curved or doubled-back
+        # line is never caught by the same half-space test.
+        indices = np.asarray(line.indices, dtype=np.intp)
+        rel = self.all_points[indices] - cut_point
+        near = np.linalg.norm(rel, axis=1) <= distance + self.cylinder_length
+        keep = ~(near & ((rel @ heading) > 0))
+
+        return GrownLine(
+            indices[keep],
+            kept.astype(np.float32),
+            [c for c in line.cylinders
+             if not self._beyond(c[0], cut_point, heading, distance)],
+            list(line.end_cylinders),
+            [s for s in line.stops if s is not stop] + [new_stop],
+        ), new_stop
+
+    def _beyond(self, point, cut_point, heading, span):
+        """Whether *point* lies past the cut, within the trimmed neighbourhood."""
+        rel = np.asarray(point, dtype=float) - cut_point
+        return bool(np.linalg.norm(rel) <= span + self.cylinder_length
+                    and rel @ heading > 0)
+
+    def splice_centerline(self, centerline, segments):
+        """Re-join an existing polyline with freshly marched *segments*.
+
+        A polyline's consecutive vertex pairs are valid input segments, so this
+        is just ``_join_centerline`` over the union — which already pools,
+        dedupes and re-chains from a PCA extreme, so it needs no help ordering an
+        extension relative to what it extends.
+        """
+        pooled = list(segments)
+        if centerline is not None and len(centerline) >= 2:
+            pts = np.asarray(centerline, dtype=float)
+            pooled.extend(zip(pts[:-1], pts[1:]))
+        return self._join_centerline(pooled)
+
+    def extend_from_stop(self, stop, line, extra_indices):
+        """Re-grow from *stop* with the user's *extra_indices* and splice the
+        result into *line*. Returns a new ``GrownLine``, or None when the
+        combined seed body was too small to grow from.
+
+        This growth's own stops are available afterwards from ``march_stops()``:
+        an extension that stops again produces new stops the caller can queue for
+        another pass.
+
+        Two things are relaxed for this growth and nothing else: the march runs
+        only outward (``only_direction``), and its search is opened up just far
+        and wide enough to arrive at the furthest pick
+        (``_pick_bounded_search``). Everything after the landing — the fit
+        window, the angle gate, membership — is the ordinary growth every other
+        line gets.
+        """
+        picks = np.asarray(extra_indices, dtype=np.intp)
+        seeds = np.union1d(self.stop_seed_indices(stop, line.indices), picks)
+        if seeds.size < 2:
+            return None
+
+        # Grow in isolation so the spliced geometry is only this extension's.
+        self.debug_cylinders = []
+        self.debug_lines = []
+        self.debug_end_cylinders = []
+
+        saved = (self.reach_factor, self.cylinder_radius)
+        try:
+            self.reach_factor, self.cylinder_radius = \
+                self._pick_bounded_search(stop, picks)
+            grown = self.grow(seeds, only_direction=stop.direction)
+        finally:
+            self.reach_factor, self.cylinder_radius = saved
+
+        # Did the MARCH contribute, or did it stop immediately and hand back the
+        # seeds it was given? grow() always returns the seeds, so counting points
+        # would call "the picks got added to the line" a successful extension —
+        # and the user would be told it worked while the trace stood still.
+        if np.setdiff1d(grown, seeds, assume_unique=False).size == 0:
+            return None
+
+        # The stop just extended from is gone; the new march's stops replace it.
+        # Everything else the line already had is kept. end_cylinders accumulate
+        # (display only) — the caller rebuilds stop markers from ``stops``.
+        remaining = [s for s in line.stops if s is not stop]
+        return GrownLine(
+            np.union1d(np.asarray(line.indices, dtype=np.intp), grown),
+            self.splice_centerline(line.centerline, self.debug_lines),
+            list(line.cylinders) + list(self.debug_cylinders),
+            list(line.end_cylinders) + list(self.debug_end_cylinders),
+            remaining + self.march_stops(),
+        )
 
     def grow_lines(self, seed_groups, *, progress_cb=None, cancel_event=None) -> list:
         """
@@ -318,7 +630,8 @@ class LinearRegionGrower:
                 lines.append(GrownLine(np.array(sorted(set(int(i) for i in grown)),
                                                 dtype=np.intp),
                                        centerline, list(self.debug_cylinders),
-                                       list(self.debug_end_cylinders)))
+                                       list(self.debug_end_cylinders),
+                                       self.march_stops()))
 
                 if progress_cb is not None:
                     progress_cb(len(lines), total,
@@ -388,7 +701,8 @@ class LinearRegionGrower:
             min_inlier_ratio=min_inlier_ratio,
         )
 
-    def _grow_axis_trace(self, seed_indices, use_linearity_gate=False) -> np.ndarray:
+    def _grow_axis_trace(self, seed_indices, use_linearity_gate=False,
+                         only_direction=None) -> np.ndarray:
         seed_indices = np.asarray(seed_indices, dtype=np.intp)
         seed_pts = self.all_points[seed_indices]
         if len(seed_pts) < 2:
@@ -410,8 +724,16 @@ class LinearRegionGrower:
         # a locally-refit cylinder, so it traverses half the seed body, reaches
         # the far end, and continues past it; the two passes share the anchor and
         # tile into one continuous chain of aligned cylinders / centerline.
-        collected |= self._march(anchor, start_dir, use_linearity_gate)
-        collected |= self._march(anchor, -start_dir, use_linearity_gate)
+        directions = (start_dir, -start_dir)
+        if only_direction is not None:
+            # Keep the locally-fitted heading (a better tangent than the caller's
+            # reference) but only the sign that travels the requested way.
+            ref = unit(np.asarray(only_direction, dtype=float))
+            directions = (start_dir if np.dot(start_dir, ref) >= 0 else -start_dir,)
+        for direction in directions:
+            grown, stop = self._march(anchor, direction, use_linearity_gate)
+            collected |= grown
+            self._march_stops.append(stop)
         return np.array(sorted(collected), dtype=np.intp)
 
     @staticmethod
@@ -446,8 +768,11 @@ class LinearRegionGrower:
                 direction = local_model.direction
         return anchor, unit(direction)
 
-    def _march(self, tip, direction, use_linearity_gate) -> set:
+    def _march(self, tip, direction, use_linearity_gate):
         """Drive the cylinder march in one direction from *tip*.
+
+        Returns ``(collected, MarchStop)`` — the point indices grown in this
+        direction, and where/why the march gave up.
 
         Each step: search the reach-tube ahead (``_query_tube``); if the near
         fit window holds enough points, fit the local axis (``_fit_step``),
@@ -509,6 +834,20 @@ class LinearRegionGrower:
 
                 # Stop on a genuine (measured) bend of the fitted axis.
                 if np.dot(fit_dir, current_dir) < self.max_angle_cos:
+                    # Keep the points still hugging the CURRENT heading before
+                    # giving up — they are on this line even though the window's
+                    # fitted axis turned away (the turn is usually caused by
+                    # something else entering the window). Mirrors the
+                    # too-few-points branch below; without it a bend throws away
+                    # up to a full window of genuine members.
+                    #
+                    # Deliberately NOT recorded as swept: a bend often means a
+                    # second feature crosses here, and marking its neighbourhood
+                    # swept would consume that feature's seed group.
+                    collected.update(
+                        int(i) for i in candidate_idx[near_mask
+                                                      & (perp_dist < self.ransac_threshold)]
+                    )
                     reason = STOP_SHARP_BEND  # direction turned more than max_angle
                     break
 
@@ -559,7 +898,11 @@ class LinearRegionGrower:
         if len(self.debug_cylinders) > start_n:
             self.debug_end_cylinders.append((reason, self.debug_cylinders[-1]))
 
-        return collected
+        # current_tip is where the search was looking when it gave up, and
+        # current_dir the heading it was on — both valid even when no step ever
+        # succeeded (the anchor and its initial heading), which is the case the
+        # end_cylinders record above cannot represent.
+        return collected, MarchStop(current_tip.copy(), current_dir.copy(), reason)
 
     def _query_tube(self, tip, direction, reach, reach_half, reach_radius,
                     use_linearity_gate):
@@ -738,6 +1081,97 @@ STOP_REASONS = {
     STOP_EMPTY_SPACE:    ("empty space",     np.array([1.0, 0.0, 1.0], dtype=np.float32)),   # magenta
     STOP_STEP_CAP:       ("step cap",        np.array([1.0, 1.0, 1.0], dtype=np.float32)),   # white
 }
+
+
+# --------------------------------------------------------------------------- #
+# Stop records — MarchStop <-> plain data for the project file                 #
+#                                                                             #
+# A result branch carries its stops so a short trace can be continued in a     #
+# later session. Persisted as plain dicts, not MarchStop tuples: the records   #
+# outlive the session inside the project file, so they must not depend on this #
+# module's class staying importable at the same path.                          #
+# --------------------------------------------------------------------------- #
+
+def lines_to_traces(lines, params, resolved=()) -> dict:
+    """Pack grown *lines* into the plain ``Clusters.line_traces`` structure.
+
+    A line's label is its index in *lines*, matching the cluster labels the
+    plugin writes. Point indices are deliberately NOT stored — they are
+    recoverable from those labels, and duplicating them would let the two
+    disagree. *resolved* is a set of ``(label, reason, tip_tuple)`` keys for
+    stops the user has already dismissed as genuine feature ends.
+    """
+    packed = []
+    for label, line in enumerate(lines):
+        centerline = ([] if line.centerline is None
+                      else [[float(v) for v in pt] for pt in line.centerline])
+        packed.append({
+            "label": int(label),
+            "centerline": centerline,
+            "stops": [
+                {
+                    "tip": [float(v) for v in stop.tip],
+                    "direction": [float(v) for v in stop.direction],
+                    "reason": stop.reason,
+                    "resolved": stop_key(label, stop) in resolved,
+                }
+                for stop in line.stops
+            ],
+        })
+    return {"params": dict(params), "lines": packed}
+
+
+def traces_to_lines(traces, labels) -> list:
+    """Rebuild ``GrownLine`` objects from persisted *traces* plus the cluster
+    *labels* array the point indices come from.
+
+    Search cylinders and end cylinders are not persisted — they are debug
+    display geometry, regenerated by any further growth — so they come back
+    empty. Everything the extension workflow needs (indices, centerline, stops)
+    is restored.
+    """
+    lines = []
+    for entry in traces.get("lines", []):
+        label = int(entry["label"])
+        centerline = np.asarray(entry["centerline"], dtype=np.float32)
+        lines.append(GrownLine(
+            np.where(np.asarray(labels) == label)[0].astype(np.intp),
+            centerline if len(centerline) >= 2 else None,
+            [], [],
+            [record_to_stop(rec) for rec in entry.get("stops", [])],
+        ))
+    return lines
+
+
+def resolved_stop_keys(traces) -> set:
+    """The ``stop_key`` set for stops already dismissed as genuine ends, so a
+    reopened session does not walk the user back through them."""
+    return {
+        stop_key(int(entry["label"]), record_to_stop(rec))
+        for entry in traces.get("lines", [])
+        for rec in entry.get("stops", [])
+        if rec.get("resolved")
+    }
+
+
+def record_to_stop(record) -> MarchStop:
+    """Rebuild a usable ``MarchStop`` from one persisted stop record."""
+    return MarchStop(
+        np.asarray(record["tip"], dtype=float),
+        np.asarray(record["direction"], dtype=float),
+        record["reason"],
+    )
+
+
+def stop_key(label, stop):
+    """Hashable identity for a stop, stable across a save/load round trip.
+
+    Stops have no id of their own and are rebuilt as fresh objects on load, so
+    identity has to come from the values. Tips are rounded to the millimetre —
+    far below any real feature detail, and enough to survive float32 storage.
+    """
+    return (int(label), stop.reason,
+            tuple(round(float(v), 3) for v in stop.tip))
 
 
 def cylinders_to_vector_feature(cylinders, color=None, n_segments=12,
