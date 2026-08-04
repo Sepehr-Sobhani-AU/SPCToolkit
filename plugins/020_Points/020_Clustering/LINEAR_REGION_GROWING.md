@@ -35,6 +35,44 @@ Both tests use the **swept region** (everything that fell inside a step's fit wi
 
 Because a group is only ever dropped when growth genuinely reached it, parallel neighbouring features are never fused (growth never crosses the gap to them), collinear features separated by more than the search reach stay separate, and a feature split across many groups comes out whole.
 
+### Extending traces that stopped short
+
+Growth rarely reaches the end of every feature — a march gives up at an occlusion, a density drop, or a spurious bend. Rather than re-picking seeds and re-running (which produces a *competing* branch), the stops are handed back to you to walk through.
+
+Every march end records **where** it stopped, **which way** it was heading, and **why**. After growing, the plugin offers to open **Extend Traced Lines**; the same window reopens later on a saved result via the `extend_traced_lines` plugin, since the stops and centerlines are persisted on the result branch (`Clusters.line_traces`).
+
+For each stop the window brings it into view, marks it with a green "you are here" wireframe branch, and reports how many unclaimed points lie ahead:
+
+- **Extend from picks** — pick a few points beyond the marker; growth re-runs seeded with **the line's own points around the stop ∪ your picks**, and the result is spliced into the existing line.
+- **Real end** — the feature genuinely ends here; never ask again (survives save/reload).
+- **Skip** — leave it undecided.
+- **Discard last N cylinder(s)** — throw away the last N steps of march *before* growing again (default 0).
+
+Stops are **ranked** by unclaimed points ahead, so the ones worth extending come first and genuine ends sink to the bottom. With up to two ends per line, thirty features produce sixty stops and most are real ends — ranking is the difference between reviewing eight and sixty.
+
+The queue is ranked **once, on open**, and you keep your place as you work: settling a stop removes it and lands you on the next one. Re-ranking after every extension would reshuffle the list and bounce you back to the top each time you fixed something. Any stop a fresh extension produces goes to the **back** of the queue — worth revisiting, but not by interrupting the walk you are partway through. The points-ahead figure for the current stop is recomputed live, so it stays honest as earlier extensions claim points.
+
+### Discarding the last cylinders
+
+A march often stops because the last step or two went *wrong*, not because the feature ended — the fit window caught a neighbouring object, the axis drifted off centre, and the heading that came out points somewhere the feature never went. Re-seeding from that tip inherits the bad heading and repeats the mistake.
+
+Setting **Discard last N cylinder(s)** trims that much march off the end first: the centerline is cut back by `N × cylinder_length × (1 − overlap)` of arc length, the points the trimmed stretch collected are dropped, and the re-seed starts from the clean tip with the heading the line had there.
+
+Trimming works on **arc length along the centerline**, not by slicing the recorded cylinder list — cylinders accumulate across both march directions and any earlier extensions, so their order no longer identifies "the last few of this end", and arc length follows curves correctly. Asking to roll back further than the line is long is refused rather than deleting the feature.
+
+Note what this does and does not do: it backs the end *out* of a trouble spot. Whether the following march then gets *past* the obstacle depends on the growth parameters (`cylinder_radius`, `max_angle`), not on the rollback.
+
+**Why re-seeding rather than automatic extension.** An automatic pass would have to *guess* whether a feature continues, and a wrong guess drives a line through a pole top into empty sky — worse than a short trace, because you have to notice it to fix it. Your picks *are* the answer. Growth is never loosened on its own initiative.
+
+**What the picks authorise.** The re-seed runs the ordinary growth — same fit window, same angle gate, same membership threshold — with exactly two relaxations, both bounded by where you pointed:
+
+1. The march runs **only outward**, since the opposite direction would re-walk line already traced.
+2. The search is opened up just far and wide enough to *arrive* at your furthest pick.
+
+The width matters as much as the distance, and less obviously: the search tube is aimed along the heading the march **drifted** to, and angular error scales with reach. A heading 2° off — routine after a few re-fits — misses by 0.2 m at 6 m and 0.85 m at 25 m. Granting reach without width sails the tube straight past the points you picked.
+
+With no picks, nothing is relaxed at all — which is what stops the workflow from quietly guessing.
+
 **Progress & cancellation:** growing runs on a background thread (like [Surface Region Growing](SURFACE_REGION_GROWING.md)). While it runs the menus and tree are disabled, a status-bar progress bar reports how many lines have been traced, and a **Cancel** button stops the trace early — the lines grown so far are still saved as a result branch, and the completion message notes that it was cancelled. The 3D viewer stays interactive for camera manipulation throughout.
 
 ---

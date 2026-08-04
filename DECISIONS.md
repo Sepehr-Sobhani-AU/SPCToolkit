@@ -220,3 +220,90 @@ than the search reach stay separate.
 `power_line_detection` still runs its own pre-growth `already_grown` check
 against member points and has no post-growth check, so it retains bug (1) and
 (2). Left alone deliberately — not in this fix's scope.
+
+## 2026-08-04 — Short traces are extended by USER-CONFIRMED re-seeding, not by automatic relaxation
+
+Linear region growing does not reach the end of every feature, and the manual
+cleanup that follows is almost entirely *extending traces that gave up early*.
+
+The obvious automation is an automatic post-growth pass: at each stop, retry with
+the search relaxed according to the stop reason, and accept the extension if
+points re-appear. Rejected as the first step. Such a pass has to **guess**
+whether a feature continues, and a wrong guess drives a line through a pole top
+into empty sky — worse than a short trace, because it has to be *noticed* before
+it can be fixed. It also has to be tuned against synthetic cases before anyone
+has seen how real stops distribute between "obviously continues" and "genuine
+end".
+
+Locked: extension is **guided re-seeding**. Every march end now reports where it
+stopped, its heading, and why (`MarchStop`, `march_stops()`). A window steps
+through those stops — ranked by how many unclaimed points lie ahead, so genuine
+ends sink to the bottom — and for a stop where the feature really does continue,
+the user picks a few points beyond it. Growth then re-runs seeded with the line's
+own points around the stop ∪ those picks, and the result is spliced into the
+existing line (`extend_from_stop`). The picks are the evidence; growth never
+loosens on its own initiative.
+
+Exactly two things are relaxed for a re-seed, both bounded by the user's gesture
+(`_pick_bounded_search`):
+
+1. The march runs **only outward** (`grow(only_direction=...)`) — the opposite
+   direction would only re-walk traced line. Measured: 26 centerline vertices
+   instead of 37 for the same feature. Cost, not correctness; the union and the
+   centerline join absorb a retrace either way.
+2. The search reach **and tube width** open just enough to arrive at the furthest
+   pick. Both are needed. The tube is aimed along the heading the march *drifted*
+   to, and angular error scales with reach: a 2° drift (routine after a few
+   re-fits) misses by 0.2 m at 6 m and 0.85 m at 25 m. Granting reach alone was
+   measured to sail straight past the picked points — the extension collected the
+   picks and nothing else.
+
+With no picks, nothing is relaxed, which is what prevents silent guessing.
+
+Also fixed in the same path: stopping on a sharp bend discarded the entire fit
+window, while the too-few-points branch keeps its near on-axis points. A bend
+usually means something else entered the window, so the points still hugging the
+current heading belong to this line — up to a full `cylinder_length` was being
+thrown away at every bend. Those points are now kept, but the window is
+deliberately **not** marked swept: a bend often means a second feature crosses
+there, and marking its neighbourhood swept would consume that feature's seed
+group (see 2026-07-30).
+
+Traces are persisted on the result (`Clusters.line_traces`, plain data — it
+outlives the session in the project file, so it must not depend on a service
+class staying importable), so extension can continue in a later session via the
+`extend_traced_lines` plugin. The automatic pass is deferred, to be reconsidered
+once real clouds show how many stops are trivially recoverable.
+
+## 2026-08-04 (b) — Stop queue is ranked once; a bad last cylinder is rolled back, not grown from
+
+Two corrections to the guided-extension workflow above, both from using it.
+
+**The queue is ranked once, on open.** The first version re-ranked after every
+extension and reset the walk to the top, so fixing one stop threw away the user's
+place and re-offered stops they had already passed. Ranking is a starting
+suggestion, not a live scoreboard. Settling a stop now removes it in place and
+lands on the next; stops produced by a fresh extension go to the BACK of the
+queue. Only the points-ahead figure for the *current* stop is recomputed live, so
+it stays honest as earlier extensions claim points.
+
+**A march that stopped badly is rolled back before re-seeding.** A stop is often
+caused by the last step or two going wrong — the fit window caught a neighbouring
+object and the heading drifted — so the tip is already off the feature and
+re-seeding from it inherits the bad direction. `rollback_stop(line, stop, n)`
+trims N steps off that end, drops the points the trimmed stretch collected, and
+returns a stop on what remains. Exposed as "Discard last N cylinder(s)".
+
+Trimming is by **arc length along the centerline**, not by slicing the recorded
+cylinder list: cylinders accumulate across both march directions and any earlier
+extensions, so their order no longer identifies "the last few of this end", and
+arc length follows curves correctly. Rolling back further than the line is long
+is refused rather than deleting the feature. It backs the end *out* of a trouble
+spot; whether the following march gets *past* the obstacle is down to
+`cylinder_radius` / `max_angle`, not to the rollback.
+
+Also fixed: `extend_from_stop` reported success by point count, but `grow()`
+always returns the seeds it was given — so an extension whose march stopped dead
+still came back holding the user's picks, and the user was told the trace had
+advanced when it had not. It now requires the march to contribute something
+beyond the seeds.
