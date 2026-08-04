@@ -49,8 +49,11 @@ from core.services.linear_region_grower import (
     HYBRID,
     centerlines_to_vector_feature,
     cylinders_to_vector_feature,
+    lines_to_traces,
     STOP_REASONS,
 )
+from plugins.dialogs.line_extension_window import LineExtensionWindow
+from application.selection_gate import picked_cloud_indices
 
 
 _MODE_MAP = {
@@ -273,6 +276,45 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
         self._show_summary(main_window, labels, lines, stopped_early)
 
+        # --- Offer to walk the stops and extend the traces that fell short ---
+        # Growth almost never reaches the end of every feature, and the fix is
+        # cheapest right now while the grower and the picks are still to hand.
+        # Declining is fine: the stops are persisted on the result branch, so
+        # "Extend Traced Lines" reopens this on the saved branch at any time.
+        self._offer_extension(main_window, result_uid, pc_points, lines, grower, params)
+
+    def _offer_extension(self, main_window, result_uid, pc_points, lines, grower, params):
+        """Open the guided-extension window if any line stopped somewhere worth
+        looking at."""
+        claimed = np.zeros(len(pc_points), dtype=bool)
+        for line in lines:
+            claimed[line.indices] = True
+        promising = sum(
+            1 for line in lines for stop in line.stops
+            if grower.unclaimed_ahead(stop, claimed).size > 0
+        )
+        if promising == 0:
+            return
+
+        answer = QMessageBox.question(
+            main_window, "Extend Traced Lines?",
+            f"{promising} of the traced line ends have unclaimed points just "
+            f"beyond them, so those features may continue further.\n\n"
+            f"Step through them now and extend the ones that do?\n\n"
+            f"(You can also do this later: select the result branch and run "
+            f"Extend Traced Lines.)",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        window = LineExtensionWindow(result_uid, pc_points, lines, grower, params,
+                                     parent=main_window)
+        window.show()
+        # Held on the main window so Python does not garbage-collect a modeless
+        # dialog the moment this method returns.
+        main_window._line_extension_window = window
+
     # ------------------------------------------------------------------ #
     # execute() steps                                                    #
     # ------------------------------------------------------------------ #
@@ -341,29 +383,13 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         Returns ``(seed_groups, tree_kd)`` — the KD-tree is reused by the grower —
         or ``None`` when no usable seed group is found (a QMessageBox is shown).
         """
-        # --- Map picked points to reconstructed cloud via coordinate matching ---
-        selected_indices = viewer_widget.picked_points_indices
-        picked_coords = []
-        for idx in selected_indices:
-            if idx < len(viewer_widget.points):
-                picked_coords.append(viewer_widget.points[idx, :3])
-        if not picked_coords:
+        tree_kd = cKDTree(pc_points)
+        seed_indices = picked_cloud_indices(viewer_widget, pc_points, tree_kd)
+        if seed_indices is None:
             QMessageBox.warning(main_window, "No Points",
                                 "Could not retrieve coordinates for selected points.")
             return None
-        picked_coords = np.array(picked_coords, dtype=np.float32)
 
-        tree_kd = cKDTree(pc_points)
-        _, local_indices = tree_kd.query(picked_coords)
-        seed_set = set(int(i) for i in local_indices)
-
-        # Polygon re-test for full-resolution coverage
-        polygon_mask = viewer_widget.retest_polygon_selection(pc_points)
-        if polygon_mask is not None:
-            polygon_indices = np.where(polygon_mask)[0]
-            seed_set |= set(int(i) for i in polygon_indices)
-
-        seed_indices = np.array(sorted(seed_set), dtype=np.intp)
         if len(seed_indices) < _MIN_SEEDS:
             QMessageBox.warning(main_window, "Not Enough Points",
                                 f"Only {len(seed_indices)} seed points mapped. "
@@ -454,7 +480,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         for k, line in enumerate(lines):
             labels[line.indices] = k
             cluster_names[k] = f"Line {k + 1}"
-        clusters = Clusters(labels=labels, cluster_names=cluster_names)
+        # Carry the stops and centerlines on the result so a short trace can be
+        # continued in a later session without re-growing it (see
+        # Clusters.line_traces and the Extend Traced Lines plugin).
+        clusters = Clusters(labels=labels, cluster_names=cluster_names,
+                            line_traces=lines_to_traces(lines, params))
         clusters.set_random_color()
 
         result_uid = controller.add_analysis_result(
