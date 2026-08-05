@@ -111,6 +111,19 @@ class LineExtensionWindow(QDialog):
         # ad-hoc viewer overlay.
         self.focus_uid = None
 
+        # {stop reason: branch uid} for the per-reason stop markers the growth
+        # run drew, discovered once at open. Empty when the user did not ask for
+        # them — in which case the window never creates any, since which debug
+        # geometry is on screen is their choice, not ours.
+        self.stop_branches = self._discover_stop_branches()
+        self.track_stop_branches = bool(self.stop_branches)
+
+        # Whether the lines arrived carrying their search cylinders. A result
+        # saved before cylinders were persisted comes back without them, and
+        # rebuilding the branch from an extension alone would throw away the
+        # whole original run's geometry — better a stale branch than a gutted one.
+        self.had_cylinders = any(len(line.cylinders) for line in self.lines)
+
         self.poll_timer = QTimer()
         self.poll_timer.timeout.connect(self._refresh_pick_count)
 
@@ -334,14 +347,22 @@ class LineExtensionWindow(QDialog):
     # The "you are here" branch                                          #
     # ------------------------------------------------------------------ #
 
-    def _focus_feature(self, stop):
-        """Wireframe marking the stop: a cylinder lying along the heading the
-        march was on, so the user can see which way the feature was going."""
+    def _stop_cylinder(self, stop):
+        """A stop drawn as a cylinder sitting at its tip along the heading the
+        march was on, so the user can see which way the feature was going.
+
+        Slightly wider than the search tube when that is very thin, or the
+        marker is invisible at the zoom you review a whole line at.
+        """
         length = self.grower.cylinder_length
         radius = max(self.grower.cylinder_radius, length * 0.1)
+        return (np.asarray(stop.tip, dtype=float),
+                np.asarray(stop.direction, dtype=float), radius, length)
+
+    def _focus_feature(self, stop):
+        """Wireframe marking the stop currently under review."""
         return cylinders_to_vector_feature(
-            [(np.asarray(stop.tip, dtype=float),
-              np.asarray(stop.direction, dtype=float), radius, length)],
+            [self._stop_cylinder(stop)],
             color=_FOCUS_COLOR, symbol_type="Stop under review",
         )
 
@@ -386,10 +407,99 @@ class LineExtensionWindow(QDialog):
             return
         uid, self.focus_uid = self.focus_uid, None
         self.tree_widget.blockSignals(True)
-        self.tree_widget.remove_branch(uid)
+        self._remove_branch(uid)
         self.tree_widget.blockSignals(False)
-        self.controller.remove_node(uid)
         self._render()
+
+    # ------------------------------------------------------------------ #
+    # The per-reason stop markers                                        #
+    # ------------------------------------------------------------------ #
+
+    def _discover_stop_branches(self):
+        """The ``stop_<reason>`` branches the growth run drew, as {reason: uid}.
+
+        Matched against the known reasons rather than by prefix, so the window's
+        own ``stop_under_review`` branch is never mistaken for one of them.
+        """
+        result_node = self.controller.get_node(self.result_uid)
+        if result_node is None:
+            return {}
+        by_name = {f"stop_{reason}": reason for reason in STOP_REASONS}
+        return {
+            by_name[child.params]: str(child_uid)
+            for child_uid, child in self.controller.data_nodes.data_nodes.items()
+            if child.parent_uid == result_node.uid and child.params in by_name
+        }
+
+    def _update_stop_branches(self):
+        """Repaint the per-reason stop markers from the lines' CURRENT stops.
+
+        Left to itself this geometry is a record of the original run, so after
+        an extension it marks ends that no longer exist and misses the ones that
+        do — the line visibly runs past a red "too few points" marker. The stops
+        are the machine-readable truth (``end_cylinders`` is display leftovers
+        that only accumulate), so the markers are rebuilt from those: a branch
+        per reason, created when a reason first appears and removed when its last
+        stop is gone.
+
+        Only touched when the growth run drew these branches in the first place.
+        """
+        if not self.track_stop_branches:
+            return
+        result_node = self.controller.get_node(self.result_uid)
+        if result_node is None:
+            return
+
+        by_reason = {}
+        for line in self.lines:
+            for stop in line.stops:
+                by_reason.setdefault(stop.reason, []).append(
+                    self._stop_cylinder(stop))
+
+        self.tree_widget.blockSignals(True)
+        for reason, cylinders in by_reason.items():
+            label, color = STOP_REASONS.get(
+                reason, (reason, np.array([1.0, 1.0, 1.0], dtype=np.float32)))
+            feature = cylinders_to_vector_feature(
+                cylinders, color=color, symbol_type=f"Stop: {label}")
+            if feature is None:
+                continue
+            feature.cluster_reference = self.result_uid
+            uid = self.stop_branches.get(reason)
+            node = None if uid is None else self.controller.get_node(uid)
+            if node is None:
+                self.stop_branches[reason] = self._add_stop_branch(
+                    result_node, reason, feature)
+            else:
+                node.data = feature
+                self.controller.cache_service.invalidate(uid)
+
+        for reason in [r for r in self.stop_branches if r not in by_reason]:
+            self._remove_branch(self.stop_branches.pop(reason))
+        self.tree_widget.blockSignals(False)
+
+    def _add_stop_branch(self, result_node, reason, feature):
+        name = f"stop_{reason}"
+        uid = self.controller.add_analysis_result(
+            feature, "vector_feature", [result_node.uid], result_node,
+            name, self.params,
+        )
+        self.tree_widget.add_branch(
+            uid, self.result_uid, name, branch_type="vector_feature",
+            tooltip=f"linear_region_growing,{self.params}",
+        )
+        item = self.tree_widget.branches_dict.get(uid)
+        if item:
+            item.setCheckState(0, Qt.Checked)
+        self.tree_widget.visibility_status[uid] = True
+        return uid
+
+    def _remove_branch(self, uid):
+        """Drop a branch this window owns. Callers block tree signals around it —
+        blockSignals does not nest, so unblocking here would silently re-enable
+        them partway through a batch."""
+        self.tree_widget.remove_branch(uid)
+        self.controller.remove_node(uid)
 
     def _render(self):
         main_window = global_variables.global_main_window
@@ -561,6 +671,7 @@ class LineExtensionWindow(QDialog):
         self.controller.cache_service.invalidate(self.result_uid)
         self.controller.cache_service.invalidate_descendants(self.result_uid)
         self._update_debug_branches()
+        self._update_stop_branches()
         self._render()
 
     def _rebuilt_debug_feature(self, name):
@@ -574,7 +685,7 @@ class LineExtensionWindow(QDialog):
             return centerlines_to_vector_feature(
                 [line.centerline for line in self.lines]
             )
-        if name == "cylinders":
+        if name == "cylinders" and self.had_cylinders:
             return cylinders_to_vector_feature(
                 [c for line in self.lines for c in line.cylinders]
             )
@@ -589,10 +700,8 @@ class LineExtensionWindow(QDialog):
         this the cylinders stop at the original stop while the line runs on past
         it, which reads as the extension not having happened.
 
-        The per-stop-reason branches (``stop_*``) are deliberately left alone.
-        They are a record of where the original run ended, and the green marker
-        is the live "you are here" — repainting them mid-walk would put two
-        competing answers on screen.
+        The per-reason stop markers are handled separately, in
+        ``_update_stop_branches`` — they come and go with the reasons that exist.
         """
         result_node = self.controller.get_node(self.result_uid)
         if result_node is None:

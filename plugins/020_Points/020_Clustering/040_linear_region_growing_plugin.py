@@ -210,8 +210,10 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "description": "Draw the last search cylinder at each end of every "
                                "line, split into one coloured branch per stop reason "
                                "(red=too few points, orange=sharp bend, "
-                               "magenta=empty space, white=step cap) — shows where "
-                               "and why growth stopped (axis-trace / hybrid only)",
+                               "magenta=empty space, white=step cap, cyan=end of "
+                               "your picks) — shows where and why growth stopped, "
+                               "and is kept up to date by Extend Traced Lines "
+                               "(axis-trace / hybrid only)",
             },
         }
 
