@@ -376,3 +376,29 @@ never creates branches they did not want). The per-reason `stop_*` branches are
 deliberately NOT repainted: they record where the original run ended, and the
 green "you are here" marker is the live answer. Two live answers on screen is
 worse than one stale record clearly labelled as history.
+
+## 2026-08-05 (c) — Stop markers are drawn from the stops, not from march leftovers
+
+Supersedes the last paragraph of 2026-08-05 (b), which left the per-reason
+`stop_*` branches as a record of the original run. In practice that reads as a
+bug: after an extension the line visibly runs straight past a red "too few
+points" marker, and the end it actually has now is unmarked.
+
+The window now repaints those branches from the lines' CURRENT `stops` on every
+change — a branch is created when a reason first appears and removed when its
+last stop is gone. `stops` is the machine-readable truth; `end_cylinders` is
+display geometry that only ever accumulates (an extension appends to it), so it
+cannot answer "where does this line end now". Only branches the growth run drew
+are managed: which debug geometry is on screen stays the user's choice.
+
+One visible consequence: markers the window repaints sit at the stop tip along
+its heading, where the run drew the last search cylinder of the march. Same
+meaning, and it now matches the green "under review" marker, which is drawn the
+same way.
+
+**Search cylinders are now persisted with the trace** (`line_traces`, eight
+floats per step). Without them, a session that reopened a saved result and
+extended a line would rebuild the cylinder branch from the extension's handful
+of cylinders alone, throwing away the whole original run's geometry. Traces
+written before this come back with none, and the window leaves that branch
+alone rather than gutting it.

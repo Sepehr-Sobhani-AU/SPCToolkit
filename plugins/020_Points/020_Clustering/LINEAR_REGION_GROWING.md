@@ -57,7 +57,9 @@ The queue is ranked **once, on open**, and you keep your place as you work: sett
 
 **Undo** reverses the last change — an extension or a "real end". Stepping past a stop is not a change, so **Previous** is how you go back to one.
 
-The search cylinders and centerline wireframes (if you asked for them at growth time) are rebuilt after every change, so they follow the line as it grows rather than stopping where the original run did. The per-reason stop markers are left as the run drew them — they record where growth originally ended; the green marker is the live one.
+All the debug wireframes you asked for at growth time — search cylinders, centerlines and the per-reason stop markers — are rebuilt after every change, so they follow the lines instead of stopping where the original run did. Stop markers are redrawn from the lines' **current** stops: a branch appears when a reason first occurs and is removed when its last stop is gone, so you never see a red "too few points" marker sitting in the middle of a line that now runs past it. The green marker still says which stop is under review.
+
+Search cylinders are stored with the trace for the same reason, so reopening a saved result and extending it redraws the whole wireframe rather than just the new piece. A result saved before that was stored comes back without them, and its cylinder branch is left alone rather than being replaced by the extension's few.
 
 ### Your picks are the decision
 
