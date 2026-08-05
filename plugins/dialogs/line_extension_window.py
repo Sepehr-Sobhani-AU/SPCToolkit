@@ -13,8 +13,16 @@ stop PLUS those picks, and the result is spliced into the existing line. If the
 stop is a genuine feature end, one click dismisses it for good.
 
 Growth is never loosened to reach further on its own — the picks are the evidence
-that the feature continues. See ``LinearRegionGrower.extend_from_stop`` and
+that the feature continues, and for the same reason the picks are always adopted
+whether or not growth could follow them. See
+``LinearRegionGrower.extend_from_stop`` and
 ``plugins/020_Points/020_Clustering/LINEAR_REGION_GROWING.md``.
+
+An extension leaves the user ON the line it just extended: the end it reached
+becomes the new marker, in the same place in the queue, so they can see what
+their picks did and keep pushing the same feature out. Every change is
+snapshotted for Undo — growth is a judgement made from a picture on screen, and
+the user has to be able to look at a result and say "no, not that".
 
 Stops are ranked by how many unclaimed points lie ahead of them, so the ones
 worth looking at come first and genuine ends sink to the bottom of the queue.
@@ -89,6 +97,13 @@ class LineExtensionWindow(QDialog):
         self.pos = 0
         self.extensions_made = 0
 
+        # Snapshots taken before each change, newest last — what Undo walks back
+        # through. Growth is a judgement call made from a picture on screen, so
+        # the user has to be able to look at a result and say "no, not that".
+        # Cheap to keep: GrownLine is a namedtuple of arrays already built, so a
+        # snapshot copies references, not point data.
+        self.history = []
+
         # Branch showing which stop is under review. One branch, re-pointed at
         # each step — everything drawn is a tree-controllable branch, never an
         # ad-hoc viewer overlay.
@@ -112,7 +127,9 @@ class LineExtensionWindow(QDialog):
         layout.addWidget(QLabel(
             "Each stop below is where a traced line gave up.\n"
             "If the feature continues, pick a few points just past the marker\n"
-            "(Shift+Click, or P for polygon select) and press Extend."
+            "(Shift+Click, or P for polygon select) and press Extend.\n"
+            "The view stays on the line after each extension, so you can look at\n"
+            "the result, pick further and extend again — or undo it."
         ))
 
         box = QGroupBox("Current stop")
@@ -150,6 +167,11 @@ class LineExtensionWindow(QDialog):
         buttons = QHBoxLayout()
         self.extend_btn = QPushButton("Extend from picks")
         self.extend_btn.clicked.connect(self._extend)
+        self.undo_btn = QPushButton("Undo")
+        self.undo_btn.setToolTip(
+            "Put the line back the way it was before the last extension."
+        )
+        self.undo_btn.clicked.connect(self._undo)
         self.end_btn = QPushButton("Real end")
         self.end_btn.setToolTip(
             "The feature genuinely ends here — do not ask about this stop again."
@@ -158,7 +180,7 @@ class LineExtensionWindow(QDialog):
         self.skip_btn = QPushButton("Skip")
         self.skip_btn.setToolTip("Leave this stop undecided and move on.")
         self.skip_btn.clicked.connect(self._skip)
-        for btn in (self.extend_btn, self.end_btn, self.skip_btn):
+        for btn in (self.extend_btn, self.undo_btn, self.end_btn, self.skip_btn):
             buttons.addWidget(btn)
         layout.addLayout(buttons)
 
@@ -205,18 +227,16 @@ class LineExtensionWindow(QDialog):
         self.total_stops = len(self.queue)
         self.pos = 0
 
-    def _settle_current(self, new_stops=()):
-        """Drop the stop just decided from the queue and queue any stops the
-        decision produced.
+    def _settle_current(self):
+        """Drop the stop just decided from the queue.
 
-        New stops go to the BACK: an extension that stops again should be
-        revisited, but not by interrupting the walk the user is partway through.
         *pos* is left alone, so removing the current entry naturally lands on the
-        next one — the user carries on where they were.
+        next one — the user carries on where they were. Only a decision that
+        FINISHES with a line settles it; an extension replaces the stop in place
+        instead (see ``_extend``), keeping the user on the line they are working.
         """
         if 0 <= self.pos < len(self.queue):
-            label, _stop = self.queue.pop(self.pos)
-            self.queue.extend((label, stop) for stop in new_stops)
+            self.queue.pop(self.pos)
 
     def _current(self):
         if 0 <= self.pos < len(self.queue):
@@ -233,6 +253,9 @@ class LineExtensionWindow(QDialog):
         # as decisions are made instead of jumping about as the queue shrinks.
         self.progress.setMaximum(max(1, self.total_stops))
         self.progress.setValue(self.total_stops - len(self.queue))
+        # Stays live even at the end of the queue: the last thing the user did
+        # may be the thing they want back.
+        self.undo_btn.setEnabled(bool(self.history))
 
         widgets = (self.extend_btn, self.end_btn, self.skip_btn,
                    self.recentre_btn, self.rollback_spin)
@@ -371,6 +394,7 @@ class LineExtensionWindow(QDialog):
         if current is None:
             return
         label, stop = current
+        settled_stop = stop        # what the queue held, before any rollback
 
         picks = self._picked_indices()
         if picks.size == 0:
@@ -401,45 +425,82 @@ class LineExtensionWindow(QDialog):
                 return
             line, stop = rolled
 
-        extended = self.grower.extend_from_stop(stop, line, picks)
-        if extended is None or len(extended.indices) <= len(line.indices):
+        result = self.grower.extend_from_stop(stop, line, picks)
+        if result is None:
             QMessageBox.warning(
-                self, "Nothing Grown",
-                "Growth did not reach past this stop.\n\n"
-                "The picked points may be too far off the line's heading, or too "
-                "sparse to fit. Try picking points closer to the marker, picking "
-                "more of them, or discarding another cylinder or two first."
+                self, "Nothing Added",
+                "None of the picked points lie ahead of this stop, so there is "
+                "nothing for the line to grow into.\n\n"
+                "Pick points on the side of the marker the line was heading "
+                "towards. If the feature genuinely ends here, press 'Real end'."
             )
             return
 
-        self.lines[label] = extended
+        self._snapshot()
+        self.lines[label] = result.line
         self.extensions_made += 1
-        self.resolved.add(stop_key(label, self.queue[self.pos][1]))
+        # Dismiss the stop as it was recorded, so a reopened session does not
+        # walk the user back through an end they have already dealt with.
+        self.resolved.add(stop_key(label, settled_stop))
 
-        # Whatever this growth could not finish becomes a fresh stop to revisit.
-        self._settle_current(new_stops=self.grower.march_stops())
+        # Stay on this line. The frontier the extension left behind REPLACES the
+        # stop in place rather than being queued behind everything else, so the
+        # user sees what their picks did and can keep pushing the same line out —
+        # pick, extend, look, pick again — instead of being thrown to an
+        # unrelated stop the moment they press the button.
+        self.queue[self.pos] = (label, result.stop)
         self._clear_picks()
         self._commit()
         self._show_current()
 
-        gained = len(extended.indices) - before
-        rolled_note = f" after discarding {n_back} cylinder(s)" if n_back else ""
-        self.stop_label.setText(
-            f"{self.stop_label.text()}<br><i>Last extension: "
-            f"{gained:+d} points{rolled_note}</i>"
-        )
+        # Net of any rollback, so the figure matches what is now on screen.
+        gained = len(result.line.indices) - before
+        rolled_note = f", after discarding {n_back} cylinder(s)" if n_back else ""
+        if result.marched:
+            note = (f"{gained:+d} points, {len(result.line.indices)} on the line"
+                    f"{rolled_note}")
+        else:
+            note = (f"growth could not carry on, so your {picks.size} picked "
+                    f"point(s) were added to the line{rolled_note} — "
+                    f"pick further ahead and extend again")
+        self.stop_label.setText(f"{self.stop_label.text()}<br><i>Last: {note}</i>")
+
+    def _undo(self):
+        """Put everything back as it was before the last change."""
+        if not self.history:
+            QMessageBox.information(
+                self, "Nothing to Undo",
+                "No changes have been made since this window opened."
+            )
+            return
+        (self.lines, self.queue, self.pos, self.resolved,
+         self.extensions_made) = self.history.pop()
+        self._clear_picks()
+        self._commit()
+        self._show_current()
+        self.stop_label.setText(f"{self.stop_label.text()}<br><i>Last change "
+                                f"undone.</i>")
+
+    def _snapshot(self):
+        """Record the current state so ``_undo`` can restore it."""
+        self.history.append((list(self.lines), list(self.queue), self.pos,
+                             set(self.resolved), self.extensions_made))
 
     def _mark_real_end(self):
         current = self._current()
         if current is None:
             return
         label, stop = current
+        self._snapshot()
         self.resolved.add(stop_key(label, stop))
         self._settle_current()
         self._commit()
         self._show_current()
 
     def _skip(self):
+        # Snapshotted like any other change, so Undo doubles as "go back" — the
+        # only way to return to a stop once it has been stepped past.
+        self._snapshot()
         if self.pos + 1 < len(self.queue):
             self.pos += 1
         else:
