@@ -116,6 +116,18 @@ GrownLine = namedtuple(
 # and those ends are exactly the ones worth re-seeding.
 MarchStop = namedtuple("MarchStop", ["tip", "direction", "reason"])
 
+# The outcome of continuing a trace past one of its stops.
+#   line:    the extended GrownLine (picks always included — see
+#            extend_from_stop; the user picking a point IS the statement that it
+#            belongs to the line).
+#   stop:    the line's NEW frontier at this end — where the caller should look
+#            next, whether growth marched on or only the picks were adopted.
+#   marched: True when the march itself carried the trace past the picks; False
+#            when nothing but the picks landed. The caller needs the difference
+#            to tell the user "the trace advanced" apart from "your points were
+#            added, now pick further".
+Extension = namedtuple("Extension", ["line", "stop", "marched"])
+
 
 class LinearRegionGrower:
     """
@@ -207,6 +219,12 @@ class LinearRegionGrower:
         # on a long trace. None disables the check. The engine stays GUI-free —
         # the caller owns the event (e.g. global_variables.global_cancel_event).
         self._cancel_event = None
+
+        # Point indices the march may bridge a gap to even when too few of them
+        # to satisfy min_points — the points the user picked during a guided
+        # extension. Set for the duration of extend_from_stop(); None otherwise,
+        # which leaves ordinary growth exactly as strict as it has always been.
+        self._bridge_targets = None
 
         self.linearity = None if linearity is None else np.asarray(linearity)
         self.linearity_threshold = linearity_threshold
@@ -486,21 +504,62 @@ class LinearRegionGrower:
             pooled.extend(zip(pts[:-1], pts[1:]))
         return self._join_centerline(pooled)
 
+    def _pick_segments(self, stop, picks):
+        """Centerline segments running from *stop* out through the user's
+        *picks*, plus the frontier they leave behind.
+
+        Returns ``(segments, new_stop)``, or ``(None, None)`` when no pick lies
+        ahead of the stop. The picks are binned along the heading by
+        cylinder_length and reduced to one centroid per bin — the same band
+        centroids the march itself builds its centerline from, so a hand-walked
+        stretch and a marched one produce the same kind of polyline instead of a
+        zigzag through every individual point the user happened to click.
+        """
+        tip = np.asarray(stop.tip, dtype=float)
+        direction = unit(np.asarray(stop.direction, dtype=float))
+        pts = self.all_points[picks]
+        along = (pts - tip) @ direction
+
+        ahead = along > 0
+        if not np.any(ahead):
+            return None, None
+        pts, along = pts[ahead], along[ahead]
+
+        bins = np.floor(along / max(self.cylinder_length, 1e-9)).astype(np.int64)
+        centroids = np.array([pts[bins == b].mean(axis=0)
+                              for b in np.unique(bins)])
+
+        chain = np.vstack([tip[None, :], centroids])
+        segments = list(zip(chain[:-1], chain[1:]))
+
+        # The frontier is the far end of what the user just claimed, aimed the
+        # way their picks were going — so the next round of picking continues
+        # from there rather than from the stop that was already dealt with.
+        heading = unit(chain[-1] - chain[-2]) if len(chain) > 1 else direction
+        return segments, MarchStop(chain[-1], heading, STOP_PICKED_END)
+
     def extend_from_stop(self, stop, line, extra_indices):
-        """Re-grow from *stop* with the user's *extra_indices* and splice the
-        result into *line*. Returns a new ``GrownLine``, or None when the
-        combined seed body was too small to grow from.
+        """Continue *line* past *stop*, guided by the user's *extra_indices*.
 
-        This growth's own stops are available afterwards from ``march_stops()``:
-        an extension that stops again produces new stops the caller can queue for
-        another pass.
+        Returns an ``Extension`` (see above), or None when there was nothing to
+        work with at all — no picks and too small a body to re-grow from.
 
-        Two things are relaxed for this growth and nothing else: the march runs
-        only outward (``only_direction``), and its search is opened up just far
-        and wide enough to arrive at the furthest pick
-        (``_pick_bounded_search``). Everything after the landing — the fit
-        window, the angle gate, membership — is the ordinary growth every other
-        line gets.
+        **The picks are always adopted.** A point the user picked is a point they
+        looked at and judged to be on this line; the engine's opinion about
+        whether it could have got there by itself does not override that. So the
+        march is the *bonus*: it runs, and whatever it reaches is spliced in, but
+        if it stops dead the picks still join the line and the frontier still
+        advances to them. That is what makes the workflow always able to make
+        progress — worst case the user walks the feature themselves, a few points
+        at a time, which is exactly the situation (a long occlusion, a cable
+        through canopy) where nothing automatic was ever going to work.
+
+        Three things are relaxed for this growth and nothing else: the march runs
+        only outward (``only_direction``), its search is opened up just far and
+        wide enough to arrive at the furthest pick (``_pick_bounded_search``),
+        and it may bridge a gap onto the picks however few of them there are
+        (``_bridge_gap``). Everything after the landing — the fit window, the
+        angle gate, membership — is the ordinary growth every other line gets.
         """
         picks = np.asarray(extra_indices, dtype=np.intp)
         seeds = np.union1d(self.stop_seed_indices(stop, line.indices), picks)
@@ -516,28 +575,41 @@ class LinearRegionGrower:
         try:
             self.reach_factor, self.cylinder_radius = \
                 self._pick_bounded_search(stop, picks)
+            self._bridge_targets = picks
             grown = self.grow(seeds, only_direction=stop.direction)
         finally:
             self.reach_factor, self.cylinder_radius = saved
+            self._bridge_targets = None
 
         # Did the MARCH contribute, or did it stop immediately and hand back the
         # seeds it was given? grow() always returns the seeds, so counting points
-        # would call "the picks got added to the line" a successful extension —
-        # and the user would be told it worked while the trace stood still.
-        if np.setdiff1d(grown, seeds, assume_unique=False).size == 0:
-            return None
+        # cannot tell the two apart — and the user would be told the trace
+        # advanced while it stood still.
+        marched = np.setdiff1d(grown, seeds, assume_unique=False).size > 0
 
-        # The stop just extended from is gone; the new march's stops replace it.
+        segments = list(self.debug_lines)
+        new_stops = self.march_stops()
+        if not marched:
+            # Nothing but the picks landed. Walk the centerline out through them
+            # anyway and put the frontier at their far end, so the next round of
+            # picking carries on from there instead of re-offering this stop.
+            pick_segments, frontier = self._pick_segments(stop, picks)
+            if pick_segments is None:
+                return None
+            segments, new_stops = pick_segments, [frontier]
+
+        # The stop just extended from is gone; the new frontier replaces it.
         # Everything else the line already had is kept. end_cylinders accumulate
         # (display only) — the caller rebuilds stop markers from ``stops``.
         remaining = [s for s in line.stops if s is not stop]
-        return GrownLine(
+        extended = GrownLine(
             np.union1d(np.asarray(line.indices, dtype=np.intp), grown),
-            self.splice_centerline(line.centerline, self.debug_lines),
+            self.splice_centerline(line.centerline, segments),
             list(line.cylinders) + list(self.debug_cylinders),
             list(line.end_cylinders) + list(self.debug_end_cylinders),
-            remaining + self.march_stops(),
+            remaining + new_stops,
         )
+        return Extension(extended, new_stops[-1] if new_stops else stop, marched)
 
     def grow_lines(self, seed_groups, *, progress_cb=None, cancel_event=None) -> list:
         """
@@ -879,7 +951,8 @@ class LinearRegionGrower:
                 near_on_axis = near_mask & on_axis_mask
                 collected.update(int(i) for i in candidate_idx[near_on_axis])
 
-                next_tip = self._bridge_gap(current_tip, current_dir, along, tube_mask)
+                next_tip = self._bridge_gap(current_tip, current_dir, along,
+                                            tube_mask, candidate_idx)
                 if next_tip is None:
                     reason = STOP_TOO_FEW_POINTS  # no band continuation within reach
                     break
@@ -994,7 +1067,8 @@ class LinearRegionGrower:
         step = self.cylinder_length * (1.0 - self.overlap)
         return base + step * fit_dir
 
-    def _bridge_gap(self, current_tip, current_dir, along, tube_mask):
+    def _bridge_gap(self, current_tip, current_dir, along, tube_mask,
+                    candidate_idx=None):
         """Jump the tip toward the nearest far-band continuation within the tube.
 
         Requires at least min_points in the far reach zone WITHIN THE TUBE
@@ -1005,10 +1079,23 @@ class LinearRegionGrower:
         of the nearest far point, keeping the heading since there is no data in
         the gap to re-fit), or ``None`` when there is no continuation (the caller
         stops with STOP_TOO_FEW_POINTS).
+
+        During a guided extension (``_bridge_targets`` set) the user's picks can
+        satisfy the landing on their own, however few of them there are. The
+        min_points gate exists to stop the march from bridging blindly onto noise
+        — a handful of stray returns beyond a gap is not evidence of a feature.
+        A human who looked at the cloud and pointed at those points IS that
+        evidence, and the gate must not overrule them: sparse continuations
+        (a thin cable through foliage, a couple of returns per metre) are the
+        common case this workflow exists to recover.
         """
         far_band = tube_mask & (along > self.cylinder_length)
         if np.count_nonzero(far_band) < self.min_points:
-            return None
+            if candidate_idx is None or self._bridge_targets is None:
+                return None
+            far_band &= np.isin(candidate_idx, self._bridge_targets)
+            if not np.any(far_band):
+                return None
         a_next = float(along[far_band].min())
         jump = a_next - _GAP_LANDING_FRAC * self.cylinder_length
         next_tip = current_tip + jump * current_dir
@@ -1074,12 +1161,17 @@ STOP_TOO_FEW_POINTS = "too_few_points"
 STOP_SHARP_BEND = "sharp_bend"
 STOP_EMPTY_SPACE = "empty_space"
 STOP_STEP_CAP = "step_cap"
+# Not a march outcome: the end of a stretch the user claimed by picking, where
+# growth could not carry on by itself. It marks the frontier to keep picking
+# from, so it reads differently in the review window from a march that failed.
+STOP_PICKED_END = "picked_end"
 
 STOP_REASONS = {
     STOP_TOO_FEW_POINTS: ("too few points", np.array([1.0, 0.1, 0.1], dtype=np.float32)),   # red
     STOP_SHARP_BEND:     ("sharp bend",      np.array([1.0, 0.5, 0.0], dtype=np.float32)),   # orange
     STOP_EMPTY_SPACE:    ("empty space",     np.array([1.0, 0.0, 1.0], dtype=np.float32)),   # magenta
     STOP_STEP_CAP:       ("step cap",        np.array([1.0, 1.0, 1.0], dtype=np.float32)),   # white
+    STOP_PICKED_END:     ("end of your picks", np.array([0.0, 1.0, 1.0], dtype=np.float32)), # cyan
 }
 
 

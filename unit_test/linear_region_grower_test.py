@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from core.services.linear_region_grower import (
     LinearRegionGrower, AXIS_TRACE, LINEARITY_CONNECTED, HYBRID,
-    debug_vector_features, STOP_SHARP_BEND,
+    debug_vector_features, STOP_SHARP_BEND, STOP_PICKED_END,
     lines_to_traces, traces_to_lines, resolved_stop_keys, stop_key,
 )
 
@@ -657,7 +657,7 @@ def test_reseed_from_stop_extends_line():
     assert n_ahead > 0, "ranking saw nothing ahead of the stop at the hole"
 
     picks = np.where((points[:, 0] > 16.0) & (points[:, 0] < 16.6))[0]
-    extended = g.extend_from_stop(stop, line, picks)
+    extended = g.extend_from_stop(stop, line, picks).line
     after = float(np.ptp(extended.centerline[:, 0]))
     print(f"re-seed: {len(line.indices)} pts / {before:.1f} m -> "
           f"{len(extended.indices)} pts / {after:.1f} m from {len(picks)} picks")
@@ -679,7 +679,7 @@ def test_reseed_splices_one_continuous_centerline():
     stop = g.rank_stops(line.stops, claimed)[0][0]
     picks = np.where((points[:, 0] > 16.0) & (points[:, 0] < 16.6))[0]
 
-    centerline = g.extend_from_stop(stop, line, picks).centerline
+    centerline = g.extend_from_stop(stop, line, picks).line.centerline
     steps = np.diff(centerline[:, 0])
     back = int((steps < -1e-3).sum())
     print(f"splice: {len(centerline)} vertices, {back} back-steps, "
@@ -706,7 +706,7 @@ def test_reseed_does_not_reach_without_picks():
 
     result = g.extend_from_stop(stop, line, np.empty(0, dtype=np.intp))
     spanned = (0.0 if result is None
-               else float(np.ptp(result.centerline[:, 0])))
+               else float(np.ptp(result.line.centerline[:, 0])))
     print(f"no picks: granted {granted}, span {spanned:.1f} m (must stay short)")
     assert spanned < 12.0, \
         f"crossed a 6 m hole with no user picks (spans {spanned:.1f} m)"
@@ -890,13 +890,18 @@ def test_rollback_backs_out_past_what_stopped_the_march():
     # parameters, not to rollback, and is not asserted.
 
 
-def test_extension_reports_failure_when_only_the_picks_land():
-    """grow() always returns the seeds it was given, so an extension whose march
-    stopped dead still comes back holding the user's picks. Counting points would
-    call that a success and tell the user the trace advanced when it did not."""
+def test_extension_adopts_picks_when_the_march_cannot_follow():
+    """A point the user picked is a point they LOOKED AT and judged to be on this
+    line. When growth cannot follow them, the picks must still join the line and
+    the frontier must move to them — otherwise the workflow dead-ends exactly
+    where it is needed most, and the user's judgement is silently discarded.
+
+    The march contributing nothing must still be reported as such (marched
+    False), because grow() always hands back the seeds it was given: counting
+    points cannot tell "the trace advanced" from "your picks were added"."""
     rng = np.random.default_rng(17)
     # A cable that simply ends at x=10. Picks far away across genuinely empty
-    # space: the march cannot reach them, so nothing but the picks can appear.
+    # space, off to one side: nothing joins them to the cable but the user.
     cable = np.stack([np.linspace(0, 10, 200), np.zeros(200), np.zeros(200)],
                      axis=1) + rng.normal(0, 0.01, (200, 3))
     stray = np.array([[40.0, 3.0, 0.0], [40.2, 3.0, 0.0], [40.4, 3.0, 0.0]])
@@ -908,9 +913,55 @@ def test_extension_reports_failure_when_only_the_picks_land():
     picks = np.arange(len(cable), len(points))
 
     result = g.extend_from_stop(stop, line, picks)
-    print(f"picks-only extension -> {result} (must be None, not a 'success')")
-    assert result is None, \
-        "extension reported success while the march contributed nothing"
+    print(f"picks-only extension: marched={result.marched}, "
+          f"{len(line.indices)} -> {len(result.line.indices)} pts, "
+          f"frontier at x={result.stop.tip[0]:.1f} ({result.stop.reason})")
+    assert result.marched is False, \
+        "extension claimed the march advanced while it contributed nothing"
+    assert set(picks.tolist()) <= set(result.line.indices.tolist()), \
+        "the user's picks were thrown away"
+    assert result.stop.reason == STOP_PICKED_END, \
+        f"frontier is not marked as hand-picked: {result.stop.reason}"
+    assert result.stop.tip[0] > 35.0, (
+        f"frontier stayed behind at x={result.stop.tip[0]:.1f} instead of "
+        f"moving out to the picks — the next round would re-offer this stop")
+
+
+def test_extension_bridges_to_sparse_picks_below_min_points():
+    """min_points stops the march bridging blindly onto a couple of stray
+    returns. It must not overrule a human: a thin cable through canopy leaves
+    two or three returns per metre, and the user pointing at them is the very
+    evidence min_points exists to demand."""
+    rng = np.random.default_rng(23)
+    # Dense cable to x=10; one lone return at x=14 inside the occlusion; the
+    # cable itself resumes densely at x=15. The lone return is the only stepping
+    # stone across, and on its own it is far below min_points — blind bridging
+    # must refuse it, and does. The user picking it is what changes.
+    near = np.stack([np.linspace(0, 10, 200), np.zeros(200), np.zeros(200)], axis=1)
+    stepping_stone = np.array([[14.0, 0.0, 0.0]])
+    far = np.stack([np.linspace(15, 22, 150), np.zeros(150), np.zeros(150)], axis=1)
+    points = np.vstack([near, stepping_stone, far])
+    points += rng.normal(0, 0.005, points.shape)
+
+    g = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05, cylinder_radius=0.2,
+        cylinder_length=1.0, reach_factor=3.0, min_points=8, max_angle_deg=20.0,
+    )
+    line = g.grow_lines([np.arange(8)])[0]
+    stop = [s for s in line.stops if s.direction[0] > 0][0]
+    assert stop.tip[0] < 13.0, \
+        f"setup wrong: growth already crossed the hole (tip x={stop.tip[0]:.1f})"
+
+    picks = np.array([len(near)], dtype=np.intp)          # the lone x=14 return
+    result = g.extend_from_stop(stop, line, picks)
+    reached = float(points[result.line.indices][:, 0].max())
+    print(f"sparse bridge: min_points={g.min_points}, 1 pick at x=14 -> "
+          f"line reaches x={reached:.1f} (marched={result.marched})")
+    assert result.marched, \
+        "the march refused the picked stepping stone and never resumed"
+    assert reached > 21.0, (
+        f"stepped onto the pick but did not pick the cable back up beyond it "
+        f"(line ends at x={reached:.1f}, cable runs to x=22)")
 
 
 def test_traces_round_trip_through_persistence():
@@ -971,6 +1022,7 @@ if __name__ == "__main__":
     test_rollback_trims_the_end_and_reaims()
     test_rollback_refuses_to_consume_whole_line()
     test_rollback_backs_out_past_what_stopped_the_march()
-    test_extension_reports_failure_when_only_the_picks_land()
+    test_extension_adopts_picks_when_the_march_cannot_follow()
+    test_extension_bridges_to_sparse_picks_below_min_points()
     test_traces_round_trip_through_persistence()
     print("\nAll linear_region_grower tests passed.")
