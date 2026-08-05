@@ -18,11 +18,13 @@ whether or not growth could follow them. See
 ``LinearRegionGrower.extend_from_stop`` and
 ``plugins/020_Points/020_Clustering/LINEAR_REGION_GROWING.md``.
 
-An extension leaves the user ON the line it just extended: the end it reached
-becomes the new marker, in the same place in the queue, so they can see what
-their picks did and keep pushing the same feature out. Every change is
-snapshotted for Undo — growth is a judgement made from a picture on screen, and
-the user has to be able to look at a result and say "no, not that".
+An extension leaves the user ON the line it just extended, and leaves the camera
+where they put it: the end it reached becomes the new marker, in the same place
+in the queue, so they can see what their picks did and keep pushing the same
+feature out. Only navigation (Previous / Next / Real end, which lands on a stop
+they have not seen) moves the view. Every change is snapshotted for Undo —
+growth is a judgement made from a picture on screen, and the user has to be able
+to look at a result and say "no, not that".
 
 Stops are ranked by how many unclaimed points lie ahead of them, so the ones
 worth looking at come first and genuine ends sink to the bottom of the queue.
@@ -114,7 +116,7 @@ class LineExtensionWindow(QDialog):
 
         self._setup_ui()
         self._build_queue()
-        self._show_current()
+        self._show_current(focus=True)
         self.poll_timer.start(_POLL_MS)
 
     # ------------------------------------------------------------------ #
@@ -128,7 +130,7 @@ class LineExtensionWindow(QDialog):
             "Each stop below is where a traced line gave up.\n"
             "If the feature continues, pick a few points just past the marker\n"
             "(Shift+Click, or P for polygon select) and press Extend.\n"
-            "The view stays on the line after each extension, so you can look at\n"
+            "Extending leaves the camera where you put it, so you can look at\n"
             "the result, pick further and extend again — or undo it."
         ))
 
@@ -177,20 +179,27 @@ class LineExtensionWindow(QDialog):
             "The feature genuinely ends here — do not ask about this stop again."
         )
         self.end_btn.clicked.connect(self._mark_real_end)
-        self.skip_btn = QPushButton("Skip")
-        self.skip_btn.setToolTip("Leave this stop undecided and move on.")
-        self.skip_btn.clicked.connect(self._skip)
-        for btn in (self.extend_btn, self.undo_btn, self.end_btn, self.skip_btn):
+        for btn in (self.extend_btn, self.undo_btn, self.end_btn):
             buttons.addWidget(btn)
         layout.addLayout(buttons)
 
+        # Navigation is kept apart from the buttons that CHANGE something:
+        # Previous / Next only move the review along, leaving the stop
+        # undecided, and unlike the others they do bring the new stop into view.
         nav = QHBoxLayout()
+        self.prev_btn = QPushButton("< Previous")
+        self.prev_btn.setToolTip("Go back to the stop before this one.")
+        self.prev_btn.clicked.connect(self._previous)
+        self.next_btn = QPushButton("Next >")
+        self.next_btn.setToolTip("Leave this stop undecided and move on.")
+        self.next_btn.clicked.connect(self._next)
         self.recentre_btn = QPushButton("Re-centre view")
         self.recentre_btn.clicked.connect(self._focus_current)
         self.finish_btn = QPushButton("Finish")
         self.finish_btn.clicked.connect(self.close)
-        nav.addWidget(self.recentre_btn)
-        nav.addWidget(self.finish_btn)
+        for btn in (self.prev_btn, self.next_btn, self.recentre_btn,
+                    self.finish_btn):
+            nav.addWidget(btn)
         layout.addLayout(nav)
 
         self.setLayout(layout)
@@ -247,7 +256,15 @@ class LineExtensionWindow(QDialog):
     # Display                                                            #
     # ------------------------------------------------------------------ #
 
-    def _show_current(self):
+    def _show_current(self, focus=False):
+        """Refresh the panel for the stop at *pos*.
+
+        *focus* moves the camera onto it, and is for NAVIGATION only — landing
+        on a stop the user has not seen yet. Changing something (extend, undo)
+        must leave the view alone: the user framed that view themselves to pick
+        into, and yanking the camera the moment they press a button hides the
+        very thing they pressed it to see.
+        """
         current = self._current()
         # Measures stops SETTLED against the total ever queued, so it advances
         # as decisions are made instead of jumping about as the queue shrinks.
@@ -256,12 +273,15 @@ class LineExtensionWindow(QDialog):
         # Stays live even at the end of the queue: the last thing the user did
         # may be the thing they want back.
         self.undo_btn.setEnabled(bool(self.history))
+        self.prev_btn.setEnabled(self.pos > 0)
+        self.next_btn.setEnabled(self.pos + 1 < len(self.queue))
 
-        widgets = (self.extend_btn, self.end_btn, self.skip_btn,
+        widgets = (self.extend_btn, self.end_btn,
                    self.recentre_btn, self.rollback_spin)
         if current is None:
             done = "No stops left to review." if not self.queue else \
-                "End of the list — the stops below were skipped, not settled."
+                ("End of the list — the stops still on it were stepped past, "
+                 "not settled. Use Previous to go back to them.")
             self.stop_label.setText(
                 f"{done}<br>{self.extensions_made} extension(s) made this session."
             )
@@ -293,7 +313,8 @@ class LineExtensionWindow(QDialog):
                 "Nothing unclaimed ahead — most likely a genuine feature end."
             )
         self._draw_focus_branch(stop)
-        self._focus_current()
+        if focus:
+            self._focus_current()
         self._refresh_pick_count()
 
     def _focus_current(self):
@@ -495,17 +516,19 @@ class LineExtensionWindow(QDialog):
         self.resolved.add(stop_key(label, stop))
         self._settle_current()
         self._commit()
-        self._show_current()
+        # Settling drops this entry, so *pos* now holds a different stop: this
+        # is navigation as much as a decision, and the user has not seen it yet.
+        self._show_current(focus=True)
 
-    def _skip(self):
-        # Snapshotted like any other change, so Undo doubles as "go back" — the
-        # only way to return to a stop once it has been stepped past.
-        self._snapshot()
-        if self.pos + 1 < len(self.queue):
-            self.pos += 1
-        else:
-            self.pos = len(self.queue)
-        self._show_current()
+    def _next(self):
+        """Leave this stop undecided and move on. Not a change — nothing to
+        snapshot, and Previous brings it back."""
+        self.pos = min(self.pos + 1, len(self.queue))
+        self._show_current(focus=True)
+
+    def _previous(self):
+        self.pos = max(self.pos - 1, 0)
+        self._show_current(focus=True)
 
     def _clear_picks(self):
         if self.viewer is not None:
@@ -537,30 +560,52 @@ class LineExtensionWindow(QDialog):
 
         self.controller.cache_service.invalidate(self.result_uid)
         self.controller.cache_service.invalidate_descendants(self.result_uid)
-        self._update_centerline_branch()
+        self._update_debug_branches()
         self._render()
 
-    def _update_centerline_branch(self):
-        """Keep an existing centerlines branch in step with the extended lines.
+    def _rebuilt_debug_feature(self, name):
+        """Wireframe for the debug branch *name*, rebuilt from the current lines.
 
-        Only updates one that is already there — whether centerlines are drawn
-        at all stays the user's choice from the growth dialog.
+        The names match the ones the growth plugin gives these branches, so an
+        extension refreshes the same geometry the run drew rather than adding a
+        second, competing branch.
+        """
+        if name == "centerlines":
+            return centerlines_to_vector_feature(
+                [line.centerline for line in self.lines]
+            )
+        if name == "cylinders":
+            return cylinders_to_vector_feature(
+                [c for line in self.lines for c in line.cylinders]
+            )
+        return None
+
+    def _update_debug_branches(self):
+        """Keep the growth plugin's debug wireframes in step with the extended
+        lines — the centerlines and the search cylinders.
+
+        Only branches that are already there are updated: whether this geometry
+        is drawn at all stays the user's choice from the growth dialog. Without
+        this the cylinders stop at the original stop while the line runs on past
+        it, which reads as the extension not having happened.
+
+        The per-stop-reason branches (``stop_*``) are deliberately left alone.
+        They are a record of where the original run ended, and the green marker
+        is the live "you are here" — repainting them mid-walk would put two
+        competing answers on screen.
         """
         result_node = self.controller.get_node(self.result_uid)
         if result_node is None:
             return
         for child_uid, child in self.controller.data_nodes.data_nodes.items():
-            if child.parent_uid != result_node.uid or child.params != "centerlines":
+            if child.parent_uid != result_node.uid:
                 continue
-            feature = centerlines_to_vector_feature(
-                [line.centerline for line in self.lines]
-            )
+            feature = self._rebuilt_debug_feature(child.params)
             if feature is None:
-                return
+                continue
             feature.cluster_reference = self.result_uid
             child.data = feature
             self.controller.cache_service.invalidate(str(child_uid))
-            return
 
     def closeEvent(self, event):
         self.poll_timer.stop()
