@@ -979,7 +979,8 @@ def test_traces_round_trip_through_persistence():
     rebuilt = traces_to_lines(traces, labels)
 
     print(f"persistence: {len(rebuilt)} line(s), "
-          f"{len(rebuilt[0].stops)} stops, {len(rebuilt[0].indices)} pts")
+          f"{len(rebuilt[0].stops)} stops, {len(rebuilt[0].indices)} pts, "
+          f"{len(rebuilt[0].cylinders)} cylinders")
     assert len(rebuilt) == len(lines)
     assert len(rebuilt[0].indices) == len(lines[0].indices), "point set changed"
     assert len(rebuilt[0].stops) == len(lines[0].stops), "stops lost"
@@ -987,6 +988,20 @@ def test_traces_round_trip_through_persistence():
         "centerline changed across the round trip"
     assert resolved_stop_keys(traces) == dismissed, \
         "stops dismissed as real ends did not survive the round trip"
+    # Search cylinders travel too: a reopened session that extends a line has to
+    # be able to redraw the WHOLE cylinder wireframe, not just its own addition.
+    assert len(rebuilt[0].cylinders) == len(lines[0].cylinders), "cylinders lost"
+    for (t0, d0, r0, l0), (t1, d1, r1, l1) in zip(rebuilt[0].cylinders,
+                                                  lines[0].cylinders):
+        assert np.allclose(t0, t1) and np.allclose(d0, d1), "cylinder moved"
+        assert (r0, l0) == (r1, l1), "cylinder changed size"
+
+    # A result saved before cylinders were stored must still load.
+    legacy = {"params": traces["params"],
+              "lines": [{k: v for k, v in entry.items() if k != "cylinders"}
+                        for entry in traces["lines"]]}
+    assert traces_to_lines(legacy, labels)[0].cylinders == [], \
+        "a trace without stored cylinders should come back with none, not fail"
 
 
 if __name__ == "__main__":
