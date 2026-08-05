@@ -307,3 +307,46 @@ always returns the seeds it was given — so an extension whose march stopped de
 still came back holding the user's picks, and the user was told the trace had
 advanced when it had not. It now requires the march to contribute something
 beyond the seeds.
+
+## 2026-08-05 — A pick is a membership decision; the extension window stays put and can be undone
+
+Three corrections from the first real use of guided extension, all the same
+mistake in different places: the engine treating its own judgement as better
+than the user's, and the window moving on before the user could see what
+happened.
+
+**The picks are always adopted.** `extend_from_stop` used to return failure when
+the march contributed nothing beyond the seeds, and the picks were discarded
+with it — so the workflow dead-ended precisely where it was needed most (a long
+occlusion, a cable through canopy). But a point the user picked is a point they
+looked at and judged to be on this line, and the engine's opinion about whether
+it could have got there by itself does not override that. The march is now the
+*bonus*: it runs, and whatever it reaches is spliced in, but when it stops dead
+the picks still join the line and the frontier still advances to their far end
+(`STOP_PICKED_END`). Worst case the user walks the feature themselves, a few
+points at a time — which is a workflow that always terminates, unlike one that
+refuses. The distinction is kept honestly: `Extension.marched` says whether the
+march advanced, so "the trace grew" and "your points were added, pick further"
+are reported differently. This reverses the last paragraph of 2026-08-04 (b),
+which was right about the diagnosis (point count cannot tell the two apart) and
+wrong about the remedy (throwing the picks away).
+
+**`min_points` no longer overrules a human when bridging.** The gate exists to
+stop the march bridging blindly onto a couple of stray returns — a handful of
+points beyond a gap is not evidence of a feature. A person who looked at the
+cloud and pointed at them *is* that evidence. During an extension the march may
+now bridge onto the user's picks however few of them there are
+(`_bridge_targets`); everything else about the gate is unchanged, and ordinary
+growth is exactly as strict as before. Measured on a cable with one lone return
+inside a 5 m occlusion: blind bridging refuses it and the trace ends at the
+hole; one pick on that return carries the march across and it recovers the
+remaining 7 m by itself.
+
+**The window stays on the line after an extension, and can be undone.** It used
+to settle the stop and jump to the next one, so the user never saw the result of
+their own picks. The frontier now REPLACES the stop in place: pick, extend, look,
+pick further, extend again — the same line, the same position in the queue,
+until the user says "real end" or skips. An Undo stack restores the state before
+any change (extend, real end, or skip — so Undo doubles as the only way back to
+a stop already stepped past). Growth is a judgement made from a picture on
+screen; the user has to be able to look at a result and say "no, not that".

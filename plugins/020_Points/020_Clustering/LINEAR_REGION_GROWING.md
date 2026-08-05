@@ -44,13 +44,24 @@ Every march end records **where** it stopped, **which way** it was heading, and 
 For each stop the window brings it into view, marks it with a green "you are here" wireframe branch, and reports how many unclaimed points lie ahead:
 
 - **Extend from picks** — pick a few points beyond the marker; growth re-runs seeded with **the line's own points around the stop ∪ your picks**, and the result is spliced into the existing line.
+- **Undo** — put everything back as it was before the last change.
 - **Real end** — the feature genuinely ends here; never ask again (survives save/reload).
 - **Skip** — leave it undecided.
 - **Discard last N cylinder(s)** — throw away the last N steps of march *before* growing again (default 0).
 
 Stops are **ranked** by unclaimed points ahead, so the ones worth extending come first and genuine ends sink to the bottom. With up to two ends per line, thirty features produce sixty stops and most are real ends — ranking is the difference between reviewing eight and sixty.
 
-The queue is ranked **once, on open**, and you keep your place as you work: settling a stop removes it and lands you on the next one. Re-ranking after every extension would reshuffle the list and bounce you back to the top each time you fixed something. Any stop a fresh extension produces goes to the **back** of the queue — worth revisiting, but not by interrupting the walk you are partway through. The points-ahead figure for the current stop is recomputed live, so it stays honest as earlier extensions claim points.
+The queue is ranked **once, on open**, and you keep your place as you work: settling a stop removes it and lands you on the next one. Re-ranking after every extension would reshuffle the list and bounce you back to the top each time you fixed something. The points-ahead figure for the current stop is recomputed live, so it stays honest as earlier extensions claim points.
+
+**Extending leaves you on the same line.** The end the extension reached becomes the new marker, in the same place in the queue — so you can look at what your picks did, pick further ahead, and extend again, as many times as the feature needs. Nothing moves you off that line until you press **Real end** or **Skip**. **Undo** reverses the last change, including a skip, which makes it the only way back to a stop you have already stepped past.
+
+### Your picks are the decision
+
+A point you picked is a point you looked at and judged to be on this line, so **the picks always join the line** — whether or not growth could get there by itself. The march is the bonus: it runs, and whatever it reaches is spliced in, but if it stops dead your picks are still adopted and the marker still moves out to them. The window says which happened ("grew +240 points" versus "growth could not carry on, so your 6 picked point(s) were added — pick further ahead and extend again"), so you always know whether the trace advanced on its own.
+
+That is what makes the workflow always able to make progress. Across a long occlusion, or a cable strung through canopy, worst case you walk the feature yourself a few points at a time — which is slower than automatic growth but never dead-ends, and dead-ending is exactly what a short trace used to do.
+
+For the same reason, `min_points` does not overrule you when bridging a gap. That gate exists to stop the march hopping blindly onto a couple of stray returns — a handful of points beyond a hole is not evidence of a feature. A person who looked at the cloud and pointed at them *is* that evidence, so an extension may bridge onto **your picks** however few of them there are. One lone return inside a 5 m occlusion is enough to carry the march across and let it pick the cable back up on the far side; blind bridging refuses that same return, and should.
 
 ### Discarding the last cylinders
 
@@ -64,10 +75,11 @@ Note what this does and does not do: it backs the end *out* of a trouble spot. W
 
 **Why re-seeding rather than automatic extension.** An automatic pass would have to *guess* whether a feature continues, and a wrong guess drives a line through a pole top into empty sky — worse than a short trace, because you have to notice it to fix it. Your picks *are* the answer. Growth is never loosened on its own initiative.
 
-**What the picks authorise.** The re-seed runs the ordinary growth — same fit window, same angle gate, same membership threshold — with exactly two relaxations, both bounded by where you pointed:
+**What the picks authorise.** The re-seed runs the ordinary growth — same fit window, same angle gate, same membership threshold — with exactly three relaxations, all bounded by where you pointed:
 
 1. The march runs **only outward**, since the opposite direction would re-walk line already traced.
 2. The search is opened up just far and wide enough to *arrive* at your furthest pick.
+3. It may bridge a gap onto your picks below `min_points` (see above).
 
 The width matters as much as the distance, and less obviously: the search tube is aimed along the heading the march **drifted** to, and angular error scales with reach. A heading 2° off — routine after a few re-fits — misses by 0.2 m at 6 m and 0.85 m at 25 m. Granting reach without width sails the tube straight past the points you picked.
 
