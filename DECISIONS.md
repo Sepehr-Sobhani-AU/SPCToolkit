@@ -350,3 +350,29 @@ until the user says "real end" or skips. An Undo stack restores the state before
 any change (extend, real end, or skip — so Undo doubles as the only way back to
 a stop already stepped past). Growth is a judgement made from a picture on
 screen; the user has to be able to look at a result and say "no, not that".
+
+## 2026-08-05 (b) — Only navigation moves the camera; stepping is not a change
+
+Follow-ups from using the extension window (supersedes the last paragraph of
+2026-08-05, which had Undo doubling as "go back").
+
+**Extend and Undo leave the view alone.** The user frames a view themselves in
+order to pick into it; re-centring the camera the moment they press a button
+hides the very thing they pressed it to see. Only landing on a stop they have
+not seen yet moves the camera — Previous, Next, and Real end (which settles the
+current entry, so the next stop takes its place).
+
+**Skip became Previous / Next.** Stepping past a stop is not a change to
+anything, so it is not snapshotted and Undo no longer covers it; Previous is how
+you go back. That leaves Undo meaning exactly one thing: reverse a change to the
+lines.
+
+**The debug wireframes are rebuilt after every change.** The window only
+refreshed the centerlines branch, so search cylinders stopped at the original
+stop while the line ran on past it — which reads as the extension not having
+happened. Both the `centerlines` and `cylinders` branches are now rebuilt from
+the current lines (only if the user asked for them at growth time — the window
+never creates branches they did not want). The per-reason `stop_*` branches are
+deliberately NOT repainted: they record where the original run ended, and the
+green "you are here" marker is the live answer. Two live answers on screen is
+worse than one stale record clearly labelled as history.

@@ -46,14 +46,18 @@ For each stop the window brings it into view, marks it with a green "you are her
 - **Extend from picks** — pick a few points beyond the marker; growth re-runs seeded with **the line's own points around the stop ∪ your picks**, and the result is spliced into the existing line.
 - **Undo** — put everything back as it was before the last change.
 - **Real end** — the feature genuinely ends here; never ask again (survives save/reload).
-- **Skip** — leave it undecided.
+- **Previous / Next** — move along the queue, leaving the stop undecided.
 - **Discard last N cylinder(s)** — throw away the last N steps of march *before* growing again (default 0).
 
 Stops are **ranked** by unclaimed points ahead, so the ones worth extending come first and genuine ends sink to the bottom. With up to two ends per line, thirty features produce sixty stops and most are real ends — ranking is the difference between reviewing eight and sixty.
 
 The queue is ranked **once, on open**, and you keep your place as you work: settling a stop removes it and lands you on the next one. Re-ranking after every extension would reshuffle the list and bounce you back to the top each time you fixed something. The points-ahead figure for the current stop is recomputed live, so it stays honest as earlier extensions claim points.
 
-**Extending leaves you on the same line.** The end the extension reached becomes the new marker, in the same place in the queue — so you can look at what your picks did, pick further ahead, and extend again, as many times as the feature needs. Nothing moves you off that line until you press **Real end** or **Skip**. **Undo** reverses the last change, including a skip, which makes it the only way back to a stop you have already stepped past.
+**Extending leaves you on the same line, and leaves the camera alone.** The end the extension reached becomes the new marker, in the same place in the queue — so you can look at what your picks did, pick further ahead, and extend again, as many times as the feature needs. Nothing moves you off that line until you press **Real end**, **Previous** or **Next**. Only those three move the camera: you framed the view yourself to pick into, so extending and undoing leave it exactly where it was.
+
+**Undo** reverses the last change — an extension or a "real end". Stepping past a stop is not a change, so **Previous** is how you go back to one.
+
+The search cylinders and centerline wireframes (if you asked for them at growth time) are rebuilt after every change, so they follow the line as it grows rather than stopping where the original run did. The per-reason stop markers are left as the run drew them — they record where growth originally ended; the green marker is the live one.
 
 ### Your picks are the decision
 
