@@ -88,6 +88,22 @@ _RANK_RADIUS_FACTOR = 3.0
 # clear the pick distance rather than exactly meet it.
 _REACH_MARGIN = 1.2
 
+# The cone of points offered for picking at a stop (see pick_candidates): its
+# half-angle, and the ball at the tip expressed in cylinder radii.
+#
+# The angle is the whole filter, and it is not a matter of taste. Measured on a
+# cable 8 m above ground with a 6 m hole, offering 24 m ahead: at 45 degrees the
+# cone swallows the ground and the tree and 36% of the cloud stays clickable —
+# barely a filter at all. At 15 degrees it reaches the ground only past 30 m, so
+# 2.3% is clickable, and it still offers every point of the cable's far half.
+# Both recover the feature; only one of them clears the clutter.
+#
+# Erring tight is also the cheaper mistake: too tight and the user can see the
+# continuation is not offered and widen it (or untick the restriction), while
+# too wide silently gives back the problem this exists to solve.
+_PICK_CONE_HALF_ANGLE_DEG = 15.0
+_PICK_BALL_RADII = 3.0
+
 # One grown, possibly-joined linear feature.
 #   indices:       (K,) point indices into all_points belonging to the line.
 #   centerline:    (M, 3) float32 ordered polyline down the line, or None (no
@@ -344,6 +360,55 @@ class LinearRegionGrower:
         ahead = (along > 0) & (along <= reach) & (perp_dist < radius)
         ahead &= ~np.asarray(claimed_mask, dtype=bool)[candidate_idx]
         return candidate_idx[ahead]
+
+    def pick_candidates(self, stop, claimed_mask, length,
+                        half_angle_deg=_PICK_CONE_HALF_ANGLE_DEG) -> np.ndarray:
+        """Unclaimed points a user could reasonably want to pick at *stop*:
+        those inside a cone of *length* metres reaching out along its heading.
+
+        This is the set the extension window promotes to a real cluster so the
+        viewer will let them be picked (a ``-1`` label is both "draw grey" and
+        "not selectable"). Everything outside stays noise: faded and locked,
+        which is what makes picking in a cluttered cloud practical.
+
+        A CONE rather than ``unclaimed_ahead``'s tube. That tube is three
+        cylinder radii wide — 0.09 m at the defaults — which is the right
+        question for "is there anything there at all?" and far too tight for
+        "what may I click on": the continuation the user can see is routinely
+        off-axis by more than that, because the heading drifted or the feature
+        sags. A cone widens with distance, so it stays honest close to the tip
+        (where being off-axis really does mean a different feature) and forgiving
+        far out (where it does not).
+
+        A ball at the tip is included as well, so points right at the marker are
+        always on offer however the heading came out.
+        """
+        tip = np.asarray(stop.tip, dtype=float)
+        direction = unit(np.asarray(stop.direction, dtype=float))
+        length = float(length)
+        ball = max(self.cylinder_radius * _PICK_BALL_RADII, self.cylinder_length)
+        spread = np.tan(np.radians(half_angle_deg))
+
+        # One ball query bounding the whole cone, then the exact test on what it
+        # returns — the same shape as unclaimed_ahead, and it keeps the cost tied
+        # to the neighbourhood rather than the cloud.
+        far_radius = length * spread + ball
+        centre = tip + (length / 2.0) * direction
+        candidate_idx = self.kdtree.query_ball_point(
+            centre, np.sqrt((length / 2.0) ** 2 + far_radius ** 2)
+        )
+        if not candidate_idx:
+            return np.empty(0, dtype=np.intp)
+
+        candidate_idx = np.asarray(candidate_idx, dtype=np.intp)
+        vecs = self.all_points[candidate_idx] - tip
+        along = vecs @ direction
+        perp_dist = np.linalg.norm(vecs - np.outer(along, direction), axis=1)
+
+        inside = (along > 0) & (along <= length) & (perp_dist <= along * spread + ball)
+        inside |= np.linalg.norm(vecs, axis=1) <= ball
+        inside &= ~np.asarray(claimed_mask, dtype=bool)[candidate_idx]
+        return candidate_idx[inside]
 
     def rank_stops(self, stops, claimed_mask) -> list:
         """Order *stops* by how many unclaimed points lie ahead of each, most
