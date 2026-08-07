@@ -50,15 +50,30 @@ class RenderingCoordinator:
         self._branch_vertex_cache: Dict[str, np.ndarray] = {}
         self._branch_cache_sample_rate: Optional[float] = None
 
+        # Which point of the source cloud each rendered point came from, per
+        # branch — the LOD subsample indices, or None when the branch is drawn
+        # whole. Kept in step with _branch_vertex_cache. Without it nothing
+        # downstream can tell rendered row k from cloud row k, and per-point
+        # lookups against the source data (cluster labels, and so what may be
+        # picked) silently read the wrong point. See PCDViewerWidget.cloud_index.
+        self._branch_sample_indices: Dict[str, Optional[np.ndarray]] = {}
+
     def invalidate_branch(self, uid) -> None:
         """Drop cached vertex slice for a branch (call when its data changes)."""
         key = str(uid)
         self._branch_vertex_cache.pop(key, None)
+        self._branch_sample_indices.pop(key, None)
 
     def invalidate_all(self) -> None:
         """Drop all cached vertex slices."""
         self._branch_vertex_cache.clear()
+        self._branch_sample_indices.clear()
         self._branch_cache_sample_rate = None
+
+    @property
+    def branch_sample_indices(self) -> Dict[str, Optional[np.ndarray]]:
+        """Rendered-row -> source-row map per branch from the last prepare."""
+        return self._branch_sample_indices
 
     @property
     def current_sample_rate(self) -> float:
@@ -147,6 +162,7 @@ class RenderingCoordinator:
         # LOD change invalidates per-branch vertex cache (subsample bound to rate).
         if self._branch_cache_sample_rate != sample_rate:
             self._branch_vertex_cache.clear()
+            self._branch_sample_indices.clear()
             self._branch_cache_sample_rate = sample_rate
 
         # Debug memory estimate
@@ -214,11 +230,13 @@ class RenderingCoordinator:
                 }
 
                 # Apply per-node subsampling if LOD is active
+                sample_indices = None
                 if sample_rate < 1.0:
                     indices = LODManager.subsample_indices(n, sample_rate)
                     if indices is not None:
                         pts = point_cloud.points[indices]
                         clrs = point_cloud.colors[indices] if point_cloud.colors is not None else None
+                        sample_indices = np.asarray(indices)
                         logger.debug(f"LOD subsampled: {n:,} -> {len(indices):,}")
                     else:
                         pts = point_cloud.points
@@ -226,6 +244,7 @@ class RenderingCoordinator:
                 else:
                     pts = point_cloud.points
                     clrs = point_cloud.colors
+                self._branch_sample_indices[uid] = sample_indices
 
                 slice_n = len(pts)
                 branch_slice = np.empty((slice_n, 6), dtype=np.float32)
@@ -249,6 +268,7 @@ class RenderingCoordinator:
         visible_set = set(uids_to_show)
         for stale_uid in [k for k in self._branch_vertex_cache if k not in visible_set]:
             self._branch_vertex_cache.pop(stale_uid, None)
+            self._branch_sample_indices.pop(stale_uid, None)
 
         self._last_node_metadata = node_metadata
 

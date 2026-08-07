@@ -723,7 +723,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # a slice came from the coordinator's cache, so toggling visibility
         # on a previously-shown branch reuses the same VBO — no concat,
         # no GPU upload.
-        self.pcd_viewer_widget.set_branches(slices_by_uid, visible_order)
+        self.pcd_viewer_widget.set_branches(
+            slices_by_uid, visible_order,
+            self.controller.rendering_coordinator.branch_sample_indices,
+        )
 
         # Set line geometry (independent of point data)
         self.pcd_viewer_widget.set_lines(mesh_verts, mesh_edges, mesh_colors)

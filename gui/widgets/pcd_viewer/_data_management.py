@@ -39,6 +39,11 @@ class DataManagementMixin:
         # of the lazily-built combined array.
         self._visible_branches: List[str] = []
 
+        # uid -> source-row index per rendered row, when LOD drew only a subset
+        # of a branch (None = drawn whole). Set by set_branches from the
+        # rendering coordinator; read by cloud_index().
+        self._branch_sample_indices: Dict[str, Optional[np.ndarray]] = {}
+
         # Lazy derived state, invalidated by set_branches().
         self._combined_points_cache: Optional[np.ndarray] = None
         self._branch_offsets_cache: Optional[Dict[str, Tuple[int, int]]] = None
@@ -105,7 +110,8 @@ class DataManagementMixin:
 
     def set_branches(self,
                      slices_by_uid: Dict[str, np.ndarray],
-                     visible_order: List[str]) -> None:
+                     visible_order: List[str],
+                     sample_indices_by_uid: Dict[str, np.ndarray] = None) -> None:
         """Replace per-branch vertex storage.
 
         Args:
@@ -114,6 +120,10 @@ class DataManagementMixin:
                 its VBO is kept and no GPU work is needed.
             visible_order: ordered list of visible uids; defines draw order
                 and the index order of the lazy combined array.
+            sample_indices_by_uid: ``uid -> (N,) source rows`` when LOD drew a
+                subset of that branch, ``None``/absent when it was drawn whole.
+                Anything looking a rendered point up in the branch's source data
+                needs this — see ``cloud_index``.
 
         Cost:
             O(toggled branches) on the toggle hot path — no concat, no
@@ -141,6 +151,7 @@ class DataManagementMixin:
             self._branch_vertices[uid] = slc
 
         self._visible_branches = list(visible_order)
+        self._branch_sample_indices = dict(sample_indices_by_uid or {})
 
         # Invalidate lazy derived state. self.points / _branch_offsets /
         # _kdtree will be rebuilt on first access.
@@ -186,6 +197,34 @@ class DataManagementMixin:
         slice_n6[:, 3:] = colors
 
         self.set_branches({"_single": slice_n6}, ["_single"])
+
+    def cloud_index(self, uid: str, local_index: int) -> int:
+        """Translate a rendered row of branch *uid* into a row of its source data.
+
+        The two are only the same when the branch was drawn whole. Under LOD the
+        viewer holds ``points[indices]``, so rendered row 5 may be cloud row 50 —
+        and anything reading per-point source data by rendered row (cluster
+        labels, and therefore what may be selected) would consult an unrelated
+        point. Callers that own an index into ``self.points`` subtract the
+        branch's start offset first.
+        """
+        indices = self._branch_sample_indices.get(uid)
+        if indices is None:
+            return local_index
+        if 0 <= local_index < len(indices):
+            return int(indices[local_index])
+        return -1
+
+    def cloud_indices(self, uid: str, local_indices: np.ndarray) -> np.ndarray:
+        """Array form of ``cloud_index``."""
+        indices = self._branch_sample_indices.get(uid)
+        local_indices = np.asarray(local_indices, dtype=np.int64)
+        if indices is None:
+            return local_indices
+        valid = (local_indices >= 0) & (local_indices < len(indices))
+        out = np.full(local_indices.shape, -1, dtype=np.int64)
+        out[valid] = np.asarray(indices)[local_indices[valid]]
+        return out
 
     # ------------------------------------------------------------------
     # KDTree (lazy, derived from combined points)

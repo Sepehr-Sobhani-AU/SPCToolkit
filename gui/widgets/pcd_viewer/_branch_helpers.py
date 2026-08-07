@@ -65,6 +65,20 @@ class BranchSelectionMixin:
             return None
         return clusters.labels, clusters.locked_clusters
 
+    def _label_of(self, uid, labels, index, start):
+        """The label *labels* holds for the rendered point *index* of branch *uid*.
+
+        Goes through ``cloud_index`` rather than ``index - start``: labels are
+        full-resolution source data, while the rendered rows are whatever LOD
+        kept. Subtracting the offset alone silently reads a different point's
+        label on any cloud big enough to be subsampled. Returns None when the
+        point has no label.
+        """
+        row = self.cloud_index(uid, index - start)
+        if 0 <= row < len(labels):
+            return int(labels[row])
+        return None
+
     def _is_point_selection_locked(self, index: int) -> bool:
         """Check if a single point index belongs to a cluster locked against selection."""
         if not self._branch_offsets:
@@ -75,11 +89,10 @@ class BranchSelectionMixin:
                 if info is None:
                     return False
                 labels, locked = info
-                local_idx = index - start
-                if local_idx < len(labels):
-                    cid = int(labels[local_idx])
-                    return "select" in locked.get(cid, set())
-                return False
+                cid = self._label_of(uid, labels, index, start)
+                if cid is None:
+                    return False
+                return "select" in locked.get(cid, set())
         return False
 
     def _filter_selection_locked(self, indices):
@@ -95,8 +108,8 @@ class BranchSelectionMixin:
             locked_ids = {cid for cid, locks in locked.items() if "select" in locks}
             for i, idx in enumerate(indices):
                 if start <= idx < end:
-                    local_idx = idx - start
-                    if local_idx < len(labels) and int(labels[local_idx]) in locked_ids:
+                    cid = self._label_of(uid, labels, idx, start)
+                    if cid is not None and cid in locked_ids:
                         keep_mask[i] = False
         return indices[keep_mask]
 
@@ -119,10 +132,7 @@ class BranchSelectionMixin:
                 labels = self._get_cluster_labels(uid)
                 if labels is None:
                     return False
-                local_idx = index - start
-                if local_idx < len(labels):
-                    return int(labels[local_idx]) == -1
-                return False
+                return self._label_of(uid, labels, index, start) == -1
         return False
 
     def _filter_selection(self, indices):
@@ -184,8 +194,6 @@ class BranchSelectionMixin:
             if labels is None:
                 continue
             for i, idx in enumerate(indices):
-                if start <= idx < end:
-                    local_idx = idx - start
-                    if local_idx < len(labels) and int(labels[local_idx]) == -1:
-                        keep_mask[i] = False
+                if start <= idx < end and self._label_of(uid, labels, idx, start) == -1:
+                    keep_mask[i] = False
         return indices[keep_mask]
