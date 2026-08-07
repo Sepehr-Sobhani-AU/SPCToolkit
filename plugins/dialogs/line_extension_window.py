@@ -28,12 +28,19 @@ to look at a result and say "no, not that".
 
 Stops are ranked by how many unclaimed points lie ahead of them, so the ones
 worth looking at come first and genuine ends sink to the bottom of the queue.
+
+While a stop is under review the points worth picking at it are promoted to a
+cluster of their own — bright, and the only points in the cloud that will accept
+a click, since everything else is left as noise and the viewer refuses to select
+noise. That is also what makes the workflow possible at all: unclaimed points
+are noise, so before this nothing could be picked on a result branch. See
+``_mark_candidates``.
 """
 
 import numpy as np
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
-    QMessageBox, QProgressBar, QSpinBox
+    QMessageBox, QProgressBar, QSpinBox, QCheckBox
 )
 from PyQt5.QtCore import Qt, QTimer
 
@@ -60,6 +67,20 @@ _FOCUS_EXTENT_FACTOR = 4.0
 
 # Poll interval for the viewer's pick count (ms). Matches AnnotationWindow.
 _POLL_MS = 200
+
+# Colour given to the candidate cluster — the points offered for picking at the
+# current stop. Bright and unlike anything set_random_color produces for a real
+# cluster, so "these are the ones you may click" reads at a glance.
+_CANDIDATE_COLOR = np.array([1.0, 1.0, 0.0], dtype=np.float32)   # yellow
+
+# What a point goes back to when it stops being a candidate: the noise colour
+# Clusters.set_random_color paints label -1 with.
+_NOISE_COLOR = np.array([0.2, 0.2, 0.2], dtype=np.float32)
+
+# Default reach of the candidate cone, as a multiple of the search reach. Set
+# well beyond what growth itself would attempt: the whole point of picking is to
+# reach across a hole the march could not.
+_CANDIDATE_REACH_FACTOR = 8.0
 
 
 class LineExtensionWindow(QDialog):
@@ -118,6 +139,10 @@ class LineExtensionWindow(QDialog):
         self.stop_branches = self._discover_stop_branches()
         self.track_stop_branches = bool(self.stop_branches)
 
+        # Cloud indices currently promoted to the candidate cluster, so they can
+        # be put back to noise when the review moves on. None = nothing marked.
+        self.marked_indices = None
+
         # Whether the lines arrived carrying their search cylinders. A result
         # saved before cylinders were persisted comes back without them, and
         # rebuilding the branch from an extension alone would throw away the
@@ -127,10 +152,31 @@ class LineExtensionWindow(QDialog):
         self.poll_timer = QTimer()
         self.poll_timer.timeout.connect(self._refresh_pick_count)
 
+        self._claim_tree_selection()
         self._setup_ui()
         self._build_queue()
         self._show_current(focus=True)
         self.poll_timer.start(_POLL_MS)
+
+    def _claim_tree_selection(self):
+        """Make the result branch the selected one.
+
+        Picking is filtered to the branches selected in the tree
+        (``_is_index_in_selected_branch``). After growth the selection is still
+        the input cloud — which is also hidden by then — so nothing at all is
+        pickable until this is put right, whatever the labels say.
+        """
+        if self.controller is not None:
+            self.controller.set_selected_branches([self.result_uid])
+        if self.tree_widget is None:
+            return
+        item = self.tree_widget.branches_dict.get(self.result_uid)
+        if item is None:
+            return
+        self.tree_widget.blockSignals(True)
+        self.tree_widget.clearSelection()
+        item.setSelected(True)
+        self.tree_widget.blockSignals(False)
 
     # ------------------------------------------------------------------ #
     # UI                                                                 #
@@ -175,6 +221,32 @@ class LineExtensionWindow(QDialog):
         rollback.addWidget(QLabel("cylinder(s) before growing"))
         rollback.addStretch()
         layout.addLayout(rollback)
+
+        candidates = QHBoxLayout()
+        self.candidate_box = QCheckBox("Offer only points ahead, within")
+        self.candidate_box.setChecked(True)
+        self.candidate_box.setToolTip(
+            "Points you can pick are put in their own bright cluster; the rest "
+            "of the cloud stays grey and cannot be clicked at all.\n\nUntick to "
+            "offer every unclaimed point, wherever it is."
+        )
+        self.candidate_box.stateChanged.connect(self._on_candidate_setting)
+        self.range_spin = QSpinBox()
+        self.range_spin.setRange(1, 1000)
+        self.range_spin.setValue(max(1, int(round(
+            self.grower.cylinder_length * self.grower.reach_factor
+            * _CANDIDATE_REACH_FACTOR))))
+        self.range_spin.setToolTip(
+            "How far ahead of the stop to offer points, in metres.\n\nRaise it "
+            "to pick across a long occlusion — anything beyond this distance "
+            "stays grey and unclickable."
+        )
+        self.range_spin.valueChanged.connect(self._on_candidate_setting)
+        candidates.addWidget(self.candidate_box)
+        candidates.addWidget(self.range_spin)
+        candidates.addWidget(QLabel("m"))
+        candidates.addStretch()
+        layout.addLayout(candidates)
 
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
@@ -302,6 +374,7 @@ class LineExtensionWindow(QDialog):
             for widget in widgets:
                 widget.setEnabled(False)
             self._clear_focus_branch()
+            self._refresh_candidates()   # nothing under review, nothing offered
             return
 
         for widget in widgets:
@@ -326,6 +399,7 @@ class LineExtensionWindow(QDialog):
                 "Nothing unclaimed ahead — most likely a genuine feature end."
             )
         self._draw_focus_branch(stop)
+        self._refresh_candidates()
         if focus:
             self._focus_current()
         self._refresh_pick_count()
@@ -654,6 +728,11 @@ class LineExtensionWindow(QDialog):
 
         Called after every decision rather than only on Finish, so closing the
         window by any route (or the app dying) never loses accepted work.
+
+        Labels are rebuilt from the lines every time, so this always leaves the
+        branch holding ONLY its real clusters — the candidate cluster is erased
+        by construction and never has to be unpicked. Whoever needs it back puts
+        it back (``_refresh_candidates``); on close nobody does.
         """
         node = self.controller.get_node(self.result_uid)
         if node is None or node.data is None:
@@ -667,12 +746,98 @@ class LineExtensionWindow(QDialog):
         clusters.line_traces = lines_to_traces(self.lines, self.params,
                                                resolved=self.resolved)
         clusters.set_random_color()
+        self.marked_indices = None      # the relabel above wiped any candidates
 
         self.controller.cache_service.invalidate(self.result_uid)
         self.controller.cache_service.invalidate_descendants(self.result_uid)
         self._update_debug_branches()
         self._update_stop_branches()
         self._render()
+
+    # ------------------------------------------------------------------ #
+    # The candidate cluster                                              #
+    # ------------------------------------------------------------------ #
+
+    def _candidate_indices(self):
+        """Cloud indices to offer for picking at the current stop.
+
+        The cone ahead of it (``pick_candidates``), or every unclaimed point
+        when the user has turned the restriction off.
+        """
+        current = self._current()
+        if current is None:
+            return np.empty(0, dtype=np.intp)
+        claimed = self._claimed_mask()
+        if not self.candidate_box.isChecked():
+            return np.where(~claimed)[0].astype(np.intp)
+        _label, stop = current
+        return self.grower.pick_candidates(stop, claimed,
+                                           float(self.range_spin.value()))
+
+    def _refresh_candidates(self):
+        """Re-offer for the stop now under review, without rewriting the branch.
+
+        Stepping between stops must not pay for a full relabel of the cloud, so
+        this only touches the points that were offered and the ones now being
+        offered — everything else is left exactly as ``_commit`` wrote it. Only
+        safe while the LINES are unchanged, which is why every path that changes
+        them goes through ``_commit`` instead.
+        """
+        node = self.controller.get_node(self.result_uid)
+        if node is None or node.data is None:
+            return
+        clusters = node.data
+        self._unmark_candidates(clusters)
+        self._mark_candidates(clusters)
+        self.controller.cache_service.invalidate(self.result_uid)
+        self.controller.cache_service.invalidate_descendants(self.result_uid)
+        self._render()
+
+    def _unmark_candidates(self, clusters):
+        """Put the points offered last time back to being noise."""
+        if self.marked_indices is None or self.marked_indices.size == 0:
+            self.marked_indices = None
+            return
+        idx = self.marked_indices
+        idx = idx[idx < len(clusters.labels)]
+        clusters.labels[idx] = -1
+        if clusters.colors is not None:
+            clusters.colors[idx] = _NOISE_COLOR
+        self.marked_indices = None
+
+    def _mark_candidates(self, clusters):
+        """Promote the candidate points to a cluster of their own.
+
+        This is the whole of the "fade the rest and lock it" behaviour, and it
+        needs no viewer support because a label already carries both halves of
+        it: a ``-1`` point is drawn dark grey (``set_random_color``'s noise
+        colour) AND refused by the picking filters (``_filter_noise_points``).
+        Unclaimed points are ``-1``, which is why they cannot be picked today —
+        so the fix is not to fade anything, it is to stop the points the user
+        needs from being noise.
+
+        The new label is one above the highest in use. That matters: colours are
+        handed out in sorted label order, so a label that sorts LAST leaves every
+        existing cluster's colour untouched, while one sorting first (-2, say)
+        would shift every line's colour each time candidates came and went.
+
+        The colour is written straight onto the colour array rather than through
+        ``custom_colors``, so nothing about this survives the next commit.
+        """
+        indices = self._candidate_indices()
+        if indices.size == 0:
+            self.marked_indices = None
+            return
+        label = int(clusters.labels.max()) + 1
+        clusters.labels[indices] = label
+        if clusters.colors is not None:
+            clusters.colors[indices] = _CANDIDATE_COLOR
+        self.marked_indices = indices
+
+    def _on_candidate_setting(self, _value=None):
+        """Re-offer under the new setting. Not a change to the lines, so it is
+        not snapshotted and does not touch the queue."""
+        self._refresh_candidates()
 
     def _rebuilt_debug_feature(self, name):
         """Wireframe for the debug branch *name*, rebuilt from the current lines.
@@ -719,6 +884,9 @@ class LineExtensionWindow(QDialog):
     def closeEvent(self, event):
         self.poll_timer.stop()
         self._clear_focus_branch()
+        # Hands the branch back with only its real clusters on it — the candidate
+        # cluster exists to make picking possible, and has no business surviving
+        # into classification or a saved project.
         self._commit()
         self._clear_picks()
         super().closeEvent(event)
