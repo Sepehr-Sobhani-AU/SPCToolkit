@@ -61,6 +61,19 @@ All the debug wireframes you asked for at growth time — search cylinders, cent
 
 Search cylinders are stored with the trace for the same reason, so reopening a saved result and extending it redraws the whole wireframe rather than just the new piece. A result saved before that was stored comes back without them, and its cylinder branch is left alone rather than being replaced by the extension's few.
 
+### Only the points worth picking can be picked
+
+In a real cloud there is far too much in the way to pick accurately — vegetation, poles, ground, the traced cable itself. So while you are working a stop, the points you could sensibly pick are put into **a cluster of their own**: bright yellow, and the only points in the cloud that will accept a click. Everything else stays dark grey and ignores the mouse entirely, so you can drag a polygon straight across the clutter and pick up only what you meant.
+
+That falls out of what a cluster label already means, rather than being a display mode bolted on top. A point labelled `-1` is drawn dark grey **and** refused by the viewer's picking filters. Unclaimed points are `-1` — which is why, before this, they could not be picked at all and the workflow only functioned with the input cloud shown alongside the result, drawing every point twice. **You can now hide the input cloud**, which halves what is on screen.
+
+- **Offer only points ahead, within [N] m** — the candidates are the unclaimed points inside a cone reaching that far along the stop's heading, plus a small ball at the marker. Raise the range to pick across a long occlusion; anything beyond it stays grey.
+- Untick it to offer *every* unclaimed point, wherever it is — for the rare feature that turns hard at the stop.
+
+The cone is deliberately narrow (15°). Measured on a cable 8 m above ground with a tree beside the hole: a 45° cone leaves 36% of the cloud clickable, a 15° one leaves 2.3%, and both offer every point of the cable beyond the hole. Erring tight is also the cheaper mistake — you can see a point is not offered and widen the range, whereas too wide quietly gives the clutter back.
+
+Points already on a traced line keep their cluster colour and stay clickable; they are already seeds, so picking one changes nothing. The candidate cluster is temporary — it is rebuilt as you step from stop to stop and erased when the window closes, so it never reaches classification or a saved project.
+
 ### Your picks are the decision
 
 A point you picked is a point you looked at and judged to be on this line, so **the picks always join the line** — whether or not growth could get there by itself. The march is the bonus: it runs, and whatever it reaches is spliced in, but if it stops dead your picks are still adopted and the marker still moves out to them. The window says which happened ("grew +240 points" versus "growth could not carry on, so your 6 picked point(s) were added — pick further ahead and extend again"), so you always know whether the trace advanced on its own.

@@ -402,3 +402,52 @@ extended a line would rebuild the cylinder branch from the extension's handful
 of cylinders alone, throwing away the whole original run's geometry. Traces
 written before this come back with none, and the window leaves that branch
 alone rather than gutting it.
+
+## 2026-08-07 — Pick focus is a cluster label, not a viewer mode
+
+Picking the few points beyond a stop is the slow, error-prone part of extending a
+line: a real cloud has vegetation, poles, ground and the cable itself competing
+for every click. Two facts about the viewer decided how to fix it.
+
+A point labelled `-1` is drawn dark grey (`Clusters.set_random_color`'s noise
+colour) **and** refused by the picking filters (`_filter_noise_points`). So the
+viewer already fades and locks exactly what should be faded and locked — nothing
+needed adding for that. The real problem was the opposite one: unclaimed points
+are `-1` too, so the points the user must pick were unpickable, and the workflow
+only functioned because the input cloud was shown alongside the result, drawing
+every point twice.
+
+**So the candidates are promoted to a real cluster** (`pick_candidates` → the
+window's `_mark_candidates`): they stop being noise, become clickable, and get a
+bright colour of their own. The first design was a viewer-level focus mask with
+a new mixin, a three-pass GL draw and a callback re-evaluated on every LOD
+re-slice. Same picture, an order of magnitude more code, and one more thing to
+keep in step with the renderer. Credit where due: this was the user's design.
+
+Three things it turns on:
+
+- **The label must be `max + 1`.** Colours are handed out in sorted label order,
+  so a label that sorts last leaves every existing cluster's colour untouched.
+  One sorting first (`-2`) shifts every line's colour each time candidates appear
+  and vanish — the cables would change colour on every step.
+- **The window claims the tree selection.** Picking is filtered to the branches
+  selected in the tree, and after growth that is still the input cloud (which is
+  hidden by then), so nothing is pickable whatever the labels say.
+- **Label lookups had to be made LOD-aware.** Under LOD the viewer holds
+  `points[indices]`, but `_branch_helpers` looked up `labels[index - start]` — an
+  unrelated point's label. Pre-existing, but this feature stands on that lookup:
+  the candidate the user sees glowing would refuse the click. The coordinator now
+  keeps the subsample indices and the viewer maps through them (`cloud_index`).
+
+**The cone is 15°, and that number is the whole filter.** Measured on a cable 8 m
+above ground with a 6 m hole and a tree beside it, offering 24 m ahead: at 45°
+the cone swallows the ground and 36% of the cloud stays clickable; at 15° it is
+2.3%. Both offer every point of the cable beyond the hole, so recovery alone
+cannot tell the useful setting from the useless one — `test_pick_candidates_
+leave_the_clutter_out` asserts both halves. Erring tight is the cheaper mistake:
+the user can see a point is not offered and widen the range, while too wide
+silently returns the problem.
+
+The cluster is transient. `_commit` rebuilds labels from the lines every time, so
+it is erased by construction rather than needing to be unpicked, and stepping
+between stops only relabels the points involved instead of the whole cloud.
