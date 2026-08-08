@@ -22,6 +22,10 @@ class ViewerPropertiesMixin:
         self._picking_point_threshold_factor = 1.0
         self._picked_point_highlight_color = (1.0, 0.0, 0.0)
         self._picked_point_highlight_size = 1
+        # How emphasised points are drawn against the rest — see
+        # DataManagementMixin.set_point_emphasis.
+        self._emphasis_size_factor = 3.0
+        self._faded_opacity = 0.5
         self._zoom_min_factor = 0.02
         self._zoom_max_factor = 1
         self._zoom_sensitivity = 1
@@ -60,6 +64,33 @@ class ViewerPropertiesMixin:
     def point_size(self, value):
         if value > 0:
             self._point_size = value
+            self.update()
+
+    @property
+    def emphasis_size_factor(self):
+        """
+        float: How much bigger emphasised points are drawn than normal ones.
+        """
+        return self._emphasis_size_factor
+
+    @emphasis_size_factor.setter
+    def emphasis_size_factor(self, value):
+        if value > 0:
+            self._emphasis_size_factor = value
+            self.update()
+
+    @property
+    def faded_opacity(self):
+        """
+        float: Opacity (0–1) of faded points. They also write no depth, so what
+        is behind them stays visible rather than being hidden by clutter.
+        """
+        return self._faded_opacity
+
+    @faded_opacity.setter
+    def faded_opacity(self, value):
+        if 0.0 <= value <= 1.0:
+            self._faded_opacity = value
             self.update()
 
     @property

@@ -44,6 +44,13 @@ class DataManagementMixin:
         # rendering coordinator; read by cloud_index().
         self._branch_sample_indices: Dict[str, Optional[np.ndarray]] = {}
 
+        # uid -> (emphasised, faded) SOURCE-row indices: points to draw bigger,
+        # and points to draw see-through. Held in source rows, not rendered rows,
+        # so a change of LOD cannot silently point them at other points — the
+        # translation happens at paint time. See set_point_emphasis.
+        self._branch_emphasis: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+        self._emphasis_rows_cache: Dict[str, Optional[Tuple[np.ndarray, ...]]] = {}
+
         # Lazy derived state, invalidated by set_branches().
         self._combined_points_cache: Optional[np.ndarray] = None
         self._branch_offsets_cache: Optional[Dict[str, Tuple[int, int]]] = None
@@ -158,6 +165,9 @@ class DataManagementMixin:
         self._combined_points_cache = None
         self._branch_offsets_cache = None
         self._kdtree = None
+        # The emphasis itself survives — it is held in source rows, which a
+        # re-render does not change. Only the rendered rows it maps onto do.
+        self._emphasis_rows_cache.clear()
 
         # Picked-point indices reference the OLD combined order. Clamp by
         # eventual size when rendered; preserved here for back-compat.
@@ -225,6 +235,93 @@ class DataManagementMixin:
         out = np.full(local_indices.shape, -1, dtype=np.int64)
         out[valid] = np.asarray(indices)[local_indices[valid]]
         return out
+
+    def rendered_rows(self, uid: str, cloud_indices: np.ndarray) -> np.ndarray:
+        """The rendered rows of branch *uid* showing the given source rows.
+
+        The inverse of ``cloud_indices``, and lossy in the same direction LOD is:
+        a source row the viewer did not draw has no rendered row and simply does
+        not come back.
+        """
+        cloud_indices = np.asarray(cloud_indices, dtype=np.int64)
+        sample = self._branch_sample_indices.get(uid)
+        if sample is None:
+            slc = self._branch_vertices.get(uid)
+            limit = 0 if slc is None else len(slc)
+            return cloud_indices[(cloud_indices >= 0) & (cloud_indices < limit)]
+        return np.flatnonzero(np.isin(np.asarray(sample), cloud_indices))
+
+    # ------------------------------------------------------------------
+    # Emphasis: drawing some points bigger and others see-through
+    # ------------------------------------------------------------------
+
+    def set_point_emphasis(self, uid: str, emphasised=None, faded=None) -> None:
+        """Single out some of branch *uid*'s points from the rest.
+
+        *emphasised* points are drawn ``emphasis_size_factor`` times the normal
+        point size; *faded* points are drawn at ``faded_opacity`` and write no
+        depth, so anything behind them still shows through instead of being
+        hidden by clutter. Everything else in the branch draws normally.
+
+        Both are SOURCE row indices — indices into the branch's own data, the
+        same space cluster labels live in — not rendered rows, which change
+        whenever LOD does.
+
+        Pass neither to clear the branch's emphasis. Whoever sets it owns
+        clearing it: the viewer holds it until told otherwise, exactly like
+        visibility.
+        """
+        if emphasised is None and faded is None:
+            self._branch_emphasis.pop(uid, None)
+        else:
+            empty = np.empty(0, dtype=np.int64)
+            self._branch_emphasis[uid] = (
+                empty if emphasised is None else np.asarray(emphasised, dtype=np.int64),
+                empty if faded is None else np.asarray(faded, dtype=np.int64),
+            )
+        self._emphasis_rows_cache.pop(uid, None)
+        self.update()
+
+    def clear_point_emphasis(self) -> None:
+        """Drop every branch's emphasis — back to one size, fully opaque."""
+        if not self._branch_emphasis:
+            return
+        self._branch_emphasis.clear()
+        self._emphasis_rows_cache.clear()
+        self.update()
+
+    def _emphasis_draw_groups(self, uid: str, n_rows: int):
+        """``(emphasised, opaque)`` rendered-row index arrays for *uid*, or None
+        when the branch has no emphasis and draws in one pass.
+
+        The FADED rows are deliberately not among them. Drawing is done as a
+        faded pass over the whole branch followed by these two opaque subsets on
+        top (see ``_draw_emphasised``), because the faded set is normally almost
+        the entire cloud — an index array for it would be tens of megabytes
+        pushed from client memory every frame, where the whole branch draws
+        straight out of its VBO for nothing.
+
+        Cached per branch: the translation from source rows costs O(n) and the
+        answer only changes when the emphasis or the rendered slice does, both
+        of which drop the entry.
+        """
+        if uid not in self._branch_emphasis:
+            return None
+        cached = self._emphasis_rows_cache.get(uid, False)
+        if cached is not False:
+            return cached
+
+        emphasised, faded = self._branch_emphasis[uid]
+        emph_rows = self.rendered_rows(uid, emphasised)
+        # A row named as both is emphasised: being offered for picking outranks
+        # being clutter.
+        faded_rows = np.setdiff1d(self.rendered_rows(uid, faded), emph_rows)
+        opaque_rows = np.setdiff1d(np.arange(n_rows, dtype=np.int64),
+                                   np.union1d(emph_rows, faded_rows))
+
+        groups = (emph_rows.astype(np.uint32), opaque_rows.astype(np.uint32))
+        self._emphasis_rows_cache[uid] = groups
+        return groups
 
     # ------------------------------------------------------------------
     # KDTree (lazy, derived from combined points)

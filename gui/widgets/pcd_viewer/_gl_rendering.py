@@ -18,6 +18,9 @@ from OpenGL.GL import (
     GL_LINES, glLineWidth,
     glPushMatrix, glPopMatrix,
     glViewport,
+    glDepthMask, glBlendColor,
+    GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA,
+    GL_TRUE, GL_FALSE,
 )
 from OpenGL.GLU import gluPerspective
 from OpenGL.GLU import gluNewQuadric, gluDeleteQuadric, gluQuadricDrawStyle
@@ -172,7 +175,13 @@ class GLRenderingMixin:
                 stride = 6 * slc.itemsize
                 glVertexPointer(3, GL_FLOAT, stride, v)
                 glColorPointer(3, GL_FLOAT, stride, v + 12)
-                glDrawArrays(GL_POINTS, 0, len(slc))
+
+                groups = self._emphasis_draw_groups(uid, len(slc))
+                if groups is None:
+                    glDrawArrays(GL_POINTS, 0, len(slc))
+                else:
+                    self._draw_emphasised(groups, len(slc))
+                    glPointSize(self.point_size)
                 v.unbind()
 
             glDisableClientState(GL_VERTEX_ARRAY)
@@ -183,6 +192,43 @@ class GLRenderingMixin:
             logger.error(f"  Visible branches: {len(self._visible_branches)}")
             logger.error(f"  Traceback:\n{traceback.format_exc()}")
             raise
+
+    def _draw_emphasised(self, groups, n_rows):
+        """Draw one branch faded all over, then paint the rest back on opaque.
+
+        The vertex format carries no alpha (Nx6, xyz+rgb), so the fade comes
+        from a constant blend factor for the whole pass rather than per point —
+        which is all that is wanted here, and costs nothing on the hot path
+        since a branch without emphasis never reaches this method.
+
+        The faded pass covers the WHOLE branch straight out of its VBO rather
+        than an index list of just the faded rows: those are normally almost the
+        entire cloud, and pushing tens of megabytes of indices from client
+        memory every frame to say so would cost far more than drawing some
+        points twice. What is not meant to be faded is simply drawn again on top.
+
+        It also goes FIRST, and writes no depth. That is what makes the fade
+        mean "see through this" rather than "this is dimmer": the opaque passes
+        that follow are never depth-rejected by clutter standing in front of
+        them, so an offered point behind a screen of unclaimed returns still
+        comes out solid and full-sized.
+        """
+        emphasised, opaque = groups
+
+        glBlendColor(0.0, 0.0, 0.0, self.faded_opacity)
+        glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA)
+        glDepthMask(GL_FALSE)
+        glDrawArrays(GL_POINTS, 0, n_rows)
+        glDepthMask(GL_TRUE)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        if opaque.size:
+            glDrawElements(GL_POINTS, opaque.size, GL_UNSIGNED_INT, opaque)
+
+        if emphasised.size:
+            glPointSize(self.point_size * self.emphasis_size_factor)
+            glDrawElements(GL_POINTS, emphasised.size, GL_UNSIGNED_INT,
+                           emphasised)
 
     def render_lines(self):
         """

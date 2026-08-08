@@ -39,6 +39,14 @@ class _StubViewer(DataManagementMixin, BranchSelectionMixin):
         self._visible_branches = [_UID]
         self._branch_offsets_cache = {_UID: (0, n_rendered)}
         self._branch_sample_indices = {_UID: sample_indices}
+        # Emphasis state, as _init_data would leave it. The rendered slice is
+        # only ever measured for its length here.
+        self._branch_vertices = {_UID: np.zeros((n_rendered, 6), dtype=np.float32)}
+        self._branch_emphasis = {}
+        self._emphasis_rows_cache = {}
+
+    def update(self):
+        pass
 
 
 def _install_branch(labels, locked=None):
@@ -149,6 +157,34 @@ def test_labels_are_read_through_the_lod_subsample():
     assert viewer.cloud_indices(_UID, np.arange(5)).tolist() == sample.tolist()
 
 
+def test_emphasis_is_resolved_through_the_lod_subsample():
+    """Emphasis is given in SOURCE rows — the space cluster labels live in — and
+    has to be translated to rendered rows to be drawn. Storing rendered rows
+    instead would rot the moment LOD changed the subsample, quietly enlarging
+    and fading whichever points had inherited those row numbers."""
+    sample = np.array([0, 2, 4, 6, 8])           # every second cloud point drawn
+    viewer = _StubViewer(len(sample), sample_indices=sample)
+
+    # Cloud rows 4 and 6 are offered; 0 and 8 are clutter; 2 is neither. Cloud
+    # row 5 is offered as well but was not drawn at all, so it cannot appear.
+    viewer.set_point_emphasis(_UID, emphasised=[4, 5, 6], faded=[0, 6, 8])
+    emphasised, opaque = viewer._emphasis_draw_groups(_UID, len(sample))
+    print(f"cloud rows drawn {sample.tolist()}: emphasised rendered "
+          f"{emphasised.tolist()}, opaque {opaque.tolist()} (the faded ones — "
+          f"rendered rows 0 and 4 — are covered by the whole-branch pass)")
+
+    assert emphasised.tolist() == [2, 3], \
+        f"cloud rows 4 and 6 are rendered rows 2 and 3, got {emphasised.tolist()}"
+    assert opaque.tolist() == [1], \
+        f"only rendered row 1 is neither offered nor clutter, got {opaque.tolist()}"
+    assert 3 in emphasised.tolist() and 3 not in opaque.tolist(), \
+        "a row named as both must come out emphasised"
+
+    viewer.set_point_emphasis(_UID)
+    assert viewer._emphasis_draw_groups(_UID, len(sample)) is None, \
+        "clearing the emphasis must put the branch back to a single draw pass"
+
+
 def test_offering_and_withdrawing_leaves_the_branch_as_it_was():
     """Stepping between stops re-offers a different set of points without
     rewriting the whole branch, so withdrawing an offer has to restore exactly
@@ -212,6 +248,7 @@ if __name__ == "__main__":
     test_labelling_candidates_makes_them_selectable()
     test_a_cluster_lock_still_wins()
     test_labels_are_read_through_the_lod_subsample()
+    test_emphasis_is_resolved_through_the_lod_subsample()
     test_offering_and_withdrawing_leaves_the_branch_as_it_was()
     test_full_resolution_still_maps_one_to_one()
     print("\nAll pick-focus label tests passed.")
