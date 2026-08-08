@@ -155,7 +155,10 @@ class ApplicationController:
     def remove_node(self, uid: str) -> bool:
         """Remove a node and all descendants."""
         try:
-            self.data_nodes.remove_data(uuid.UUID(uid))
+            # DataNodes.remove_node, not remove_data — the latter has never
+            # existed, so every call through here failed into the except below
+            # and only logged it. The node survived; only its tree row went.
+            self.data_nodes.remove_node(uuid.UUID(uid))
             self.cache_service.invalidate_descendants(uid)
             return True
         except Exception as e:
