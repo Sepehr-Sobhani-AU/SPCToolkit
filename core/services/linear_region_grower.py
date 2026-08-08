@@ -70,6 +70,11 @@ _SEED_FIT_MIN_INLIER_RATIO = 0.2
 # the nearest far point, so the next step's fit window captures the whole cluster.
 _GAP_LANDING_FRAC = 0.1
 
+# How far past the last recorded vertex a claimed point must lie before the
+# centerline is carried out to it (metres). Just above the de-duplication
+# tolerance, so this never adds a vertex that would be collapsed anyway.
+_TAIL_MIN_GAIN = 1e-3
+
 # Centerline vertex de-duplication tolerance: max(length * REL, ABS) metres.
 _DEDUPE_REL_TOL = 1e-3
 _DEDUPE_ABS_TOL = 1e-6
@@ -975,6 +980,27 @@ class LinearRegionGrower:
         # rather than stopping at the last midpoint, half a window short.
         if last_end is not None:
             self._record_step(prev_mid, last_end)
+            prev_mid = last_end
+
+        # And on to the furthest point this march actually claimed, if that lies
+        # further still. Geometry is only recorded when a window FITS, but the
+        # else branch above claims near on-axis points and bridges onward without
+        # fitting anything — so a march that ends by creeping along a sparse
+        # continuation holds points its centerline never reaches, and a march
+        # that never fits a single window (the whole continuation sparse) draws
+        # no centerline at all. Measured: 4 points claimed out to x=13.4 with the
+        # centerline still ending at x=10.0.
+        #
+        # Only ever LENGTHENS the chain along the heading already travelled — it
+        # cannot move or reroute a segment the march fitted.
+        if collected:
+            idx = np.fromiter(collected, dtype=np.intp, count=len(collected))
+            reach_out = (self.all_points[idx] - prev_mid) @ current_dir
+            if reach_out.size and float(reach_out.max()) > _TAIL_MIN_GAIN:
+                tail = self.all_points[idx[int(np.argmax(reach_out))]]
+                # No cylinder: nothing was fitted here, so drawing a search
+                # window over it would claim more than the march did.
+                self._record_step(prev_mid, tail, record_cylinder=False)
 
         # The last cylinder searched in this direction is the stop point at this
         # end of the line — the march ended just beyond it. Record it together

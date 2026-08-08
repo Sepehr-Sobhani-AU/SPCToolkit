@@ -1008,6 +1008,45 @@ def test_extension_bridges_to_sparse_picks_below_min_points():
         f"(line ends at x={reached:.1f}, cable runs to x=22)")
 
 
+def test_centerline_reaches_the_points_the_march_claimed():
+    """The centerline is only recorded where a window FITS, but the march also
+    claims near on-axis points while bridging, without fitting anything. A trace
+    that ends by creeping along a sparse continuation therefore held points its
+    centerline never reached — and one that never fitted a single window drew no
+    centerline for that stretch at all, which is what an extension into a sparse
+    continuation looks like: the line grows, nothing is drawn."""
+    rng = np.random.default_rng(9)
+    # Dense to x=10, then a continuation too sparse to fill a fit window.
+    near = np.stack([np.linspace(0, 10, 300), np.zeros(300), np.zeros(300)], 1)
+    sparse_x = np.arange(11.0, 20.0, 0.6)
+    far = np.stack([sparse_x, np.zeros(len(sparse_x)), np.zeros(len(sparse_x))], 1)
+    points = np.vstack([near, far]) + rng.normal(0, 0.004,
+                                                 (300 + len(sparse_x), 3))
+
+    g = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05, cylinder_radius=0.2,
+        cylinder_length=1.0, reach_factor=3.0, min_points=8, max_angle_deg=20.0,
+    )
+    line = g.grow_lines([np.arange(8)])[0]
+    stop = [s for s in line.stops if s.direction[0] > 0][0]
+    claimed = np.zeros(len(points), dtype=bool)
+    claimed[line.indices] = True
+
+    picks = g.unclaimed_ahead(stop, claimed)[:3]
+    extended = g.extend_from_stop(stop, line, picks).line
+    reached = float(points[extended.indices][:, 0].max())
+    drawn = float(extended.centerline[:, 0].max())
+    back = int((np.diff(extended.centerline[:, 0]) < -1e-3).sum())
+    print(f"sparse tail: points reach x={reached:.1f}, centerline reaches "
+          f"x={drawn:.1f} ({len(extended.centerline)} vertices, {back} back-steps)")
+
+    assert reached > 12.0, "setup wrong: the extension claimed nothing sparse"
+    assert drawn > reached - 0.5, (
+        f"the line holds points out to x={reached:.1f} but its centerline stops "
+        f"at x={drawn:.1f} — that stretch draws nothing")
+    assert back == 0, "carrying the centerline out doubled it back on itself"
+
+
 def test_traces_round_trip_through_persistence():
     """Lines must survive being packed for the project file and rebuilt — that is
     the whole basis of continuing a trace in a later session."""
@@ -1084,5 +1123,6 @@ if __name__ == "__main__":
     test_rollback_backs_out_past_what_stopped_the_march()
     test_extension_adopts_picks_when_the_march_cannot_follow()
     test_extension_bridges_to_sparse_picks_below_min_points()
+    test_centerline_reaches_the_points_the_march_claimed()
     test_traces_round_trip_through_persistence()
     print("\nAll linear_region_grower tests passed.")
