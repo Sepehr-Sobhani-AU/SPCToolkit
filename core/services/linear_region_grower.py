@@ -194,6 +194,13 @@ class LinearRegionGrower:
         self.cylinder_radius = cylinder_radius
         self.cylinder_length = cylinder_length
         self.overlap = overlap
+        # How wide the march may LOOK, as opposed to how wide it may FIT. Equal
+        # by default; a guided extension opens this one alone so it can see the
+        # continuation the user pointed at, while the fit window (and therefore
+        # the recorded cylinder) stays at cylinder_radius. Widening the fit
+        # window instead scoops neighbouring clutter into the per-step PCA and
+        # draws search cylinders many times fatter than the ones growth drew.
+        self.search_radius = cylinder_radius
         # Search reach as a multiple of the fit window. reach >= cylinder_length,
         # so a short window (curve fidelity) can still look far enough ahead to
         # bridge gaps in fragmented features. 1.0 disables bridging.
@@ -394,8 +401,8 @@ class LinearRegionGrower:
         return line_indices[dist <= radius]
 
     def _pick_bounded_search(self, stop, picks):
-        """How far and how wide an extension must search to actually ARRIVE at
-        the user's *picks*. Returns ``(reach_factor, cylinder_radius)``.
+        """How far and how wide an extension must LOOK to actually find the
+        user's *picks*. Returns ``(reach_factor, search_radius)``.
 
         The normal search is tuned to bridge incidental gaps blindly, so it is
         deliberately short and narrow — a re-seed under it stops dead at the very
@@ -410,9 +417,16 @@ class LinearRegionGrower:
         after a few re-fits — misses by 0.2 m at 6 m and by 0.85 m at 25 m. Grant
         the reach without the width and the tube sails straight past the points
         the user picked, which is exactly the failure this method exists to stop.
+
+        Only the SEARCH is widened. The fit window stays at ``cylinder_radius``,
+        and ``_bridge_gap`` steps sideways onto the continuation rather than the
+        window being stretched out to it — otherwise the per-step PCA fits a tube
+        several times wider than the user asked for, scooping in whatever grows
+        beside the feature, and the extension draws visibly fatter search
+        cylinders than the growth it continues (measured 0.184 m against 0.03 m).
         """
         if picks.size == 0:
-            return self.reach_factor, self.cylinder_radius
+            return self.reach_factor, self.search_radius
 
         tip = np.asarray(stop.tip, dtype=float)
         direction = unit(np.asarray(stop.direction, dtype=float))
@@ -422,7 +436,7 @@ class LinearRegionGrower:
         along = vecs @ direction
         perp = float(np.linalg.norm(vecs - np.outer(along, direction), axis=1).max())
         return (max(self.reach_factor, needed / self.cylinder_length),
-                max(self.cylinder_radius, perp * _REACH_MARGIN))
+                max(self.search_radius, perp * _REACH_MARGIN))
 
     def rollback_stop(self, line, stop, n_steps):
         """Discard the last *n_steps* of march from the end of *line* at *stop*,
@@ -587,14 +601,14 @@ class LinearRegionGrower:
         self.debug_lines = []
         self.debug_end_cylinders = []
 
-        saved = (self.reach_factor, self.cylinder_radius)
+        saved = (self.reach_factor, self.search_radius)
         try:
-            self.reach_factor, self.cylinder_radius = \
+            self.reach_factor, self.search_radius = \
                 self._pick_bounded_search(stop, picks)
             self._bridge_targets = picks
             grown = self.grow(seeds, only_direction=stop.direction)
         finally:
-            self.reach_factor, self.cylinder_radius = saved
+            self.reach_factor, self.search_radius = saved
             self._bridge_targets = None
 
         # Did the MARCH contribute, or did it stop immediately and hand back the
@@ -882,7 +896,7 @@ class LinearRegionGrower:
         # a short window can still bridge gaps in fragmented features.
         reach = self.cylinder_length * self.reach_factor
         reach_half = reach / 2.0
-        reach_radius = np.sqrt(self.cylinder_radius ** 2 + reach_half ** 2)
+        reach_radius = np.sqrt(self.search_radius ** 2 + reach_half ** 2)
 
         current_tip = np.asarray(tip, dtype=float).copy()
         current_dir = np.asarray(direction, dtype=float).copy()
@@ -913,8 +927,13 @@ class LinearRegionGrower:
                 break
             candidate_idx, pts, along, perp_dist, tube_mask = tube
 
-            # The near fit window is the first cylinder_length of the tube.
-            near_mask = tube_mask & (along <= self.cylinder_length)
+            # The near fit window is the first cylinder_length of the tube, and
+            # only ever cylinder_radius wide — the tube itself may be wider
+            # (search_radius) so the bridge below can see a continuation off to
+            # one side, but what gets FITTED, claimed and drawn as a cylinder
+            # stays the width the user asked for.
+            near_mask = (tube_mask & (along <= self.cylinder_length)
+                         & (perp_dist < self.cylinder_radius))
 
             if np.count_nonzero(near_mask) >= self.min_points:
                 band = pts[near_mask]
@@ -967,7 +986,7 @@ class LinearRegionGrower:
                 near_on_axis = near_mask & on_axis_mask
                 collected.update(int(i) for i in candidate_idx[near_on_axis])
 
-                next_tip = self._bridge_gap(current_tip, current_dir, along,
+                next_tip = self._bridge_gap(current_tip, current_dir, pts, along,
                                             tube_mask, candidate_idx)
                 if next_tip is None:
                     reason = STOP_TOO_FEW_POINTS  # no band continuation within reach
@@ -1040,7 +1059,7 @@ class LinearRegionGrower:
         perp = vecs - np.outer(along, direction)
         perp_dist = np.linalg.norm(perp, axis=1)
 
-        tube_mask = (along > 0) & (along <= reach) & (perp_dist < self.cylinder_radius)
+        tube_mask = (along > 0) & (along <= reach) & (perp_dist < self.search_radius)
         if use_linearity_gate:
             tube_mask &= self.linearity[candidate_idx] >= self.linearity_threshold
         if not np.any(tube_mask):
@@ -1104,7 +1123,7 @@ class LinearRegionGrower:
         step = self.cylinder_length * (1.0 - self.overlap)
         return base + step * fit_dir
 
-    def _bridge_gap(self, current_tip, current_dir, along, tube_mask,
+    def _bridge_gap(self, current_tip, current_dir, pts, along, tube_mask,
                     candidate_idx=None):
         """Jump the tip toward the nearest far-band continuation within the tube.
 
@@ -1136,7 +1155,17 @@ class LinearRegionGrower:
         a_next = float(along[far_band].min())
         jump = a_next - _GAP_LANDING_FRAC * self.cylinder_length
         next_tip = current_tip + jump * current_dir
-        return next_tip
+
+        # Land ON the continuation, not merely level with it. The tip has only
+        # ever moved along the heading, so a feature that resumed off to one
+        # side of it — sag across the gap, a kink at a pole, a heading a couple
+        # of degrees stale — lands outside the fit window, and the march stops
+        # at the very gap it just crossed. Step across laterally as well, onto
+        # the centre of what the far band actually holds.
+        landing = far_band & (along <= a_next + self.cylinder_length)
+        rel = pts[landing] - next_tip
+        offset = rel - np.outer(rel @ current_dir, current_dir)
+        return next_tip + offset.mean(axis=0)
 
     # ------------------------------------------------------------------ #
     # Linearity-connected (neighbour BFS gated by linearity)             #

@@ -747,6 +747,82 @@ def test_pick_bounded_search_opens_both_reach_and_width():
         f"tube radius {radius:.3f} m cannot see picks {offset:.3f} m off-axis"
 
 
+def _offset_cable(offset=0.25, seed=4):
+    """A dense cable that stops at a 2 m hole and resumes *offset* metres to one
+    side of the heading — sag across the gap, or a kink at a pole. The offset is
+    well outside the search tube, so nothing but a pick gets the march across."""
+    rng = np.random.default_rng(seed)
+    near = np.arange(0.0, 5.0, 0.02)
+    far = np.arange(7.0, 12.0, 0.02)
+    points = np.vstack([
+        np.stack([near, np.zeros(near.size), np.zeros(near.size)], axis=1),
+        np.stack([far, np.full(far.size, offset), np.zeros(far.size)], axis=1),
+    ])
+    return (points + rng.normal(0, 0.004, points.shape), near.size)
+
+
+def _thin_grower(points):
+    return LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.02, cylinder_radius=0.03,
+        cylinder_length=0.5, min_points=8, max_angle_deg=20.0, max_steps=200,
+    )
+
+
+def test_extension_draws_the_same_tube_growth_drew():
+    """An extension must not draw fatter search cylinders than the growth it
+    continues. It is granted a wider SEARCH to find what the user pointed at,
+    but the tube it fits, claims and draws is still the one the user asked for —
+    widening that instead pulls whatever grows beside the feature into the
+    per-step PCA, and puts a visibly bloated tube on screen."""
+    points, n_near = _offset_cable()
+    g = _thin_grower(points)
+    line = g.grow_lines([np.arange(150)])[0]
+    grown_radii = sorted({round(c[2], 6) for c in line.cylinders})
+
+    stop = max(line.stops, key=lambda s: s.tip[0])
+    picks = np.arange(n_near, n_near + 5)
+    searched = g._pick_bounded_search(stop, picks)[1]
+
+    extension = g.extend_from_stop(stop, line, picks)
+    new = extension.line.cylinders[len(line.cylinders):]
+    new_radii = sorted({round(c[2], 6) for c in new})
+    print(f"tube width: growth {grown_radii}, extension {new_radii} "
+          f"(searched out to {searched:.3f} m to find the picks)")
+
+    assert searched > g.cylinder_radius * 2, \
+        "setup wrong: the picks were already inside the default tube"
+    assert new, "the extension recorded no cylinders to compare"
+    assert new_radii == grown_radii == [g.cylinder_radius], \
+        f"extension drew {new_radii} where growth drew {grown_radii}"
+    assert g.search_radius == g.cylinder_radius, \
+        "the widened search leaked out of the extension"
+
+
+def test_bridge_lands_on_the_continuation_not_alongside_it():
+    """Crossing a gap has to step sideways as well as forward. The tip only ever
+    moves along the heading, so a feature that resumed off to one side lands
+    outside the (narrow) fit window and the march stops at the very gap it just
+    crossed — the reason the search used to be widened wholesale instead."""
+    points, n_near = _offset_cable()
+    g = _thin_grower(points)
+    line = g.grow_lines([np.arange(150)])[0]
+    stop = max(line.stops, key=lambda s: s.tip[0])
+
+    # Five picks just past the hole: enough to say "it continues there", nowhere
+    # near enough to be the 5 m of cable the extension has to come back with.
+    picks = np.arange(n_near, n_near + 5)
+    extension = g.extend_from_stop(stop, line, picks)
+    reached = float(points[np.asarray(extension.line.indices), 0].max())
+    print(f"offset bridge: stopped at x={stop.tip[0]:.1f}, "
+          f"{len(picks)} picks -> reached x={reached:.1f} "
+          f"(marched={extension.marched})")
+
+    assert stop.tip[0] < 6.0, f"setup wrong: growth ran on to x={stop.tip[0]:.1f}"
+    assert extension.marched, "the march never got across the offset gap"
+    assert reached > 11.5, \
+        f"landed beside the continuation, not on it (reached x={reached:.1f})"
+
+
 def test_sharp_bend_keeps_near_on_axis_points():
     """Stopping on a bend must still keep the points that hug the CURRENT
     heading. They are on this line whatever the window's fitted axis did, and
@@ -1115,6 +1191,8 @@ if __name__ == "__main__":
     test_reseed_splices_one_continuous_centerline()
     test_reseed_does_not_reach_without_picks()
     test_pick_bounded_search_opens_both_reach_and_width()
+    test_extension_draws_the_same_tube_growth_drew()
+    test_bridge_lands_on_the_continuation_not_alongside_it()
     test_sharp_bend_keeps_near_on_axis_points()
     test_stop_ranking_puts_real_ends_last()
     test_the_offer_ahead_leaves_the_clutter_out()
