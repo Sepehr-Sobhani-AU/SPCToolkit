@@ -823,6 +823,106 @@ def test_bridge_lands_on_the_continuation_not_alongside_it():
         f"landed beside the continuation, not on it (reached x={reached:.1f})"
 
 
+def _straight_line_grower():
+    """A dense straight cable, grown — something to cut up and stitch back."""
+    rng = np.random.default_rng(1)
+    x = np.arange(0, 12.0, 0.02)
+    points = np.stack([x, np.zeros(x.size), np.zeros(x.size)], axis=1)
+    points = points + rng.normal(0, 0.004, points.shape)
+    g = _thin_grower(points)
+    return g, g.grow_lines([np.arange(150)])[0]
+
+
+def test_trim_accounts_for_every_point_it_touched():
+    """A cut in the middle leaves two lines, and every point of the original has
+    to end up somewhere — on one piece or released. A point quietly dropped by
+    both is a point that has left the line without becoming unclaimed, and it
+    would never be offered again."""
+    g, line = _straight_line_grower()
+    seg = g.segment_at(line, np.array([6.0, 0.0, 0.0]))
+    pieces, released = g.trim_segment(line, seg)
+
+    accounted = sum(len(p.indices) for p in pieces) + released.size
+    print(f"trim at x=6 (segment {seg}): {len(pieces)} piece(s) of "
+          f"{[len(p.indices) for p in pieces]} points, {released.size} released, "
+          f"{accounted} of {len(line.indices)} accounted for")
+
+    assert len(pieces) == 2, f"a mid-line cut should leave two pieces, got {len(pieces)}"
+    assert accounted == len(line.indices), \
+        f"{len(line.indices) - accounted} point(s) vanished in the trim"
+    assert released.size, "the cut segment released nothing"
+
+    # The pieces must not overlap, and must sit either side of the cut.
+    a, b = (g.all_points[np.asarray(p.indices)][:, 0] for p in pieces)
+    assert not set(pieces[0].indices.tolist()) & set(pieces[1].indices.tolist()), \
+        "the two pieces share points"
+    assert a.max() < b.min(), \
+        f"the pieces are not either side of the cut ({a.max():.2f} / {b.min():.2f})"
+
+    # Each piece has to arrive drawable and reviewable, not as bare indices.
+    for piece in pieces:
+        assert len(piece.centerline) >= 2, "a piece came back with no centerline"
+        assert piece.cylinders, "a piece came back with no search cylinders"
+    assert sum(len(p.stops) for p in pieces) == len(line.stops), \
+        "the line's ends were not carried onto the pieces"
+
+
+def test_trim_at_the_end_leaves_one_line():
+    """Cutting the last segment shortens the line rather than splitting it —
+    there is nothing beyond the cut to become a second piece."""
+    g, line = _straight_line_grower()
+    last = len(line.centerline) - 2
+    pieces, released = g.trim_segment(line, last)
+    reach = g.all_points[np.asarray(pieces[0].indices)][:, 0].max()
+    print(f"trim the last segment: {len(pieces)} piece(s), {released.size} "
+          f"released, line now reaches x={reach:.2f} (was "
+          f"{g.all_points[np.asarray(line.indices)][:, 0].max():.2f})")
+
+    assert len(pieces) == 1, f"expected one piece, got {len(pieces)}"
+    assert released.size, "trimming the end released nothing"
+    assert reach < g.all_points[np.asarray(line.indices)][:, 0].max(), \
+        "the line was not actually shortened"
+    assert g.trim_segment(line, len(line.centerline)) is None, \
+        "a segment index past the end of the polyline was accepted"
+
+
+def test_join_chains_the_two_nearest_ends():
+    """Join has to work out for itself which ends meet: the user clicked two
+    lines, not two ends, and which way round each was traced is not something
+    they should have to know. Whichever way either polyline runs, the result is
+    one chain with no jump in the middle."""
+    g, line = _straight_line_grower()
+    pieces, _released = g.trim_segment(
+        line, g.segment_at(line, np.array([6.0, 0.0, 0.0])))
+    first, second = pieces
+    gap = float(np.linalg.norm(np.asarray(second.centerline)[0]
+                               - np.asarray(first.centerline)[-1]))
+    # The join may not introduce a step longer than the cut it closes, or than
+    # the longest step either polyline already had.
+    allowed = max([gap] + [float(np.linalg.norm(np.diff(np.asarray(p.centerline),
+                                                        axis=0), axis=1).max())
+                           for p in pieces])
+
+    for name, other in (("as traced", second),
+                        ("reversed", second._replace(
+                            centerline=np.asarray(second.centerline)[::-1].copy()))):
+        joined = g.join_lines(first, other)
+        chain = np.asarray(joined.centerline)
+        jump = float(np.linalg.norm(np.diff(chain, axis=0), axis=1).max())
+        print(f"join ({name}): {len(chain)} vertices, x "
+              f"{chain[0, 0]:.2f}..{chain[-1, 0]:.2f}, biggest step {jump:.2f} m "
+              f"(the cut is {gap:.2f} m, nothing may exceed {allowed:.2f} m)")
+
+        assert len(joined.indices) == len(first.indices) + len(second.indices), \
+            "the join lost points"
+        assert jump <= allowed + 1e-6, \
+            f"chained at the wrong ends — a {jump:.2f} m step in the middle"
+        assert int((np.diff(chain[:, 0]) < -1e-6).sum()) == 0, \
+            "the joined centerline doubles back on itself"
+        assert len(joined.stops) == 2, \
+            f"expected the two outer ends to survive, got {len(joined.stops)}"
+
+
 def test_sharp_bend_keeps_near_on_axis_points():
     """Stopping on a bend must still keep the points that hug the CURRENT
     heading. They are on this line whatever the window's fitted axis did, and
@@ -1193,6 +1293,9 @@ if __name__ == "__main__":
     test_pick_bounded_search_opens_both_reach_and_width()
     test_extension_draws_the_same_tube_growth_drew()
     test_bridge_lands_on_the_continuation_not_alongside_it()
+    test_trim_accounts_for_every_point_it_touched()
+    test_trim_at_the_end_leaves_one_line()
+    test_join_chains_the_two_nearest_ends()
     test_sharp_bend_keeps_near_on_axis_points()
     test_stop_ranking_puts_real_ends_last()
     test_the_offer_ahead_leaves_the_clutter_out()

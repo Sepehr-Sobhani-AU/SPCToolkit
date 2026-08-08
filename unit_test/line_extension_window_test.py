@@ -74,6 +74,13 @@ class _FakeViewer:
         self.focused_on = None
         self.points = points
         self.polygon_mask = None       # what retest_polygon_selection returns
+        self.emphasis = {}             # uid -> (emphasised, faded)
+
+    def set_point_emphasis(self, uid, emphasised=None, faded=None):
+        if emphasised is None and faded is None:
+            self.emphasis.pop(uid, None)
+        else:
+            self.emphasis[uid] = (np.asarray(emphasised), np.asarray(faded))
 
     def focus_on(self, point, extent, preserve_rotation=True):
         self.focused_on = np.asarray(point)
@@ -275,6 +282,202 @@ def test_a_polygon_cannot_drag_in_what_was_never_offered():
     window.close()
 
 
+class _SilencedDialogs:
+    """Swap the window's QMessageBox for a recorder.
+
+    Anything that refuses to act tells the user why, and a real message box
+    blocks on exec() forever with no one to click it — so a headless test that
+    exercises a refusal has to stand in for the user. The messages are kept so
+    the test can check that something was actually said.
+    """
+
+    def __enter__(self):
+        from plugins.dialogs import line_extension_window as module
+        self._module = module
+        self._real = module.QMessageBox
+        self.shown = []
+        recorder = self
+
+        class _Recorder:
+            @staticmethod
+            def information(_parent, title, text):
+                recorder.shown.append((title, text))
+
+            warning = information
+            critical = information
+
+        module.QMessageBox = _Recorder
+        return self
+
+    def __exit__(self, *_exc):
+        self._module.QMessageBox = self._real
+        return False
+
+
+def _click(window, points, target):
+    """Put one viewer pick on the cloud point nearest *target*."""
+    row = int(np.argmin(np.linalg.norm(points - np.asarray(target), axis=1)))
+    window.viewer.picked_points_indices.append(row)
+    return row
+
+
+def test_the_offer_is_drawn_bigger_and_the_clutter_faded():
+    """Colour alone did not separate the offer from the clutter on real data: at
+    the zoom a line is reviewed at, one yellow point is the same few pixels as
+    the grey one beside it. The offer is drawn larger and the unclaimed points
+    see-through — and the traced lines are left alone, because those are what
+    Trim, Delete and Join are aimed at."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    emphasised, faded = window.viewer.emphasis[result_uid]
+    on_a_line = np.concatenate([np.asarray(line.indices) for line in lines])
+    print(f"{len(emphasised)} points drawn big, {len(faded)} faded, "
+          f"{len(on_a_line)} on a traced line and left alone")
+
+    assert set(emphasised.tolist()) == set(window.marked_indices.tolist()), \
+        "the points drawn bigger are not the points on offer"
+    assert not set(faded.tolist()) & set(emphasised.tolist()), \
+        "an offered point was also faded"
+    assert not set(faded.tolist()) & set(on_a_line.tolist()), \
+        "the traced lines were faded — they are what the edit buttons aim at"
+    assert len(faded) > len(emphasised), \
+        "setup wrong: the clutter should outnumber the offer"
+
+    window.close()
+    assert result_uid not in window.viewer.emphasis, \
+        "the emphasis outlived the window and stays on the branch"
+
+
+def test_trim_cuts_the_clicked_segment_out():
+    """Trim removes the clicked segment and releases its points. A cut in the
+    middle leaves TWO lines: a GrownLine carries one polyline, so a line with a
+    hole in it is not something that can be drawn honestly."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    line = window.lines[0]
+    middle = np.asarray(line.centerline)[len(line.centerline) // 2]
+    _click(window, points, middle)
+    before_lines, before_claimed = len(window.lines), int(window._claimed_mask().sum())
+
+    window._trim()
+    after_claimed = int(window._claimed_mask().sum())
+    print(f"trim at {middle.round(1).tolist()}: {before_lines} -> "
+          f"{len(window.lines)} line(s), {before_claimed} -> {after_claimed} "
+          f"claimed points | {window.edit_status.text()}")
+
+    assert len(window.lines) == before_lines + 1, \
+        "a mid-line cut must leave two lines"
+    assert after_claimed < before_claimed, "no points were released by the trim"
+    # Checked per line rather than against labels.max(): the branch also carries
+    # the candidate cluster for the stop under review, which sorts above them all.
+    for label, line in enumerate(window.lines):
+        assert set(clusters.labels[np.asarray(line.indices)].tolist()) == {label}, \
+            f"line {label}'s points do not carry label {label} on the branch"
+    named_lines = {k: n for k, n in clusters.cluster_names.items()
+                   if n != "Pick candidates"}
+    assert named_lines == {k: f"Line {k + 1}" for k in range(len(window.lines))}, \
+        f"cluster names were not rebuilt for the new line list: {named_lines}"
+
+    window._undo()
+    print(f"after undo: {len(window.lines)} line(s), "
+          f"{int(window._claimed_mask().sum())} claimed points")
+    assert len(window.lines) == before_lines, "undo did not put the line back"
+    assert int(window._claimed_mask().sum()) == before_claimed, \
+        "undo did not reclaim the trimmed points"
+    window.close()
+
+
+def test_delete_drops_the_whole_line():
+    """Delete takes the line, its geometry and its claim on the points."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    line = window.lines[0]
+    _click(window, points, np.asarray(line.centerline)[1])
+    doomed = set(np.asarray(line.indices).tolist())
+    before = len(window.lines)
+
+    window._delete_line()
+    still_claimed = doomed & set(np.where(window._claimed_mask())[0].tolist())
+    print(f"delete: {before} -> {len(window.lines)} line(s), "
+          f"{len(doomed)} points released, {len(still_claimed)} still claimed")
+
+    assert len(window.lines) == before - 1, "the line was not removed"
+    assert not still_claimed, "the deleted line's points are still on a line"
+    assert all(clusters.labels[i] == -1 for i in list(doomed)[:50]), \
+        "released points did not go back to -1 on the branch"
+    window.close()
+
+
+def test_join_keeps_the_first_line_clicked():
+    """Join folds the second clicked line into the first and chains the two
+    centrelines into one, whichever way round each was traced."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    # Trim the line in two first, so there are two lines to join back up.
+    first = window.lines[0]
+    _click(window, points, np.asarray(first.centerline)[len(first.centerline) // 2])
+    window._trim()
+    assert len(window.lines) >= 2, "setup wrong: the trim did not split the line"
+    window._clear_picks()
+
+    a, b = window.lines[0], window.lines[1]
+    span_a, span_b = len(a.indices), len(b.indices)
+    _click(window, points, np.asarray(a.centerline)[0])
+    _click(window, points, np.asarray(b.centerline)[-1])
+    before = len(window.lines)
+
+    window._join()
+    joined = window.lines[0]
+    chain = np.asarray(joined.centerline)
+    print(f"join: {before} -> {len(window.lines)} line(s), "
+          f"{span_a}+{span_b} -> {len(joined.indices)} points, "
+          f"{len(chain)} vertices | {window.edit_status.text()}")
+
+    assert len(window.lines) == before - 1, "the two lines did not become one"
+    assert len(joined.indices) == span_a + span_b, \
+        "the joined line does not hold both lines' points"
+    steps = np.linalg.norm(np.diff(chain, axis=0), axis=1)
+    assert len(chain) >= len(a.centerline) + len(b.centerline), \
+        "the joined centreline lost vertices"
+    assert steps.max() < 10.0, \
+        f"the centrelines were chained at the wrong ends (a {steps.max():.1f} m " \
+        f"jump between consecutive vertices)"
+    window.close()
+
+
+def test_editing_needs_a_line_under_the_click():
+    """A click on the clutter or on the yellow candidates names no line, and the
+    edit buttons have to say so rather than acting on line 1 by default."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    before = list(window.lines)
+    window.viewer.picked_points_indices = [int(window.marked_indices[0])]
+    picked = window._picked_lines_in_order()
+    print(f"a click on an offered (unclaimed) point resolves to {picked} line(s)")
+
+    assert picked == [], "an unclaimed point was taken to name a traced line"
+    with _SilencedDialogs() as dialogs:
+        window._trim()
+        window._delete_line()
+        window._join()
+    print(f"all three refused and said so: {[t for t, _ in dialogs.shown]}")
+
+    assert window.lines == before, "an edit went ahead with no line picked"
+    assert len(dialogs.shown) == 3, \
+        f"an edit refused silently: {[t for t, _ in dialogs.shown]}"
+    window.close()
+
+
 def test_the_marker_branch_is_really_gone_afterwards():
     """The green "you are here" marker is a branch the window creates and must
     take away again. Its removal went through ApplicationController.remove_node,
@@ -303,5 +506,10 @@ if __name__ == "__main__":
     test_candidates_are_drawn_in_the_candidate_colour()
     test_the_offer_is_exactly_what_the_panel_counts()
     test_a_polygon_cannot_drag_in_what_was_never_offered()
+    test_the_offer_is_drawn_bigger_and_the_clutter_faded()
+    test_trim_cuts_the_clicked_segment_out()
+    test_delete_drops_the_whole_line()
+    test_join_keeps_the_first_line_clicked()
+    test_editing_needs_a_line_under_the_click()
     test_the_marker_branch_is_really_gone_afterwards()
     print("\nAll line-extension window tests passed.")
