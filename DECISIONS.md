@@ -630,3 +630,51 @@ lateral landing and the extension records no cylinders at all.
 The lateral landing applies to ordinary growth as well, deliberately — a cable
 that sags across a gap, or a kink at a pole, is the same geometry, and the tip
 was never re-centred there either.
+
+## 2026-08-08 (h) — Emphasis is a viewer capability, in source rows
+
+Colour alone did not separate the pickable points from the clutter: at review
+zoom one yellow point is the same few pixels as the grey one beside it.
+
+Added `PCDViewerWidget.set_point_emphasis(uid, emphasised=, faded=)` —
+emphasised points draw at 3x the point size, faded ones at 50% opacity with
+depth writes OFF, everything else normally. Depth writes are the substance of
+it: faded points then stop *hiding* what is behind them, which is the actual
+complaint (a cable inside a canopy), rather than merely looking dimmer.
+
+Two decisions inside it worth keeping:
+
+- The emphasis is stored in SOURCE rows and translated at paint time. Rendered
+  rows change whenever LOD does, and stored ones would quietly start enlarging
+  whichever points inherited those numbers.
+- The faded pass draws the WHOLE branch out of its VBO, with the non-faded rows
+  painted back on top opaque. The faded set is normally almost the entire cloud;
+  an index array naming it would push tens of megabytes from client memory every
+  frame to avoid drawing a few thousand points twice.
+
+Per-point alpha was not the mechanism: the vertex format is Nx6 (xyz+rgb) and
+widening it to carry alpha would touch every producer and consumer of that
+array. A constant blend factor per pass (`glBlendColor` + `GL_CONSTANT_ALPHA`)
+gives the same result here for none of that.
+
+## 2026-08-08 (i) — Trimming a line in the middle splits it in two
+
+Trim/Delete/Join were added to the extension window, aimed by an ordinary
+viewer pick: a click on a centreline resolves through the depth buffer to a
+world position on it, and the viewer snaps that to the nearest point — which is
+one of the line's own. So "click the centreline" and "click the line's points"
+arrive as the same gesture, and no new picking machinery was needed.
+
+Trim removes the clicked segment only (the user's call, over cutting back to
+the click). A mid-line cut therefore leaves TWO lines rather than one line with
+a hole: `GrownLine` carries a single polyline, and closing the gap by joining
+straight across would draw a centreline through ground the trace never followed.
+The cut ends get no stop — the trim was deliberate, and a stop there would
+re-offer the removed stretch for extension on the next pass.
+
+Two things are keyed by label and cannot survive an edit, since a label is just
+a position in the line list: the review queue is rebuilt, and `cluster_names` is
+rewritten (`Line N`), which is also why `_commit` now rebuilds names AFTER
+forgetting the candidate naming — the candidate label sits one above the lines,
+so a trim that adds a line makes the two collide. The resolved set IS carried
+over, re-keyed by stop value, exactly as `stop_key` defines identity.

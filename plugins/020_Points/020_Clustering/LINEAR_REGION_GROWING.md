@@ -76,7 +76,21 @@ The candidates are given a **name** as well as a label (`Pick candidates`). A gr
 
 **One number, one set of points**: the count the panel reports IS the yellow. An earlier version offered a much wider cone than the count measured — 1600 m³ against the corridor's 10 m³ — so on a cable ending inside a tree canopy it lit thousands of points beside a count of 77, and read as a bug. Two answers to one question is worse than a narrow answer. Measured on a cable 8 m above ground with a tree beside the hole, the corridor offers 0.46% of the cloud and all but one of those points are on the cable.
 
-Points already on a traced line keep their cluster colour and stay clickable; they are already seeds, so picking one changes nothing. The candidate cluster is temporary — it is rebuilt as you step from stop to stop and erased when the window closes, so it never reaches classification or a saved project.
+Points already on a traced line keep their cluster colour and stay clickable; they are already seeds, so picking one changes nothing — and clicking one is how you aim Trim, Delete and Join. The candidate cluster is temporary — it is rebuilt as you step from stop to stop and erased when the window closes, so it never reaches classification or a saved project.
+
+**Size and transparency, not just colour.** At the zoom you review a whole line at, one yellow point is the same handful of pixels as the grey one beside it, and a cable seen through a canopy is mostly canopy. So the candidates are drawn **three times the point size**, and the unclaimed points at **50% opacity with no depth writes** — meaning they do not merely look dimmer, they stop *hiding* things: a candidate behind a screen of unclaimed returns still comes out solid and full-sized. Traced lines are left at full size and opacity, since they are what the editing buttons are aimed at.
+
+This is a viewer capability (`set_point_emphasis`), not a trick played on the colours: the emphasis is given in **source rows** — the same space cluster labels live in — and translated to rendered rows at paint time, so a change of LOD cannot leave it enlarging whichever points inherited those row numbers. The fade is drawn as one pass over the whole branch straight from its VBO, with the rest painted back on opaque, because an index list naming "almost every point in the cloud" would cost more to push each frame than drawing some points twice.
+
+### Editing the lines: Trim, Delete, Join
+
+Growth gets features wrong in ways no parameter fixes: it runs a line through a bush at one end, splits one cable into two traces, or produces a line that is simply not there. All three fixes act on **whatever is picked in the viewer**, exactly like Extend — click on a line (its centreline takes the click, and so do its own points) and press the button.
+
+- **Trim** removes the clicked centreline segment and releases its points back to unclaimed. A cut in the middle leaves **two lines**: a traced line carries a single polyline, so a line with a hole in it is not something that can be drawn honestly. Each piece keeps the search cylinders and stops that belong to its side. The cut ends deliberately get **no new stop** — you trimmed there on purpose, and offering it back as "this line stopped here, extend it?" would walk you straight into what you just removed.
+- **Delete** removes the whole clicked line, its cylinders and its markers; its points go back to unclaimed.
+- **Join** merges two clicked lines into one, keeping the **first** one clicked. The two centrelines are chained at whichever pair of their four ends is closest, reversing either as needed — you clicked two lines, not two ends, and which way round each was traced is not something you should have to know. The stops at the joined ends are dropped, since the answer to "why did it stop there" is now "it didn't".
+
+All three go through the same **Undo** as an extension. Because a line's label is just its position in the list, an edit renumbers every line above it — so the review queue is rebuilt (the walk restarts from the top) and the cluster names are rewritten to match. Ends you had already settled as real stay settled: they are re-keyed by the stop's own values, not by the label they used to sit under.
 
 ### Your picks are the decision
 
