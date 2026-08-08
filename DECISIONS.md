@@ -528,3 +528,31 @@ Worth stating plainly: the cone's volume grows as the CUBE of the range. Every
 metre of extra reach is bought at compounding cost in points to aim through, so
 the default should be the smallest one that usually works, not the largest one
 that might.
+
+## 2026-08-08 (d) — The offer IS the count: the pick cone is gone
+
+Tried on real data and rejected. Reverses the cone in 2026-08-07 and the
+range/offered-count tuning in (c).
+
+The window offered a cone while the panel counted a corridor, so the two
+disagreed by construction — 1600 m3 against 10 m3 at the original default. On a
+cable ending inside a tree canopy that meant thousands of yellow points beside
+"77 unclaimed points lie ahead", which reads as a bug however carefully the two
+are explained. Reporting both numbers (c) made it comprehensible, not good.
+
+``_candidate_indices`` now returns ``unclaimed_ahead`` — the same set the count
+reports. One number on screen, one set of yellow points, and no way for them to
+disagree. ``pick_candidates`` and its cone constants are deleted rather than
+left unused; the range spin and the offered-count line go with them.
+
+The corridor is narrow (9 m x 0.6 m at the defaults) and that is now a
+user-confirmed choice, not a compromise: measured on the cluttered test scene it
+offers 0.46% of the cloud and 124 of those 125 points are on the cable, against
+2.3% for the cone. The escape hatch stays — unticking offers every unclaimed
+point in the cloud — for a continuation that genuinely lies outside it.
+
+What this cost was worth learning: the cone was designed against a synthetic
+scene with a thin ground plane and one small tree, where it looked fine (2.3%).
+Real vegetation is orders of magnitude denser, and no amount of geometry
+distinguishes a cable from the leaves around it. The corridor works because it
+is the same question the march asks, not because it is cleverer.
