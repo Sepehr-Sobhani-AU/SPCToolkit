@@ -451,3 +451,35 @@ silently returns the problem.
 The cluster is transient. `_commit` rebuilds labels from the lines every time, so
 it is erased by construction rather than needing to be unpicked, and stepping
 between stops only relabels the points involved instead of the whole cloud.
+
+## 2026-08-08 — The extension window owns the viewport while it is open
+
+The candidate cluster (2026-08-07) shipped looking correct and behaved as if it
+did nothing: candidates drew grey, and every unclaimed point stayed clickable.
+Neither symptom was in the labelling — measured on the real controller, the
+window labels 560 points, paints them yellow, and leaves 20,000 as grey noise.
+
+The cause was a second point branch on screen. The cloud a result was grown from
+draws an unlabelled copy of the same points in the same place; those copies have
+no cluster labels, so the noise filter has nothing to refuse and they take every
+click. Selecting that branch in the tree — which is what clicking its row to
+show it does — switches the pick filter over to it. Measured: with both visible
+and the input cloud selected, every one of ITS points is selectable and none of
+the result's are.
+
+So the window now clears the viewport on open: every other point-drawing branch
+is hidden (vector features are left alone — they draw as lines and are the
+context worth keeping), the result branch is forced visible, and the tree
+selection is claimed. All of it is restored on close. If another point cloud
+reappears while the window is open, the pick count says so rather than letting
+the clicks fail silently.
+
+The general lesson, since this cost a release: a rule about which points may be
+picked means nothing while a second copy of those points is on screen. Anything
+that decides pickability from a branch's own data has to own what is drawn.
+
+Also fixed on the way: `ApplicationController.remove_node` called
+`DataNodes.remove_data`, which has never existed. Every call failed into its own
+except clause and only logged, so removed branches lost their tree row and
+stayed in the project forever — including this window's "you are here" marker,
+one per close.
