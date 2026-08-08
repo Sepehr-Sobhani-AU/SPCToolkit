@@ -143,6 +143,10 @@ class LineExtensionWindow(QDialog):
         # be put back to noise when the review moves on. None = nothing marked.
         self.marked_indices = None
 
+        # Point branches switched off so they stop drawing a second copy of the
+        # cloud over this one. Switched back on when the window closes.
+        self._hidden_branches = []
+
         # Whether the lines arrived carrying their search cylinders. A result
         # saved before cylinders were persisted comes back without them, and
         # rebuilding the branch from an extension alone would throw away the
@@ -152,31 +156,78 @@ class LineExtensionWindow(QDialog):
         self.poll_timer = QTimer()
         self.poll_timer.timeout.connect(self._refresh_pick_count)
 
-        self._claim_tree_selection()
+        self._claim_the_viewport()
         self._setup_ui()
         self._build_queue()
         self._show_current(focus=True)
         self.poll_timer.start(_POLL_MS)
 
-    def _claim_tree_selection(self):
-        """Make the result branch the selected one.
+    # ------------------------------------------------------------------ #
+    # Owning what is on screen while the window is open                  #
+    # ------------------------------------------------------------------ #
 
-        Picking is filtered to the branches selected in the tree
-        (``_is_index_in_selected_branch``). After growth the selection is still
-        the input cloud — which is also hidden by then — so nothing at all is
-        pickable until this is put right, whatever the labels say.
+    def _claim_the_viewport(self):
+        """Leave the result branch as the only point cloud on screen.
+
+        Any other visible point branch — above all the cloud this result was
+        grown from — draws a SECOND copy of the same points, in the same place.
+        Those copies carry no cluster labels, so they are picked in preference to
+        the real thing and they accept every click: the candidate cluster is
+        painted correctly underneath while the user clicks grey duplicates on top
+        of it and wonders why nothing is highlighted. Measured on the real
+        controller: with both branches visible and the input cloud selected,
+        every one of its points is selectable and none of the result's are.
+
+        Hiding them is not a display preference, then — it is what makes the
+        picking rules mean anything. Restored on close.
         """
+        self._hidden_branches = []
+        if self.tree_widget is None or self.viewer is None:
+            return
+
+        # Branches currently drawing POINTS. Vector features (centerlines,
+        # cylinders, the stop markers) draw as lines, never appear here, and are
+        # left alone — they are the context worth keeping.
+        drawing_points = [uid for uid in self.viewer._branch_offsets
+                          if uid != self.result_uid]
+
+        self.tree_widget.blockSignals(True)
+        for uid in drawing_points:
+            item = self.tree_widget.branches_dict.get(uid)
+            if item is not None:
+                item.setCheckState(0, Qt.Unchecked)
+            self.tree_widget.visibility_status[uid] = False
+            self._hidden_branches.append(uid)
+
+        # And make sure the result itself IS on screen — reopening a saved
+        # result gives no guarantee of that, and hiding everything else would
+        # otherwise leave an empty viewport.
+        result_item = self.tree_widget.branches_dict.get(self.result_uid)
+        if result_item is not None:
+            result_item.setCheckState(0, Qt.Checked)
+            self.tree_widget.clearSelection()
+            result_item.setSelected(True)
+        self.tree_widget.visibility_status[self.result_uid] = True
+        self.tree_widget.blockSignals(False)
+
+        # Picking is also filtered to the tree SELECTION
+        # (``_is_index_in_selected_branch``), and after growth that is still the
+        # input cloud, so nothing would be pickable whatever the labels say.
         if self.controller is not None:
             self.controller.set_selected_branches([self.result_uid])
-        if self.tree_widget is None:
-            return
-        item = self.tree_widget.branches_dict.get(self.result_uid)
-        if item is None:
+
+    def _restore_hidden_branches(self):
+        """Show again whatever was hidden to clear the viewport."""
+        if not self._hidden_branches or self.tree_widget is None:
             return
         self.tree_widget.blockSignals(True)
-        self.tree_widget.clearSelection()
-        item.setSelected(True)
+        for uid in self._hidden_branches:
+            item = self.tree_widget.branches_dict.get(uid)
+            if item is not None:
+                item.setCheckState(0, Qt.Checked)
+            self.tree_widget.visibility_status[uid] = True
         self.tree_widget.blockSignals(False)
+        self._hidden_branches = []
 
     # ------------------------------------------------------------------ #
     # UI                                                                 #
@@ -187,10 +238,13 @@ class LineExtensionWindow(QDialog):
 
         layout.addWidget(QLabel(
             "Each stop below is where a traced line gave up.\n"
-            "If the feature continues, pick a few points just past the marker\n"
+            "Points you can pick are shown bright yellow; the rest of the cloud\n"
+            "is grey and ignores clicks. Pick a few just past the marker\n"
             "(Shift+Click, or P for polygon select) and press Extend.\n"
             "Extending leaves the camera where you put it, so you can look at\n"
-            "the result, pick further and extend again — or undo it."
+            "the result, pick further and extend again — or undo it.\n"
+            "Other point clouds are hidden while this is open, and shown again\n"
+            "on close — a second copy on screen would take your clicks."
         ))
 
         box = QGroupBox("Current stop")
@@ -415,7 +469,20 @@ class LineExtensionWindow(QDialog):
 
     def _refresh_pick_count(self):
         count = 0 if self.viewer is None else len(self.viewer.picked_points_indices)
-        self.picks_label.setText(f"{count} point(s) picked")
+        text = f"{count} point(s) picked"
+
+        # Say so out loud if another point cloud comes back on screen. It draws a
+        # second copy of these same points, unlabelled, which takes the clicks —
+        # the failure is completely silent otherwise: the candidates look right
+        # and the clicks do nothing.
+        if self.viewer is not None:
+            others = [uid for uid in self.viewer._branch_offsets
+                      if uid != self.result_uid]
+            if others:
+                text += ("<br><b>Another point cloud is visible.</b> Its points "
+                         "sit on top of these and will take your clicks — hide "
+                         "it in the tree.")
+        self.picks_label.setText(text)
 
     # ------------------------------------------------------------------ #
     # The "you are here" branch                                          #
@@ -884,6 +951,7 @@ class LineExtensionWindow(QDialog):
     def closeEvent(self, event):
         self.poll_timer.stop()
         self._clear_focus_branch()
+        self._restore_hidden_branches()
         # Hands the branch back with only its real clusters on it — the candidate
         # cluster exists to make picking possible, and has no business surviving
         # into classification or a saved project.
