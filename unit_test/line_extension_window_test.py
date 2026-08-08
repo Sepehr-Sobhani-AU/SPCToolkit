@@ -79,6 +79,18 @@ class _FakeViewer:
         pass
 
 
+def _rendered_colours(clusters, points):
+    """The colours the viewer would actually draw for this branch.
+
+    Goes through the real ClustersTransformer rather than reading
+    ``clusters.colors``, because for a NAMED Clusters that array is not what
+    gets drawn — and a growth result is always named ("Line 1", "Line 2").
+    """
+    from core.transformers.clusters_transformer import ClustersTransformer
+    cloud = PointCloud(points=points.astype(np.float32))
+    return ClustersTransformer(cloud, clusters).execute().colors
+
+
 def _scene():
     """A cable with a hole in it, grown — the state the plugin hands the window."""
     rng = np.random.default_rng(4)
@@ -96,7 +108,10 @@ def _scene():
     labels = np.full(len(points), -1, dtype=np.int32)
     for label, line in enumerate(lines):
         labels[line.indices] = label
-    clusters = Clusters(labels=labels)
+    # Named, exactly as _build_result_branch makes it — which is the whole
+    # reason the candidates have to be named too.
+    clusters = Clusters(labels=labels,
+                        cluster_names={k: f"Line {k + 1}" for k in range(len(lines))})
     clusters.set_random_color()
     return points, lines, grower, clusters
 
@@ -158,9 +173,14 @@ def test_window_claims_the_viewport():
         "the input cloud was not put back the way the user had it"
 
 
-def test_candidates_are_labelled_and_coloured():
-    """What the user should see: the points ahead of the stop in a cluster of
-    their own, bright, and everything else left as grey noise."""
+def test_candidates_are_drawn_in_the_candidate_colour():
+    """What the user should SEE, taken from the renderer rather than from the
+    per-point colour array.
+
+    A growth result names its clusters, and for a named Clusters the renderer
+    colours by name and never reads that array — so writing yellow into it left
+    the candidates the unnamed 0.7 grey default on precisely the branches this
+    window opens on. Checking `clusters.colors` would have passed throughout."""
     points, lines, grower, clusters = _scene()
     window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
         points, lines, grower, clusters)
@@ -168,22 +188,27 @@ def test_candidates_are_labelled_and_coloured():
     marked = window.marked_indices
     assert marked is not None and len(marked), "no points were offered for picking"
     label = int(clusters.labels[marked[0]])
-    unique = sorted(set(clusters.labels.tolist()))
-    print(f"offered {len(marked)} points as cluster {label}; labels present "
-          f"{unique}; candidate colour {clusters.colors[marked[0]].tolist()}")
+    drawn = _rendered_colours(clusters, points)
+    noise = np.where(clusters.labels == -1)[0][0]
+    print(f"offered {len(marked)} points as cluster {label} "
+          f"({clusters.cluster_names.get(label)!r}); the renderer draws them "
+          f"{drawn[marked[0]].tolist()}, the rest {drawn[noise].tolist()}")
 
-    assert label == max(unique), \
+    assert label == max(clusters.labels), \
         "the candidate cluster must sort last or it re-colours every line"
-    assert np.allclose(clusters.colors[marked], [1.0, 1.0, 0.0]), \
-        "candidates were not painted the candidate colour"
-    noise = np.where(clusters.labels == -1)[0]
-    assert np.allclose(clusters.colors[noise[0]], [0.2, 0.2, 0.2]), \
-        "the rest of the cloud should stay noise-grey"
+    assert np.allclose(drawn[marked], [1.0, 1.0, 0.0]), \
+        "the candidates are not DRAWN in the candidate colour"
+    assert not np.allclose(drawn[noise], [1.0, 1.0, 0.0]), \
+        "the rest of the cloud is drawn the same as the candidates"
 
     window.close()
-    print(f"after closing: labels present {sorted(set(clusters.labels.tolist()))}")
+    print(f"after closing: labels {sorted(set(clusters.labels.tolist()))}, "
+          f"names {sorted(clusters.cluster_names.values())}")
     assert max(clusters.labels) == len(lines) - 1, \
         "the candidate cluster outlived the window and would reach classification"
+    assert "Pick candidates" not in clusters.cluster_names.values(), \
+        "the candidate cluster's NAME outlived the window — it would show up as " \
+        "a real class in classification and export"
 
 
 def test_the_marker_branch_is_really_gone_afterwards():
@@ -211,6 +236,6 @@ def test_the_marker_branch_is_really_gone_afterwards():
 
 if __name__ == "__main__":
     test_window_claims_the_viewport()
-    test_candidates_are_labelled_and_coloured()
+    test_candidates_are_drawn_in_the_candidate_colour()
     test_the_marker_branch_is_really_gone_afterwards()
     print("\nAll line-extension window tests passed.")

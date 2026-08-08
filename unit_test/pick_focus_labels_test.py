@@ -169,8 +169,12 @@ def test_offering_and_withdrawing_leaves_the_branch_as_it_was():
     offered = np.array([3, 5], dtype=np.intp)
     window = types.SimpleNamespace(
         marked_indices=None,
+        marked_label=None,
         _candidate_indices=lambda: offered,
     )
+    # Bind the real helper the marking methods call, so this still exercises the
+    # window's own code rather than a copy of it.
+    window._forget_candidate_naming = lambda c: W._forget_candidate_naming(window, c)
 
     W._mark_candidates(window, clusters)
     marked = clusters.labels[offered].copy()

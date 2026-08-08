@@ -73,6 +73,14 @@ _POLL_MS = 200
 # cluster, so "these are the ones you may click" reads at a glance.
 _CANDIDATE_COLOR = np.array([1.0, 1.0, 0.0], dtype=np.float32)   # yellow
 
+# Name for the candidate cluster. A linear-region-growing result names its
+# clusters ("Line 1", "Line 2"), and for a NAMED Clusters the renderer colours
+# by name (ClustersTransformer -> get_named_colors) and ignores the per-point
+# colour array completely — so on those branches the candidates must be named
+# too or they come out the unnamed default grey, however yellow the array says
+# they are. Removed again the moment they stop being candidates.
+_CANDIDATE_NAME = "Pick candidates"
+
 # What a point goes back to when it stops being a candidate: the noise colour
 # Clusters.set_random_color paints label -1 with.
 _NOISE_COLOR = np.array([0.2, 0.2, 0.2], dtype=np.float32)
@@ -139,9 +147,11 @@ class LineExtensionWindow(QDialog):
         self.stop_branches = self._discover_stop_branches()
         self.track_stop_branches = bool(self.stop_branches)
 
-        # Cloud indices currently promoted to the candidate cluster, so they can
-        # be put back to noise when the review moves on. None = nothing marked.
+        # Cloud indices currently promoted to the candidate cluster, and the
+        # label they were given, so both can be undone when the review moves on.
+        # None = nothing marked.
         self.marked_indices = None
+        self.marked_label = None
 
         # Point branches switched off so they stop drawing a second copy of the
         # cloud over this one. Switched back on when the window closes.
@@ -812,8 +822,11 @@ class LineExtensionWindow(QDialog):
         clusters.labels = labels
         clusters.line_traces = lines_to_traces(self.lines, self.params,
                                                resolved=self.resolved)
-        clusters.set_random_color()
+        # Before set_random_color, which syncs cluster_colors from the names and
+        # would otherwise carry a phantom candidate cluster forward.
+        self._forget_candidate_naming(clusters)
         self.marked_indices = None      # the relabel above wiped any candidates
+        clusters.set_random_color()
 
         self.controller.cache_service.invalidate(self.result_uid)
         self.controller.cache_service.invalidate_descendants(self.result_uid)
@@ -862,6 +875,7 @@ class LineExtensionWindow(QDialog):
 
     def _unmark_candidates(self, clusters):
         """Put the points offered last time back to being noise."""
+        self._forget_candidate_naming(clusters)
         if self.marked_indices is None or self.marked_indices.size == 0:
             self.marked_indices = None
             return
@@ -872,24 +886,40 @@ class LineExtensionWindow(QDialog):
             clusters.colors[idx] = _NOISE_COLOR
         self.marked_indices = None
 
+    def _forget_candidate_naming(self, clusters):
+        """Drop the candidate cluster's name and colour entries.
+
+        Kept apart from unmarking the points because ``_commit`` wipes the labels
+        wholesale without going through it, and a name left behind would show up
+        as a phantom cluster — one that classification and any DXF export would
+        take perfectly seriously.
+        """
+        if self.marked_label is not None:
+            clusters.cluster_names.pop(self.marked_label, None)
+        clusters.cluster_colors.pop(_CANDIDATE_NAME, None)
+        self.marked_label = None
+
     def _mark_candidates(self, clusters):
         """Promote the candidate points to a cluster of their own.
 
         This is the whole of the "fade the rest and lock it" behaviour, and it
         needs no viewer support because a label already carries both halves of
-        it: a ``-1`` point is drawn dark grey (``set_random_color``'s noise
-        colour) AND refused by the picking filters (``_filter_noise_points``).
-        Unclaimed points are ``-1``, which is why they cannot be picked today —
-        so the fix is not to fade anything, it is to stop the points the user
-        needs from being noise.
+        it: an unnamed/noise point is drawn grey AND refused by the picking
+        filters (``_filter_noise_points``). Unclaimed points are ``-1``, which is
+        why they cannot be picked today — so the fix is not to fade anything, it
+        is to stop the points the user needs from being noise.
 
         The new label is one above the highest in use. That matters: colours are
         handed out in sorted label order, so a label that sorts LAST leaves every
         existing cluster's colour untouched, while one sorting first (-2, say)
         would shift every line's colour each time candidates came and went.
 
-        The colour is written straight onto the colour array rather than through
-        ``custom_colors``, so nothing about this survives the next commit.
+        Colouring has to follow whichever scheme the branch uses, and a growth
+        result uses the named one ("Line 1", "Line 2"): for a named Clusters the
+        renderer calls ``get_named_colors`` and never looks at the per-point
+        colour array, painting every unnamed label the 0.7 grey default. Writing
+        yellow into ``colors`` alone is therefore invisible on exactly the
+        branches this window is opened on — the candidates have to be named.
         """
         indices = self._candidate_indices()
         if indices.size == 0:
@@ -897,9 +927,14 @@ class LineExtensionWindow(QDialog):
             return
         label = int(clusters.labels.max()) + 1
         clusters.labels[indices] = label
-        if clusters.colors is not None:
-            clusters.colors[indices] = _CANDIDATE_COLOR
         self.marked_indices = indices
+        self.marked_label = label
+
+        if clusters.has_names():
+            clusters.cluster_names[label] = _CANDIDATE_NAME
+            clusters.cluster_colors[_CANDIDATE_NAME] = _CANDIDATE_COLOR
+        elif clusters.colors is not None:
+            clusters.colors[indices] = _CANDIDATE_COLOR
 
     def _on_candidate_setting(self, _value=None):
         """Re-offer under the new setting. Not a change to the lines, so it is
