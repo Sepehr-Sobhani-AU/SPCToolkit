@@ -483,3 +483,27 @@ Also fixed on the way: `ApplicationController.remove_node` called
 except clause and only logged, so removed branches lost their tree row and
 stayed in the project forever — including this window's "you are here" marker,
 one per close.
+
+## 2026-08-08 (b) — Candidate points must be NAMED, not just coloured
+
+The candidate cluster still drew grey on real data. The labels were right and
+the per-point colour array was yellow; neither reached the screen.
+
+`ClustersTransformer` colours a **named** `Clusters` with `get_named_colors()`
+and never looks at `clusters.colors`. A linear-region-growing result is always
+named — `_build_result_branch` sets `{0: "Line 1", 1: "Line 2", ...}` — so on
+exactly the branches this window is opened on, the colour array is dead weight,
+and every label without a name is painted the 0.7 grey default. The candidates
+were that: unnamed, and therefore indistinguishable from the rest of the cloud.
+
+So `_mark_candidates` now names the cluster (`Pick candidates`) and registers its
+colour in `cluster_colors` when the branch is named, and falls back to the colour
+array when it is not. The naming is removed in `_forget_candidate_naming`, called
+both when the offer is withdrawn and from `_commit` before `set_random_color`,
+so no phantom class survives into classification or a DXF layer.
+
+The test now asserts on what the RENDERER produces
+(`ClustersTransformer(...).execute().colors`), not on `clusters.colors`. The old
+assertion passed the whole time this was broken — the array really was yellow;
+it just was not what anyone drew. Where two paths can produce a colour, a test
+that reads the wrong one is worse than no test.
