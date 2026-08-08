@@ -507,3 +507,24 @@ The test now asserts on what the RENDERER produces
 assertion passed the whole time this was broken — the array really was yellow;
 it just was not what anyone drew. Where two paths can produce a colour, a test
 that reads the wrong one is worse than no test.
+
+## 2026-08-08 (c) — Show what is offered, and default the range to the corridor
+
+"77 unclaimed points lie ahead" beside a canopy solid with yellow reads as a bug.
+It was not: the two describe different volumes. The count is the line's own
+search corridor — 9 m long, 0.6 m wide, about 10 m3. The yellow was the pick cone
+at its 8x-reach default: 24 m long, 7.4 m wide at the end, 1600 m3. 157x the
+volume it was being compared with, and in dense cover that is tens of thousands
+of points.
+
+Two changes. The panel now reports the offered count next to the ahead count, so
+the two numbers can be compared instead of one being read as a claim about the
+other. And the default range drops from 8x the search reach to 3x — the same
+length as the corridor the ahead count uses — so the two figures describe the
+same distance and differ only in width (15x, not 157x). Reaching further is one
+spin away, and the offered count makes the cost of doing so visible.
+
+Worth stating plainly: the cone's volume grows as the CUBE of the range. Every
+metre of extra reach is bought at compounding cost in points to aim through, so
+the default should be the smallest one that usually works, not the largest one
+that might.
