@@ -81,14 +81,24 @@ _CANDIDATE_COLOR = np.array([1.0, 1.0, 0.0], dtype=np.float32)   # yellow
 # they are. Removed again the moment they stop being candidates.
 _CANDIDATE_NAME = "Pick candidates"
 
+# Above this many offered points, say so: the offer has stopped being a hint at
+# what to click and become a wall of yellow to aim through.
+_CROWDED_OFFER = 5000
+
 # What a point goes back to when it stops being a candidate: the noise colour
 # Clusters.set_random_color paints label -1 with.
 _NOISE_COLOR = np.array([0.2, 0.2, 0.2], dtype=np.float32)
 
-# Default reach of the candidate cone, as a multiple of the search reach. Set
-# well beyond what growth itself would attempt: the whole point of picking is to
-# reach across a hole the march could not.
-_CANDIDATE_REACH_FACTOR = 8.0
+# Default reach of the candidate cone, as a multiple of the search reach.
+#
+# Matches the length of the corridor the "points ahead" figure counts
+# (_RANK_REACH_FACTOR), so the two numbers on screen describe the same distance
+# and differ only in width. They are still very different volumes — a 9 m cone
+# is about 15x the ranking tube — but at the 8x this started as it was 157x, and
+# in a tree canopy that is tens of thousands of yellow points where the count
+# said 77. Reach further by raising the spin; the offered count is shown so the
+# cost of doing so is visible.
+_CANDIDATE_REACH_FACTOR = 3.0
 
 
 class LineExtensionWindow(QDialog):
@@ -262,9 +272,14 @@ class LineExtensionWindow(QDialog):
         self.stop_label = QLabel("—")
         self.stop_label.setWordWrap(True)
         self.ahead_label = QLabel("")
+        self.ahead_label.setWordWrap(True)
+        self.offered_label = QLabel("")
+        self.offered_label.setWordWrap(True)
         self.picks_label = QLabel("0 points picked")
+        self.picks_label.setWordWrap(True)
         box_layout.addWidget(self.stop_label)
         box_layout.addWidget(self.ahead_label)
+        box_layout.addWidget(self.offered_label)
         box_layout.addWidget(self.picks_label)
         box.setLayout(box_layout)
         layout.addWidget(box)
@@ -456,17 +471,43 @@ class LineExtensionWindow(QDialog):
         )
         if n_ahead:
             self.ahead_label.setText(
-                f"{n_ahead} unclaimed point(s) lie ahead — the feature may continue."
+                f"{n_ahead} unclaimed point(s) sit in the line's own search "
+                f"corridor ahead — the feature may continue."
             )
         else:
             self.ahead_label.setText(
-                "Nothing unclaimed ahead — most likely a genuine feature end."
+                "Nothing unclaimed in the line's search corridor ahead — "
+                "most likely a genuine feature end."
             )
         self._draw_focus_branch(stop)
         self._refresh_candidates()
+        self._report_offered()
         if focus:
             self._focus_current()
         self._refresh_pick_count()
+
+    def _report_offered(self):
+        """Say how many points are actually offered.
+
+        Without this the panel showed only the points-ahead count, which
+        measures the line's own narrow search corridor, while the yellow on
+        screen is the much larger pick cone — "77 ahead" beside a canopy full of
+        yellow reads as a bug. They answer different questions, so both are
+        shown, and the range that produced the offer is named next to it.
+        """
+        n = 0 if self.marked_indices is None else len(self.marked_indices)
+        if not n:
+            self.offered_label.setText(
+                "Nothing offered to pick here — widen the range, or untick the "
+                "restriction to offer every unclaimed point."
+            )
+            return
+        text = (f"<b>{n:,} point(s) offered</b> (yellow), within "
+                f"{self.range_spin.value()} m ahead.")
+        if n > _CROWDED_OFFER:
+            text += (" The cone widens with range, so in dense cover that is a "
+                     "lot to aim at — try a shorter range.")
+        self.offered_label.setText(text)
 
     def _focus_current(self):
         current = self._current()
@@ -940,6 +981,7 @@ class LineExtensionWindow(QDialog):
         """Re-offer under the new setting. Not a change to the lines, so it is
         not snapshotted and does not touch the queue."""
         self._refresh_candidates()
+        self._report_offered()
 
     def _rebuilt_debug_feature(self, name):
         """Wireframe for the debug branch *name*, rebuilt from the current lines.
