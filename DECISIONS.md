@@ -556,3 +556,26 @@ scene with a thin ground plane and one small tree, where it looked fine (2.3%).
 Real vegetation is orders of magnitude denser, and no amount of geometry
 distinguishes a cable from the leaves around it. The corridor works because it
 is the same question the march asks, not because it is cleverer.
+
+## 2026-08-08 (e) — A polygon may only pick what was offered
+
+Extending from a polygon selection swallowed a whole bush: the viewer reported
+32 points picked and the line gained thousands.
+
+``picked_cloud_indices`` re-tests the stored polygon against the FULL cloud, so
+a polygon covers everything it encloses rather than only the points LOD drew.
+That re-test bypasses the viewer's selection filters — they run when the polygon
+is closed, in rendered-index space, while the re-test works in cloud-index
+space and simply unions in every enclosed point. Combined with "the picks are
+always adopted" (2026-08-05), every point inside the polygon joined the line.
+
+``picked_cloud_indices`` now takes an ``allowed`` set of cloud indices and
+intersects with it; the extension window passes its candidate set. The gate is
+in the shared helper rather than the window on purpose — the trap lives there,
+so the warning and the way out should too. Only the caller can supply the
+answer, since only it knows what is admissible in cloud-index space.
+
+Note the same leak still applies to seed picking in the growth plugin, which
+calls the helper without ``allowed``. Left alone deliberately: growth seeds are
+a starting body that RANSAC and the seed DBSCAN are built to tolerate strays in,
+and nobody has reported it biting. If it does, the fix is one argument.
