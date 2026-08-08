@@ -579,3 +579,26 @@ Note the same leak still applies to seed picking in the growth plugin, which
 calls the helper without ``allowed``. Left alone deliberately: growth seeds are
 a starting body that RANSAC and the seed DBSCAN are built to tolerate strays in,
 and nobody has reported it biting. If it does, the fix is one argument.
+
+## 2026-08-08 (f) — The centerline reaches the end of what the march claimed
+
+An extension grew the line and drew no centerline for the new stretch.
+
+Centerline geometry is only recorded when a window FITS (`_record_step` lives in
+the success branch of `_march`). The else branch also claims points — the near
+on-axis ones — and bridges onward without fitting anything, so a march that ends
+by creeping along a sparse continuation holds points its centerline never
+reaches, and a march that never fits a single window draws nothing at all for
+that end. Measured: 4 points claimed out to x=13.4 with the centerline still
+ending at x=10.0, which is exactly what an extension into a sparse continuation
+looks like — the line grows, the drawing does not.
+
+`_march` now carries the chain out to the furthest point it claimed along the
+heading it was travelling, after the existing last-fitted-line extension. It only
+ever LENGTHENS the chain along a heading already travelled; it cannot move or
+reroute a segment the march fitted, and no cylinder is drawn over the tail
+because nothing was fitted there.
+
+Fixed in the march rather than in `extend_from_stop` because ordinary growth has
+the same gap — any trace ending in a sparse stretch was drawing short. The
+extension only made it obvious, by producing traces that are ENTIRELY sparse.
