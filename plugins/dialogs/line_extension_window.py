@@ -55,6 +55,13 @@ from core.services.linear_region_grower import (
 )
 
 
+def _line_name(label):
+    """The cluster name a traced line carries. Matches what the growth plugin
+    writes, so editing a line set renames nothing that was not already named
+    this way."""
+    return f"Line {label + 1}"
+
+
 # Colour of the marker drawn at the stop currently under review. Deliberately
 # not one of the STOP_REASONS colours — this says "you are here", not "this is
 # why it stopped", and must read as distinct from the per-reason stop branches.
@@ -158,6 +165,10 @@ class LineExtensionWindow(QDialog):
         # whole original run's geometry — better a stale branch than a gutted one.
         self.had_cylinders = any(len(line.cylinders) for line in self.lines)
 
+        # What the last Trim/Delete/Join did, shown in the edit panel. Kept off
+        # stop_label so it is not wiped by the next step of the review.
+        self.edit_note = ""
+
         self.poll_timer = QTimer()
         self.poll_timer.timeout.connect(self._refresh_pick_count)
 
@@ -243,8 +254,9 @@ class LineExtensionWindow(QDialog):
 
         layout.addWidget(QLabel(
             "Each stop below is where a traced line gave up.\n"
-            "Points you can pick are shown bright yellow; the rest of the cloud\n"
-            "is grey and ignores clicks. Pick a few just past the marker\n"
+            "Points you can pick are bright yellow and drawn larger; unclaimed\n"
+            "points are grey, see-through, and ignore clicks. Pick a few just\n"
+            "past the marker\n"
             "(Shift+Click, or P for polygon select) and press Extend.\n"
             "Extending leaves the camera where you put it, so you can look at\n"
             "the result, pick further and extend again — or undo it.\n"
@@ -316,6 +328,47 @@ class LineExtensionWindow(QDialog):
         for btn in (self.extend_btn, self.undo_btn, self.end_btn):
             buttons.addWidget(btn)
         layout.addLayout(buttons)
+
+        # Editing the lines themselves, as opposed to growing them. All three
+        # act on what is picked in the viewer, exactly like Extend — click ON a
+        # line (its own points take the click, and so does its centerline) and
+        # press the button.
+        edit = QGroupBox("Edit lines")
+        edit_layout = QVBoxLayout()
+        self.edit_label = QLabel(
+            "Click a traced line — on the centreline or its points — then:"
+        )
+        self.edit_label.setWordWrap(True)
+        edit_layout.addWidget(self.edit_label)
+
+        edit_buttons = QHBoxLayout()
+        self.trim_btn = QPushButton("Trim")
+        self.trim_btn.setToolTip(
+            "Remove the clicked centreline segment and release its points.\n\n"
+            "A cut in the middle leaves TWO lines — a traced line carries one "
+            "polyline, so a gap cannot be part of it."
+        )
+        self.trim_btn.clicked.connect(self._trim)
+        self.delete_btn = QPushButton("Delete")
+        self.delete_btn.setToolTip(
+            "Remove the whole clicked line, its cylinders and its markers. "
+            "Its points go back to unclaimed."
+        )
+        self.delete_btn.clicked.connect(self._delete_line)
+        self.join_btn = QPushButton("Join")
+        self.join_btn.setToolTip(
+            "Join two clicked lines into one, keeping the FIRST one clicked. "
+            "Click a point on each, in that order."
+        )
+        self.join_btn.clicked.connect(self._join)
+        for btn in (self.trim_btn, self.delete_btn, self.join_btn):
+            edit_buttons.addWidget(btn)
+        edit_layout.addLayout(edit_buttons)
+        self.edit_status = QLabel("")
+        self.edit_status.setWordWrap(True)
+        edit_layout.addWidget(self.edit_status)
+        edit.setLayout(edit_layout)
+        layout.addWidget(edit)
 
         # Navigation is kept apart from the buttons that CHANGE something:
         # Previous / Next only move the review along, leaving the stop
@@ -753,6 +806,158 @@ class LineExtensionWindow(QDialog):
                     f"pick further ahead and extend again")
         self.stop_label.setText(f"{self.stop_label.text()}<br><i>Last: {note}</i>")
 
+    # ------------------------------------------------------------------ #
+    # Editing the lines: trim, delete, join                              #
+    # ------------------------------------------------------------------ #
+
+    def _line_labels(self):
+        """Per-point line label from the LINES, not from the branch.
+
+        The branch's own labels cannot answer this while a stop is under review:
+        the candidate points have been promoted out of noise into a cluster of
+        their own, so the branch would report them as belonging to a line.
+        """
+        labels = np.full(len(self.pc_points), -1, dtype=np.int32)
+        for label, line in enumerate(self.lines):
+            labels[line.indices] = label
+        return labels
+
+    def _picked_lines_in_order(self):
+        """``[(label, point), ...]`` for the picks that landed on a traced line,
+        in the order they were clicked.
+
+        Click order is the whole reason this does not go through
+        ``picked_cloud_indices``: that returns a sorted set, and Join has to know
+        which line was clicked FIRST. Polygons are ignored for the same reason —
+        these three operations are single clicks on a line, not area selections.
+
+        A click on a centreline resolves through the depth buffer to a world
+        position on that line, and the viewer snaps it to the nearest point,
+        which is one of the line's own. So "click the centreline" and "click the
+        line's points" arrive here as the same thing.
+        """
+        if self.viewer is None or self.viewer.points is None:
+            return []
+        labels = self._line_labels()
+        picked = []
+        for i in self.viewer.picked_points_indices:
+            if i >= len(self.viewer.points):
+                continue
+            xyz = np.asarray(self.viewer.points[i, :3], dtype=float)
+            _dist, row = self.grower.kdtree.query(xyz.astype(np.float32))
+            row = int(row)
+            if 0 <= row < len(labels) and labels[row] >= 0:
+                picked.append((int(labels[row]), xyz))
+        return picked
+
+    def _no_line_picked(self, what):
+        QMessageBox.information(
+            self, "No Line Picked",
+            f"Click the line you want to {what} first — Shift+Click on its "
+            f"centreline or on one of its points.\n\n"
+            f"Only traced lines can be {what}ed; a click on the grey unclaimed "
+            f"points or on the yellow candidates does not name a line."
+        )
+
+    def _restructure(self, new_lines, note):
+        """Adopt an edited line list.
+
+        Editing changes how many lines there are, and a line's label is just its
+        position in this list — so every label above the edit shifts. Two things
+        are keyed by label and have to be rebuilt rather than carried over: the
+        review queue (rebuilt, which restarts the walk) and the resolved set
+        (re-keyed by stop VALUE, so ends the user already settled stay settled).
+        """
+        self._snapshot()
+        self.lines = new_lines
+        self.resolved = self._remapped_resolved(new_lines)
+        self._commit()
+        self._build_queue()
+        self._clear_picks()
+        self._show_current()
+        self.edit_status.setText(f"<i>{note}</i>")
+
+    def _remapped_resolved(self, new_lines):
+        """Carry the resolved ends across a change of labels.
+
+        Matched on the stop's own values (reason and tip) rather than its label,
+        the same way ``stop_key`` defines identity in the first place. A stop the
+        user called a real end is still a real end after the line it sits on has
+        been renumbered by an edit elsewhere.
+        """
+        settled = {key[1:] for key in self.resolved}
+        return {stop_key(label, stop)
+                for label, line in enumerate(new_lines)
+                for stop in line.stops
+                if stop_key(label, stop)[1:] in settled}
+
+    def _trim(self):
+        picked = self._picked_lines_in_order()
+        if not picked:
+            self._no_line_picked("trim")
+            return
+        label, point = picked[0]
+        line = self.lines[label]
+
+        segment = self.grower.segment_at(line, point)
+        if segment is None:
+            QMessageBox.warning(
+                self, "Nothing to Trim",
+                f"{_line_name(label)} has no centreline to cut, so there is no "
+                f"segment to remove. Use Delete to drop the whole line."
+            )
+            return
+
+        pieces, released = self.grower.trim_segment(line, segment)
+        new_lines = self.lines[:label] + pieces + self.lines[label + 1:]
+        split = " — the cut was mid-line, so it is now two lines" \
+            if len(pieces) > 1 else ""
+        self._restructure(
+            new_lines,
+            f"Trimmed segment {segment + 1} of {_line_name(label)}: "
+            f"{released.size} point(s) released{split}."
+        )
+
+    def _delete_line(self):
+        picked = self._picked_lines_in_order()
+        if not picked:
+            self._no_line_picked("delete")
+            return
+        label, _point = picked[0]
+        released = len(self.lines[label].indices)
+        new_lines = self.lines[:label] + self.lines[label + 1:]
+        self._restructure(
+            new_lines,
+            f"Deleted {_line_name(label)}: {released} point(s) released."
+        )
+
+    def _join(self):
+        picked = self._picked_lines_in_order()
+        labels = []
+        for label, _point in picked:
+            if label not in labels:
+                labels.append(label)
+        if len(labels) < 2:
+            QMessageBox.information(
+                self, "Pick Two Lines",
+                "Join needs a click on each of the two lines — the first one "
+                "clicked is the one that is kept.\n\n"
+                + ("Both clicks landed on the same line."
+                   if len(labels) == 1 else
+                   "Shift+Click a point on each line, then press Join.")
+            )
+            return
+
+        keep, absorb = labels[0], labels[1]
+        joined = self.grower.join_lines(self.lines[keep], self.lines[absorb])
+        new_lines = [joined if i == keep else line
+                     for i, line in enumerate(self.lines) if i != absorb]
+        self._restructure(
+            new_lines,
+            f"Joined {_line_name(absorb)} into {_line_name(keep)}: "
+            f"{len(joined.indices)} point(s) on the line."
+        )
+
     def _undo(self):
         """Put everything back as it was before the last change."""
         if not self.history:
@@ -766,6 +971,7 @@ class LineExtensionWindow(QDialog):
         self._clear_picks()
         self._commit()
         self._show_current()
+        self.edit_status.setText("")
         self.stop_label.setText(f"{self.stop_label.text()}<br><i>Last change "
                                 f"undone.</i>")
 
@@ -832,6 +1038,21 @@ class LineExtensionWindow(QDialog):
         # would otherwise carry a phantom candidate cluster forward.
         self._forget_candidate_naming(clusters)
         self.marked_indices = None      # the relabel above wiped any candidates
+
+        # Names are rebuilt alongside the labels because editing changes how
+        # MANY lines there are: a trim splits one into two, a delete and a join
+        # each remove one. Left alone, the names written when the branch was
+        # grown would keep pointing at labels that have shifted underneath them
+        # — "Line 4" naming what is now line 2. Extension never hits this (the
+        # count cannot change), so this rewrites nothing on that path.
+        #
+        # AFTER forgetting the candidate naming, not before: the candidate label
+        # is one above the lines, so a trim that adds a line makes the two
+        # collide, and forgetting the candidate would then delete the name of a
+        # real line that had just been given the same number.
+        if clusters.cluster_names:
+            clusters.cluster_names = {k: _line_name(k)
+                                      for k in range(len(self.lines))}
         clusters.set_random_color()
 
         self.controller.cache_service.invalidate(self.result_uid)
@@ -882,6 +1103,7 @@ class LineExtensionWindow(QDialog):
         self._mark_candidates(clusters)
         self.controller.cache_service.invalidate(self.result_uid)
         self.controller.cache_service.invalidate_descendants(self.result_uid)
+        self._apply_emphasis()
         self._render()
 
     def _unmark_candidates(self, clusters):
@@ -947,6 +1169,28 @@ class LineExtensionWindow(QDialog):
         elif clusters.colors is not None:
             clusters.colors[indices] = _CANDIDATE_COLOR
 
+    def _apply_emphasis(self):
+        """Draw the offered points big and the unclaimed ones see-through.
+
+        Colour alone was not enough on real data: at the zoom a whole line is
+        reviewed at, one yellow point is the same handful of pixels as the grey
+        one beside it, and a cable seen through a canopy is mostly canopy. Size
+        separates them at any zoom, and the fade stops the clutter in FRONT of
+        the feature from hiding it — faded points write no depth, so a candidate
+        behind a screen of unclaimed returns still shows through.
+
+        The line points are left alone deliberately: they are what the user
+        clicks for Trim, Delete and Join, so fading them would make the editing
+        controls harder to aim than the picking they sit beside.
+        """
+        if self.viewer is None:
+            return
+        marked = (np.empty(0, dtype=np.intp) if self.marked_indices is None
+                  else self.marked_indices)
+        unclaimed = np.where(~self._claimed_mask())[0]
+        self.viewer.set_point_emphasis(self.result_uid, emphasised=marked,
+                                       faded=np.setdiff1d(unclaimed, marked))
+
     def _on_candidate_setting(self, _value=None):
         """Re-offer under the new setting. Not a change to the lines, so it is
         not snapshotted and does not touch the queue."""
@@ -996,6 +1240,10 @@ class LineExtensionWindow(QDialog):
 
     def closeEvent(self, event):
         self.poll_timer.stop()
+        if self.viewer is not None:
+            # One size, fully opaque again — the emphasis belongs to reviewing,
+            # not to the branch.
+            self.viewer.set_point_emphasis(self.result_uid)
         self._clear_focus_branch()
         self._restore_hidden_branches()
         # Hands the branch back with only its real clusters on it — the candidate
