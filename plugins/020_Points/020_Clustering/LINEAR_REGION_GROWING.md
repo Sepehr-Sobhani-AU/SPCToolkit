@@ -106,6 +106,8 @@ Note what this does and does not do: it backs the end *out* of a trouble spot. W
 
 The width matters as much as the distance, and less obviously: the search tube is aimed along the heading the march **drifted** to, and angular error scales with reach. A heading 2° off — routine after a few re-fits — misses by 0.2 m at 6 m and 0.85 m at 25 m. Granting reach without width sails the tube straight past the points you picked.
 
+**Only the *looking* is widened, never the fitting.** How wide the march may look and how wide it may fit are separate: the fit window — what gets fitted, claimed and drawn as a search cylinder — stays at `cylinder_radius` throughout. Having reached across, the bridge steps *sideways* onto the centre of what it found, so the narrow window lands on the continuation rather than beside it. Widen the fit window instead and two things go wrong at once: the per-step PCA scoops in whatever grows beside the feature, and the extension draws visibly fatter cylinders than the growth it continues (measured 0.184 m against 0.03 m).
+
 With no picks, nothing is relaxed at all — which is what stops the workflow from quietly guessing.
 
 **Progress & cancellation:** growing runs on a background thread (like [Surface Region Growing](SURFACE_REGION_GROWING.md)). While it runs the menus and tree are disabled, a status-bar progress bar reports how many lines have been traced, and a **Cancel** button stops the trace early — the lines grown so far are still saved as a result branch, and the completion message notes that it was cancelled. The 3D viewer stays interactive for camera manipulation throughout.

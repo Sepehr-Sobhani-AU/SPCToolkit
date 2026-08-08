@@ -602,3 +602,31 @@ because nothing was fitted there.
 Fixed in the march rather than in `extend_from_stop` because ordinary growth has
 the same gap — any trace ending in a sparse stretch was drawing short. The
 extension only made it obvious, by producing traces that are ENTIRELY sparse.
+
+## 2026-08-08 (g) — Looking wide and fitting wide are separate
+
+Extensions drew search cylinders several times fatter than the growth they
+continue (reported from the viewport; measured 0.184 m against 0.03 m, 6x).
+
+`_pick_bounded_search` widened `cylinder_radius` itself so the march could see
+past a gap to the user's picks. But that one number did four jobs: the KD-tree
+ball, the tube gate, the FIT WINDOW, and the radius `_record_step` writes into
+the drawn cylinder. Widening it therefore fitted per-step PCA over a tube many
+times wider than the user asked for — pulling in whatever grows beside the
+feature — and put the bloated tube on screen. In the measurement above, 6 points
+of a bush joined the extension.
+
+Split into `cylinder_radius` (fit / claim / draw) and `search_radius` (look).
+Only the latter is opened for picks; the former never moves, so an extension
+draws exactly the tube growth draws.
+
+That alone would have stranded the march: the tip only ever moved ALONG the
+heading, so it landed level with a continuation that had shifted sideways and
+the now-narrow window found nothing — which is why the radius was being widened
+wholesale in the first place. `_bridge_gap` now lands laterally too, on the
+centroid of the far band it bridged to. Verified interdependent: disable the
+lateral landing and the extension records no cylinders at all.
+
+The lateral landing applies to ordinary growth as well, deliberately — a cable
+that sags across a gap, or a kink at a pole, is the same geometry, and the tip
+was never re-centred there either.
