@@ -127,7 +127,7 @@ def selection_present(kind: Optional[str]) -> bool:
     return True
 
 
-def picked_cloud_indices(viewer, pc_points, kdtree=None):
+def picked_cloud_indices(viewer, pc_points, kdtree=None, allowed=None):
     """Map the viewer's current point picks onto indices into *pc_points*.
 
     The viewer renders a possibly sub-sampled copy of the branch, so a picked
@@ -135,6 +135,20 @@ def picked_cloud_indices(viewer, pc_points, kdtree=None):
     coordinate, then the stored selection polygons are re-tested against the full
     cloud so a polygon selection covers every point it encloses rather than only
     the sub-sampled ones the user could see.
+
+    **That re-test does not go through the viewer's selection filters.** The
+    viewer applies them when the polygon is closed (``_filter_selection``:
+    branch membership, cluster locks, noise) — but they work in rendered-index
+    space, and re-testing works in cloud-index space, so the widened result comes
+    back ungated. A polygon drawn over a few permitted points therefore returns
+    every point it encloses, permitted or not. Measured in the line-extension
+    window: the viewer honestly reported 32 points picked while this handed back
+    thousands, and a whole bush joined the traced line.
+
+    A caller that knows which cloud indices are admissible passes them as
+    *allowed*; the result is intersected with them. Anything that cares what it
+    is picking should pass it — only the caller knows the answer in cloud-index
+    space.
 
     Pass *kdtree* (a ``cKDTree`` over *pc_points*) when the caller already has
     one. Returns a sorted index array, or ``None`` when the picks could not be
@@ -154,4 +168,7 @@ def picked_cloud_indices(viewer, pc_points, kdtree=None):
     if polygon_mask is not None:
         picked |= set(int(i) for i in np.where(polygon_mask)[0])
 
-    return np.array(sorted(picked), dtype=np.intp)
+    indices = np.array(sorted(picked), dtype=np.intp)
+    if allowed is None:
+        return indices
+    return np.intersect1d(indices, np.asarray(allowed, dtype=np.intp))

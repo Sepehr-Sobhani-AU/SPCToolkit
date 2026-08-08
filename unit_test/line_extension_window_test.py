@@ -24,6 +24,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
 from plugins.plugin_manager import PluginManager
 from application.application_controller import ApplicationController
+from application.selection_gate import picked_cloud_indices
 from core.services.linear_region_grower import LinearRegionGrower, AXIS_TRACE
 
 _app = QApplication.instance() or QApplication([])
@@ -67,13 +68,18 @@ class _FakeTree:
 class _FakeViewer:
     """Only what the window touches: which branches draw points, and the picks."""
 
-    def __init__(self, offsets):
+    def __init__(self, offsets, points=None):
         self._branch_offsets = offsets
         self.picked_points_indices = []
         self.focused_on = None
+        self.points = points
+        self.polygon_mask = None       # what retest_polygon_selection returns
 
     def focus_on(self, point, extent, preserve_rotation=True):
         self.focused_on = np.asarray(point)
+
+    def retest_polygon_selection(self, points_3d):
+        return self.polygon_mask
 
     def update(self):
         pass
@@ -133,7 +139,8 @@ def _open_window(points, lines, grower, clusters):
 
     # Both branches on screen — the situation that broke it.
     n = len(points)
-    viewer = _FakeViewer({result_uid: (0, n), cloud_uid: (n, 2 * n)})
+    viewer = _FakeViewer({result_uid: (0, n), cloud_uid: (n, 2 * n)},
+                         points=points)
     tree = _FakeTree([cloud_uid, result_uid])
     global_variables.global_pcd_viewer_widget = viewer
     global_variables.global_tree_structure_widget = tree
@@ -232,6 +239,42 @@ def test_the_offer_is_exactly_what_the_panel_counts():
     window.close()
 
 
+def test_a_polygon_cannot_drag_in_what_was_never_offered():
+    """A polygon selection is re-tested against the FULL cloud
+    (``picked_cloud_indices``) so it covers everything it encloses rather than
+    only the points LOD drew — and that re-test does not go through the viewer's
+    selection filters. Drawn over the corridor it therefore comes back holding
+    every point inside it: measured on real data the viewer honestly reported 32
+    points picked while the extension consumed thousands, and since picks are
+    always adopted, a whole bush joined the line.
+
+    Only what is on offer may be picked, whichever code path found it."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+    viewer = window.viewer
+
+    offered = set(window.marked_indices.tolist())
+    # One honest click on an offered point, plus a polygon over a big region
+    # that happens to enclose a great deal more.
+    viewer.picked_points_indices = [int(window.marked_indices[0])]
+    sprawl = np.zeros(len(points), dtype=bool)
+    sprawl[::3] = True                       # a third of the whole cloud
+    viewer.polygon_mask = sprawl
+
+    raw = picked_cloud_indices(viewer, points, grower.kdtree)
+    used = window._picked_indices()
+    print(f"polygon returned {len(raw):,} points; {len(used)} of them were on "
+          f"offer and used")
+
+    assert len(raw) > 10 * len(offered), \
+        "setup wrong: the polygon was expected to sweep up far more than the offer"
+    assert set(used.tolist()) <= offered, \
+        "points that were never offered got picked up by the polygon"
+    assert len(used), "the honest click was dropped along with the sprawl"
+    window.close()
+
+
 def test_the_marker_branch_is_really_gone_afterwards():
     """The green "you are here" marker is a branch the window creates and must
     take away again. Its removal went through ApplicationController.remove_node,
@@ -259,5 +302,6 @@ if __name__ == "__main__":
     test_window_claims_the_viewport()
     test_candidates_are_drawn_in_the_candidate_colour()
     test_the_offer_is_exactly_what_the_panel_counts()
+    test_a_polygon_cannot_drag_in_what_was_never_offered()
     test_the_marker_branch_is_really_gone_afterwards()
     print("\nAll line-extension window tests passed.")

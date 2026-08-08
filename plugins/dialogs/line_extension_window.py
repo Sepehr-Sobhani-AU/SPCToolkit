@@ -650,13 +650,29 @@ class LineExtensionWindow(QDialog):
     # ------------------------------------------------------------------ #
 
     def _picked_indices(self):
-        """Viewer picks mapped onto reconstructed-cloud indices — the same
-        mapping the growth plugin uses for its seeds, so a pick here means
-        exactly what a seed pick means there."""
-        if self.viewer is None:
+        """Viewer picks mapped onto reconstructed-cloud indices, kept to the
+        points actually on offer.
+
+        The mapping is the one the growth plugin uses for its seeds, so a pick
+        here means what a seed pick means there — but it cannot be trusted on its
+        own. ``picked_cloud_indices`` re-tests a polygon selection against the
+        FULL cloud (so a polygon covers everything it encloses, not only the
+        points LOD happened to draw), and that re-test does not go through the
+        viewer's selection filters. A polygon drawn over the corridor therefore
+        comes back holding every point inside it — measured on real data: the
+        viewer honestly reported 32 points picked while this handed back
+        thousands, and since picks are always adopted, a whole bush joined the
+        line.
+
+        Handing the offer to the mapping as *allowed* settles it. The candidate
+        cluster is the statement of what may be picked at this stop; anything
+        else in the polygon was never on offer, whichever code path found it.
+        """
+        if self.viewer is None or self.marked_indices is None:
             return np.empty(0, dtype=np.intp)
         picked = picked_cloud_indices(self.viewer, self.pc_points,
-                                      self.grower.kdtree)
+                                      self.grower.kdtree,
+                                      allowed=self.marked_indices)
         return np.empty(0, dtype=np.intp) if picked is None else picked
 
     def _extend(self):
@@ -672,6 +688,8 @@ class LineExtensionWindow(QDialog):
                 self, "No Points Picked",
                 "Pick the points this line should grow into first — Shift+Click, "
                 "or press P in the viewer for polygon select.\n\n"
+                "Only the yellow points count. A polygon may cover a good deal "
+                "more than those; everything else inside it is ignored.\n\n"
                 "If the feature genuinely ends here, press 'Real end' instead."
             )
             return
@@ -727,8 +745,8 @@ class LineExtensionWindow(QDialog):
         gained = len(result.line.indices) - before
         rolled_note = f", after discarding {n_back} cylinder(s)" if n_back else ""
         if result.marched:
-            note = (f"{gained:+d} points, {len(result.line.indices)} on the line"
-                    f"{rolled_note}")
+            note = (f"{gained:+d} points from {picks.size} pick(s), "
+                    f"{len(result.line.indices)} on the line{rolled_note}")
         else:
             note = (f"growth could not carry on, so your {picks.size} picked "
                     f"point(s) were added to the line{rolled_note} — "
