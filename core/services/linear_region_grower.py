@@ -92,6 +92,10 @@ _DEDUPE_ABS_TOL = 1e-6
 _RANK_REACH_FACTOR = 3.0
 _RANK_RADIUS_FACTOR = 3.0
 
+# Query rows per block when asking "which centerline segment is each of these
+# points nearest to". Bounds the (Q, S, 3) working array on a long line.
+_SEGMENT_QUERY_CHUNK = 4096
+
 # Safety margin on the reach an extension is granted to arrive at the user's
 # picks: the landing lands slightly short of the target, so the reach must
 # clear the pick distance rather than exactly meet it.
@@ -519,6 +523,180 @@ class LinearRegionGrower:
         rel = np.asarray(point, dtype=float) - cut_point
         return bool(np.linalg.norm(rel) <= span + self.cylinder_length
                     and rel @ heading > 0)
+
+    # ------------------------------------------------------------------ #
+    # Editing a traced line by hand                                      #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _nearest_segment(centerline, query):
+        """For each row of *query*, the index of the nearest segment of the
+        polyline *centerline*.
+
+        Segments rather than vertices: a point beside the middle of a long
+        segment is nearer that segment than either of its endpoints, and "which
+        piece of the line does this point belong to" is a question about the
+        segments. Chunked over the query so a line with thousands of points and
+        hundreds of segments never materialises the whole (Q, S, 3) block.
+        """
+        pts = np.asarray(centerline, dtype=float)
+        query = np.atleast_2d(np.asarray(query, dtype=float))
+        if len(pts) < 2 or query.size == 0:
+            return np.empty(0, dtype=np.intp)
+
+        a, b = pts[:-1], pts[1:]
+        ab = b - a
+        denom = np.einsum("ij,ij->i", ab, ab)
+        denom = np.where(denom < 1e-18, 1.0, denom)
+
+        owner = np.empty(len(query), dtype=np.intp)
+        for lo in range(0, len(query), _SEGMENT_QUERY_CHUNK):
+            block = query[lo:lo + _SEGMENT_QUERY_CHUNK]
+            rel = block[:, None, :] - a[None, :, :]
+            t = np.clip(np.einsum("qsj,sj->qs", rel, ab) / denom, 0.0, 1.0)
+            closest = a[None, :, :] + t[..., None] * ab[None, :, :]
+            dist = np.linalg.norm(block[:, None, :] - closest, axis=2)
+            owner[lo:lo + _SEGMENT_QUERY_CHUNK] = np.argmin(dist, axis=1)
+        return owner
+
+    @staticmethod
+    def _stop_at_end(stop, centerline, end):
+        """Whether *stop* is the one sitting at ``centerline[end]``.
+
+        By comparison, not by distance threshold: a stop tip sits a little past
+        the end it belongs to (it is where the march was LOOKING), so "closer to
+        this end than to the other" identifies it without needing a tolerance
+        that would have to know the scale of the feature.
+        """
+        tip = np.asarray(stop.tip, dtype=float)
+        other = -1 if end == 0 else 0
+        return bool(np.linalg.norm(tip - centerline[end])
+                    <= np.linalg.norm(tip - centerline[other]))
+
+    def segment_at(self, line, point):
+        """Which segment of *line*'s centerline the user clicked, or None.
+
+        The click arrives as a world coordinate — whatever the depth buffer
+        resolved under the cursor — so "which segment" is simply the nearest
+        one. No distance limit: the caller has already decided this line is the
+        one being edited, and a click that landed slightly off the polyline
+        still means the segment it landed nearest.
+        """
+        centerline = line.centerline
+        if centerline is None or len(centerline) < 2:
+            return None
+        owner = self._nearest_segment(centerline, np.asarray(point, float))
+        return None if owner.size == 0 else int(owner[0])
+
+    def trim_segment(self, line, seg_i):
+        """Cut segment *seg_i* out of *line*.
+
+        Returns ``(pieces, released)`` — the lines left standing, and the point
+        indices that no longer belong to any of them (the caller sets those back
+        to -1). Returns ``None`` when there is no such segment.
+
+        A segment in the middle leaves two pieces, and they are returned as two
+        separate lines rather than one line with a hole in it: a ``GrownLine``
+        carries a single polyline, so a gap is not something it can express, and
+        pretending otherwise would put a centerline through ground the trace
+        never followed. A cut at either extreme leaves one piece.
+
+        Every point of the line is assigned to the segment it lies nearest;
+        those on the cut segment are released, the rest follow their side. Each
+        line's own search cylinders and stops are split the same way, so the
+        pieces come back drawable and reviewable rather than as bare indices.
+        The cut ends deliberately get NO new stop: the user trimmed there on
+        purpose, and re-offering it as "this line stopped here, extend it?"
+        would walk them straight back into what they just removed.
+        """
+        centerline = line.centerline
+        if centerline is None or len(centerline) < 2:
+            return None
+        pts = np.asarray(centerline, dtype=float)
+        if not 0 <= seg_i < len(pts) - 1:
+            return None
+
+        indices = np.asarray(line.indices, dtype=np.intp)
+        owner = (self._nearest_segment(pts, self.all_points[indices])
+                 if indices.size else np.empty(0, dtype=np.intp))
+
+        cylinders = list(line.cylinders)
+        cyl_owner = self._nearest_segment(
+            pts, [c[0] + np.asarray(c[1], float) * c[3] * 0.5 for c in cylinders]
+        ) if cylinders else np.empty(0, dtype=np.intp)
+
+        stops = list(line.stops)
+        stop_owner = self._nearest_segment(
+            pts, [s.tip for s in stops]) if stops else np.empty(0, dtype=np.intp)
+
+        released = list(indices[owner == seg_i]) if indices.size else []
+        pieces = []
+        for keep_before in (True, False):
+            side = (owner < seg_i) if keep_before else (owner > seg_i)
+            kept_pts = pts[:seg_i + 1] if keep_before else pts[seg_i + 1:]
+            side_idx = indices[side] if indices.size else indices
+            if len(kept_pts) < 2 or side_idx.size == 0:
+                # Not a line any more — a lone vertex, or nothing left to draw.
+                released.extend(side_idx)
+                continue
+            cyl_side = (cyl_owner < seg_i) if keep_before else (cyl_owner > seg_i)
+            stop_side = (stop_owner < seg_i) if keep_before else (stop_owner > seg_i)
+            pieces.append(GrownLine(
+                side_idx,
+                kept_pts.astype(np.float32),
+                [c for c, take in zip(cylinders, cyl_side) if take],
+                list(line.end_cylinders),
+                [s for s, take in zip(stops, stop_side) if take],
+            ))
+
+        return pieces, np.asarray(sorted(set(int(i) for i in released)),
+                                  dtype=np.intp)
+
+    def join_lines(self, first, second):
+        """One line from two, keeping *first*'s identity.
+
+        The two centerlines are chained at whichever pair of their four
+        endpoints is closest, reversing either as needed — the user clicked two
+        lines, not two ends, so which way round each was traced is not something
+        they should have to think about.
+
+        The stops at the joined ends are dropped: they described where each
+        trace gave up, and the answer to "why did it stop there" is now "it
+        didn't, it carries on into the other line". A stop is only dropped when
+        it really does sit at the joined end (nearer to it than to the far end),
+        so a line whose only stop is at its far end keeps it.
+        """
+        idx = np.union1d(np.asarray(first.indices, dtype=np.intp),
+                         np.asarray(second.indices, dtype=np.intp))
+        a = None if first.centerline is None else np.asarray(first.centerline,
+                                                             dtype=float)
+        b = None if second.centerline is None else np.asarray(second.centerline,
+                                                              dtype=float)
+        cylinders = list(first.cylinders) + list(second.cylinders)
+        end_cylinders = list(first.end_cylinders) + list(second.end_cylinders)
+
+        if a is None or len(a) < 2 or b is None or len(b) < 2:
+            # Nothing to chain — keep whichever polyline exists and merge the
+            # rest, so the join still does what it says to the point membership.
+            centerline = a if a is not None and len(a) >= 2 else b
+            return GrownLine(
+                idx, None if centerline is None else centerline.astype(np.float32),
+                cylinders, end_cylinders,
+                list(first.stops) + list(second.stops),
+            )
+
+        # Closest pair of ends decides both the order and the two reversals.
+        pairs = [(np.linalg.norm(a[ai] - b[bi]), ai, bi)
+                 for ai in (0, -1) for bi in (0, -1)]
+        _dist, a_end, b_end = min(pairs, key=lambda row: row[0])
+        a_chain = a[::-1] if a_end == 0 else a
+        b_chain = b[::-1] if b_end == -1 else b
+
+        stops = ([s for s in first.stops if not self._stop_at_end(s, a, a_end)]
+                 + [s for s in second.stops if not self._stop_at_end(s, b, b_end)])
+
+        return GrownLine(idx, np.vstack([a_chain, b_chain]).astype(np.float32),
+                         cylinders, end_cylinders, stops)
 
     def splice_centerline(self, centerline, segments):
         """Re-join an existing polyline with freshly marched *segments*.
