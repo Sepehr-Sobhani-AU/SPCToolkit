@@ -211,28 +211,24 @@ def test_candidates_are_drawn_in_the_candidate_colour():
         "a real class in classification and export"
 
 
-def test_the_offer_contains_the_points_the_count_reports():
-    """The panel shows two numbers about the same stop: the points in the line's
-    own search corridor, and the points offered for picking. They measure
-    different volumes, so they differ — a canopy full of yellow beside "77 ahead"
-    is what prompted this — but they must at least be coherent: every point the
-    count reports has to be one of the ones offered, and the default range has to
-    match the corridor's length so the two describe the same distance."""
+def test_the_offer_is_exactly_what_the_panel_counts():
+    """The panel reports one number — the unclaimed points lying ahead — and the
+    yellow on screen must be that same set, point for point.
+
+    An earlier version offered a much wider cone than the count measured, so a
+    tree canopy lit up beside a count of 77 and read as a bug. Two numbers for
+    one stop was the mistake; there is now one."""
     points, lines, grower, clusters = _scene()
     window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
         points, lines, grower, clusters)
 
     _label, stop = window._current()
-    ahead = grower.unclaimed_ahead(stop, window._claimed_mask())
+    counted = grower.unclaimed_ahead(stop, window._claimed_mask())
     offered = window.marked_indices
-    corridor = grower.cylinder_length * grower.reach_factor * 3.0
-    print(f"default range {window.range_spin.value()} m vs corridor "
-          f"{corridor:.0f} m; {len(ahead)} ahead, {len(offered)} offered")
+    print(f"{len(counted)} counted as ahead, {len(offered)} offered in yellow")
 
-    assert window.range_spin.value() == round(corridor), \
-        "the default pick range no longer matches the corridor the count uses"
-    assert set(ahead.tolist()) <= set(offered.tolist()), \
-        "points the panel counts as lying ahead are not even offered for picking"
+    assert set(offered.tolist()) == set(counted.tolist()), \
+        "the yellow points are not the points the panel counts"
     window.close()
 
 
@@ -262,6 +258,6 @@ def test_the_marker_branch_is_really_gone_afterwards():
 if __name__ == "__main__":
     test_window_claims_the_viewport()
     test_candidates_are_drawn_in_the_candidate_colour()
-    test_the_offer_contains_the_points_the_count_reports()
+    test_the_offer_is_exactly_what_the_panel_counts()
     test_the_marker_branch_is_really_gone_afterwards()
     print("\nAll line-extension window tests passed.")

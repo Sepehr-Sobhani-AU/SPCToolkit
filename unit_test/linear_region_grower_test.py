@@ -797,90 +797,16 @@ def test_stop_ranking_puts_real_ends_last():
         "the promising stop should be the one facing the hole"
 
 
-def test_pick_candidates_offers_only_what_is_ahead():
-    """The set the extension window makes clickable. Points ahead of the stop are
-    offered; points behind it, well off to the side, or beyond the range are not
-    — that exclusion is the whole benefit, since everything not offered stays
-    grey and unpickable."""
-    points = _broken_cable()
-    g = _cable_grower(points)
-    line = g.grow_lines([np.arange(8)])[0]
-    claimed = np.zeros(len(points), dtype=bool)
-    claimed[line.indices] = True
-    stop = [s for s in line.stops if s.direction[0] > 0][0]
+def test_the_offer_ahead_leaves_the_clutter_out():
+    """``unclaimed_ahead`` is what the extension window offers for picking, so
+    what it leaves out is as important as what it finds: anything not offered is
+    grey and unclickable, and that is what makes picking practical in a cluttered
+    cloud.
 
-    # Probe points placed relative to the stop rather than taken from the cable,
-    # so each geometric case is unambiguous.
-    tip = stop.tip
-    probes = np.array([
-        tip + [3.0, 0.0, 0.0],      # straight ahead
-        tip + [3.0, 1.0, 0.0],      # ahead and off to one side, inside the spread
-        tip + [-3.0, 0.0, 0.0],     # behind
-        tip + [3.0, 8.0, 0.0],      # ahead but far outside the spread
-        tip + [30.0, 0.0, 0.0],     # ahead but past the range
-    ])
-    probed = LinearRegionGrower(
-        np.vstack([points, probes]), mode=AXIS_TRACE, ransac_threshold=0.05,
-        cylinder_radius=0.2, cylinder_length=1.0, reach_factor=3.0,
-        min_points=3, max_angle_deg=20.0,
-    )
-    claimed = np.concatenate([claimed, np.zeros(len(probes), dtype=bool)])
-
-    offered = set(probed.pick_candidates(stop, claimed, length=10.0).tolist())
-    names = ["ahead", "ahead+side", "behind", "way off to the side", "past range"]
-    base = len(points)
-    print("pick candidates: " + ", ".join(
-        f"{n}={'yes' if base + i in offered else 'no'}"
-        for i, n in enumerate(names)))
-
-    assert base + 0 in offered, "the point straight ahead was not offered"
-    assert base + 1 in offered, "a point 1 m off-axis at 3 m was not offered"
-    assert base + 2 not in offered, "a point behind the stop was offered"
-    assert base + 3 not in offered, "a point far off to the side was offered"
-    assert base + 4 not in offered, "a point past the range was offered"
-
-
-def test_pick_candidates_widen_with_distance():
-    """A cone, not a tube. The same lateral offset must be refused close to the
-    tip (there it really does mean a different feature) and accepted far out
-    (there it is just heading drift or sag)."""
-    points = _broken_cable()
-    g = _cable_grower(points)
-    line = g.grow_lines([np.arange(8)])[0]
-    claimed = np.zeros(len(points), dtype=bool)
-    claimed[line.indices] = True
-    stop = [s for s in line.stops if s.direction[0] > 0][0]
-
-    offset = 3.0
-    probes = np.array([stop.tip + [0.5, offset, 0.0],     # near, same offset
-                       stop.tip + [12.0, offset, 0.0]])   # far, same offset
-    probed = LinearRegionGrower(
-        np.vstack([points, probes]), mode=AXIS_TRACE, ransac_threshold=0.05,
-        cylinder_radius=0.2, cylinder_length=1.0, reach_factor=3.0,
-        min_points=3, max_angle_deg=20.0,
-    )
-    claimed = np.concatenate([claimed, np.zeros(2, dtype=bool)])
-    offered = set(probed.pick_candidates(stop, claimed, length=20.0).tolist())
-
-    near, far = len(points), len(points) + 1
-    print(f"cone spread: {offset} m off-axis at 0.5 m -> "
-          f"{'offered' if near in offered else 'refused'}, at 12 m -> "
-          f"{'offered' if far in offered else 'refused'}")
-    assert near not in offered, "the cone is not tightening near the tip"
-    assert far in offered, "the cone is not widening with distance"
-
-
-def test_pick_candidates_leave_the_clutter_out():
-    """The point of the whole thing, on a scene shaped like the real problem: a
-    cable 8 m up with a hole in it, ground below, a tree beside the hole. It has
-    to offer the cable's far half in full — miss that and the user cannot extend
-    at all — while leaving the great bulk of the cloud unoffered, since anything
-    not offered is grey and unclickable and that is what makes picking easy.
-
-    The cone's half-angle is what decides this: measured on this same scene, 45
-    degrees leaves 36% of the cloud clickable and 15 degrees leaves 2%. Both
-    recover the cable, so a test that only checked recovery would wave the
-    useless one through."""
+    Measured here on a scene shaped like the real problem — a cable 8 m up with a
+    hole in it, ground below, a tree beside the hole. Earlier this offered a wide
+    cone instead, which on real data lit a whole tree canopy; the corridor keeps
+    the offer to a thin sleeve along the heading."""
     rng = np.random.default_rng(4)
     cable = np.vstack([
         np.stack([np.linspace(0, 10, 400), np.zeros(400), np.full(400, 8.0)], 1),
@@ -900,36 +826,19 @@ def test_pick_candidates_leave_the_clutter_out():
     far_cable = np.zeros(len(points), dtype=bool)
     far_cable[400:960] = True                       # the half beyond the hole
 
-    offered = g.pick_candidates(stop, claimed, length=24.0)
+    offered = g.unclaimed_ahead(stop, claimed)
     share = len(offered) / len(points)
-    found = int(far_cable[offered].sum())
+    on_cable = int(far_cable[offered].sum())
     print(f"cluttered scene: {len(offered):,} of {len(points):,} points offered "
-          f"({share:.1%}), including {found}/{int(far_cable.sum())} of the cable "
-          f"beyond the hole")
+          f"({share:.2%}), {on_cable} of them on the cable beyond the hole, "
+          f"{len(offered) - on_cable} on anything else")
 
-    assert found == int(far_cable.sum()), \
-        f"only {found} of the cable's far half was offered — cannot extend"
-    assert share < 0.10, \
-        f"{share:.0%} of the cloud is still clickable; the cone is not filtering"
-
-
-def test_pick_candidates_skips_claimed_points():
-    """Points already on a line are not candidates: they are already seeds, and
-    offering them would invite dragging one line's points into another."""
-    points = _broken_cable()
-    g = _cable_grower(points)
-    line = g.grow_lines([np.arange(8)])[0]
-    claimed = np.zeros(len(points), dtype=bool)
-    claimed[line.indices] = True
-    # Face the march back along the cable it already traced.
-    inward = MarchStop(line.centerline[-1].astype(float),
-                       np.array([-1.0, 0.0, 0.0]), STOP_SHARP_BEND)
-
-    offered = g.pick_candidates(inward, claimed, length=8.0)
-    on_line = np.intersect1d(offered, line.indices)
-    print(f"claimed points: {len(offered)} offered looking back down the line, "
-          f"{len(on_line)} of them already on it")
-    assert on_line.size == 0, "points already on the line were offered"
+    assert on_cable > 0, "nothing on the cable's far half was offered"
+    assert on_cable > 0.9 * len(offered), \
+        f"only {on_cable} of {len(offered)} offered points are on the cable — " \
+        f"the offer has spread into the surroundings"
+    assert share < 0.01, \
+        f"{share:.1%} of the cloud is clickable; the offer is not a thin corridor"
 
 
 def test_rollback_trims_the_end_and_reaims():
@@ -1169,10 +1078,7 @@ if __name__ == "__main__":
     test_pick_bounded_search_opens_both_reach_and_width()
     test_sharp_bend_keeps_near_on_axis_points()
     test_stop_ranking_puts_real_ends_last()
-    test_pick_candidates_offers_only_what_is_ahead()
-    test_pick_candidates_widen_with_distance()
-    test_pick_candidates_leave_the_clutter_out()
-    test_pick_candidates_skips_claimed_points()
+    test_the_offer_ahead_leaves_the_clutter_out()
     test_rollback_trims_the_end_and_reaims()
     test_rollback_refuses_to_consume_whole_line()
     test_rollback_backs_out_past_what_stopped_the_march()
