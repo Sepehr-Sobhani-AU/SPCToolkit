@@ -678,3 +678,32 @@ rewritten (`Line N`), which is also why `_commit` now rebuilds names AFTER
 forgetting the candidate naming — the candidate label sits one above the lines,
 so a trim that adds a line makes the two collide. The resolved set IS carried
 over, re-keyed by stop value, exactly as `stop_key` defines identity.
+
+## 2026-08-09 — Clicking a line: near it counts, and the panel says which
+
+Reported: "I can't select centre lines with Shift+Click." Shift+Click WAS the
+gesture — there is no separate line-picking mode — but three things made it
+unusable.
+
+Picking resolves the depth buffer at exactly the pixel clicked, and a centerline
+is drawn one pixel wide. Miss the hair and the pixel reads back empty, so the
+click picks nothing at all rather than nearly working. And the unclaimed points
+around it now write no depth (that is what makes the fade see-through), so a
+near miss has even less to land on than before.
+
+Three changes, all in the window:
+
+- The wireframes are drawn at width 4 while it is open, restored on close. A
+  fatter target, and easier to see.
+- A pick names a line two ways, in order of certainty: the line it landed ON,
+  and failing that the nearest centerline within one search reach. So clicking
+  the cable's own points, or the clutter beside it, works as well as hitting the
+  centerline. Far from every line still names nothing, or a stray click would
+  edit something.
+- The panel names the picked line(s) live, before any button is pressed —
+  including which one Join will keep. Trim and Delete were being pressed blind.
+
+The resolution is bounded at 64 picks: a polygon selection leaves millions and
+the readout runs on the 5 Hz poll. It stops as soon as two distinct lines are
+named, which is all Join needs, and the refusal message says to clear a big
+selection first.

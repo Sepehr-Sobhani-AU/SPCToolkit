@@ -90,6 +90,10 @@ Growth gets features wrong in ways no parameter fixes: it runs a line through a 
 - **Delete** removes the whole clicked line, its cylinders and its markers; its points go back to unclaimed.
 - **Join** merges two clicked lines into one, keeping the **first** one clicked. The two centrelines are chained at whichever pair of their four ends is closest, reversing either as needed — you clicked two lines, not two ends, and which way round each was traced is not something you should have to know. The stops at the joined ends are dropped, since the answer to "why did it stop there" is now "it didn't".
 
+**Aiming them.** Shift+Click, the same pick as for Extend — there is no separate line-picking mode. You do not have to hit the centreline: a click names the line it landed *on*, and failing that the nearest centreline within one search reach, so clicking the cable's own points or the clutter beside it works just as well. The centreline is also drawn thicker while the window is open (a one-pixel hairline is aimed at by pixel-hunting, and a miss reads the depth buffer back empty and picks nothing at all).
+
+The panel says which line is picked **before** you press anything — including, for two, which one Join will keep. Only the first few picks are looked through, so if you have a polygon selection down, clear it and click just the line.
+
 All three go through the same **Undo** as an extension. Because a line's label is just its position in the list, an edit renumbers every line above it — so the review queue is rebuilt (the walk restarts from the top) and the cluster names are rewritten to match. Ends you had already settled as real stay settled: they are re-keyed by the stop's own values, not by the label they used to sit under.
 
 ### Your picks are the decision
