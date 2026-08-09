@@ -75,6 +75,7 @@ class _FakeViewer:
         self.points = points
         self.polygon_mask = None       # what retest_polygon_selection returns
         self.emphasis = {}             # uid -> (emphasised, faded)
+        self.line_width = 1.0          # the viewer's real default
 
     def set_point_emphasis(self, uid, emphasised=None, faded=None):
         if emphasised is None and faded is None:
@@ -453,6 +454,101 @@ def test_join_keeps_the_first_line_clicked():
     window.close()
 
 
+def test_a_click_beside_a_line_still_names_it():
+    """Picking resolves the depth buffer at exactly the pixel clicked, so a
+    click three pixels off a one-pixel centreline lands on whatever is behind
+    it — grey clutter, a yellow candidate, or nothing. Those clicks have to name
+    the line anyway, or aiming at a hairline is the whole interaction."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    # Trim a piece out, which leaves real UNCLAIMED points lying along the line
+    # — exactly what a click that misses the centreline lands on.
+    first = window.lines[0]
+    _click(window, points, np.asarray(first.centerline)[len(first.centerline) // 2])
+    window._trim()
+    window._clear_picks()
+
+    claimed = window._claimed_mask()
+    released = [i for i in np.asarray(first.indices) if not claimed[i]]
+    assert released, "setup wrong: the trim released nothing to click on"
+
+    row = int(released[len(released) // 2])
+    window.viewer.picked_points_indices = [row]
+    picked = window._picked_lines_in_order()
+    reach = grower.cylinder_length * grower.reach_factor
+    print(f"a click on a released (unclaimed) point beside the line names "
+          f"line {picked[0][0] if picked else None} — anything within "
+          f"{reach:.1f} m counts")
+
+    assert picked, "a click beside the line named no line at all"
+
+    # Just off the centreline counts; far from every line does not, or every
+    # stray click would edit something.
+    near = np.asarray(window.lines[0].centerline)[1] + np.array([0.0, 0.25, 0.0])
+    far = np.asarray(window.lines[0].centerline)[1] + np.array([0.0, 0.0, -8.0])
+    print(f"0.25 m off the centreline -> {window._line_under(near)}, "
+          f"8 m away -> {window._line_under(far)}")
+    assert window._line_under(near) == 0, "a click just off the line named nothing"
+    assert window._line_under(far) is None, \
+        "a click far from every line still named one"
+    window.close()
+
+
+def test_the_panel_names_the_line_before_you_press():
+    """Trim and Delete are irreversible-looking single clicks, and Join silently
+    depends on which line was clicked FIRST. The panel has to say which line the
+    buttons are aimed at, before they are pressed."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    window._refresh_edit_target()
+    idle = window.edit_label.text()
+
+    first = window.lines[0]
+    _click(window, points, np.asarray(first.centerline)[2])
+    window._refresh_edit_target()
+    one = window.edit_label.text()
+    print(f"nothing picked: {idle!r}\none line picked: {one!r}")
+
+    assert "Line 1" not in idle, "the panel named a line before one was picked"
+    assert "Line 1" in one, "the panel does not say which line is picked"
+
+    # Split it, then pick both halves — the readout must say which Join keeps.
+    window._trim()
+    window._clear_picks()
+    _click(window, points, np.asarray(window.lines[1].centerline)[1])
+    _click(window, points, np.asarray(window.lines[0].centerline)[1])
+    window._refresh_edit_target()
+    two = window.edit_label.text()
+    print(f"two lines picked: {two!r}")
+
+    assert "Line 2" in two and "Line 1" in two, "the panel names only one line"
+    assert two.index("Line 2") < two.index("Line 1"), \
+        "the panel does not report them in click order, so Join reads as a guess"
+    assert "keeps Line 2" in two, "the panel does not say which line Join keeps"
+    window.close()
+
+
+def test_the_centreline_is_thickened_while_the_window_is_open():
+    """A one-pixel centreline is aimed at by pixel-hunting, and a miss reads the
+    depth buffer back empty and picks nothing at all."""
+    points, lines, grower, clusters = _scene()
+    window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
+        points, lines, grower, clusters)
+
+    while_open = window.viewer.line_width
+    window.close()
+    print(f"line width: 1.0 -> {while_open} while open -> "
+          f"{window.viewer.line_width} after closing")
+
+    assert while_open > 1.0, "the centreline is still a one-pixel hair"
+    assert window.viewer.line_width == 1.0, \
+        "the window kept the viewer's line width after closing"
+
+
 def test_editing_needs_a_line_under_the_click():
     """A click on the clutter or on the yellow candidates names no line, and the
     edit buttons have to say so rather than acting on line 1 by default."""
@@ -510,6 +606,9 @@ if __name__ == "__main__":
     test_trim_cuts_the_clicked_segment_out()
     test_delete_drops_the_whole_line()
     test_join_keeps_the_first_line_clicked()
+    test_a_click_beside_a_line_still_names_it()
+    test_the_panel_names_the_line_before_you_press()
+    test_the_centreline_is_thickened_while_the_window_is_open()
     test_editing_needs_a_line_under_the_click()
     test_the_marker_branch_is_really_gone_afterwards()
     print("\nAll line-extension window tests passed.")
