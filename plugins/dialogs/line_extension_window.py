@@ -92,6 +92,24 @@ _CANDIDATE_NAME = "Pick candidates"
 # Clusters.set_random_color paints label -1 with.
 _NOISE_COLOR = np.array([0.2, 0.2, 0.2], dtype=np.float32)
 
+# Width the centerlines are drawn at while this window is open. At the default
+# 1.0 a centerline is a one-pixel hair, and picking reads the depth buffer at
+# exactly the pixel clicked — so aiming at it is a game of pixel-hunting, and a
+# miss reads back empty and picks nothing at all. Restored on close.
+_EDIT_LINE_WIDTH = 4.0
+
+# How near a click has to land to count as naming a line, when it did not land
+# on the line's own points. Expressed in the growth's own terms — one search
+# reach — so it scales with the feature being traced instead of being a guess in
+# metres. See _line_under.
+_CLICK_REACH_FACTOR = 1.0
+
+# How many picks the edit buttons look through, newest gestures aside. Bounded
+# because a polygon selection leaves millions of picks and this runs on the
+# 5 Hz poll: resolving every one of them to a line would freeze the window. Two
+# distinct lines is all Join needs, and it stops as soon as it has them.
+_EDIT_PICK_SCAN = 64
+
 
 class LineExtensionWindow(QDialog):
     """Step through the stops of traced lines and extend the ones that continue.
@@ -158,6 +176,12 @@ class LineExtensionWindow(QDialog):
         # Point branches switched off so they stop drawing a second copy of the
         # cloud over this one. Switched back on when the window closes.
         self._hidden_branches = []
+        self._saved_line_width = None
+
+        # Last answer to "which lines are picked", against the pick list it was
+        # computed from. The poll asks 5 times a second and the answer only
+        # changes when the user clicks.
+        self._picked_lines_cache = (None, [])
 
         # Whether the lines arrived carrying their search cylinders. A result
         # saved before cylinders were persisted comes back without them, and
@@ -201,6 +225,13 @@ class LineExtensionWindow(QDialog):
         if self.tree_widget is None or self.viewer is None:
             return
 
+        # Fatten the wireframes. A centerline drawn one pixel wide is aimed at
+        # by pixel-hunting, and picking resolves the depth buffer at exactly the
+        # pixel clicked — miss the hair and it reads back empty, so the click
+        # does nothing at all rather than nearly working.
+        self._saved_line_width = self.viewer.line_width
+        self.viewer.line_width = max(self._saved_line_width, _EDIT_LINE_WIDTH)
+
         # Branches currently drawing POINTS. Vector features (centerlines,
         # cylinders, the stop markers) draw as lines, never appear here, and are
         # left alone — they are the context worth keeping.
@@ -233,7 +264,11 @@ class LineExtensionWindow(QDialog):
             self.controller.set_selected_branches([self.result_uid])
 
     def _restore_hidden_branches(self):
-        """Show again whatever was hidden to clear the viewport."""
+        """Show again whatever was hidden to clear the viewport, and put the
+        wireframe width back the way the user had it."""
+        if self._saved_line_width is not None and self.viewer is not None:
+            self.viewer.line_width = self._saved_line_width
+            self._saved_line_width = None
         if not self._hidden_branches or self.tree_widget is None:
             return
         self.tree_widget.blockSignals(True)
@@ -336,7 +371,7 @@ class LineExtensionWindow(QDialog):
         edit = QGroupBox("Edit lines")
         edit_layout = QVBoxLayout()
         self.edit_label = QLabel(
-            "Click a traced line — on the centreline or its points — then:"
+            "Click a traced line — on the centreline or near its points — then:"
         )
         self.edit_label.setWordWrap(True)
         edit_layout.addWidget(self.edit_label)
@@ -521,6 +556,7 @@ class LineExtensionWindow(QDialog):
     def _refresh_pick_count(self):
         count = 0 if self.viewer is None else len(self.viewer.picked_points_indices)
         text = f"{count} point(s) picked"
+        self._refresh_edit_target()
 
         # Say so out loud if another point cloud comes back on screen. It draws a
         # second copy of these same points, unlabelled, which takes the clicks —
@@ -810,6 +846,36 @@ class LineExtensionWindow(QDialog):
     # Editing the lines: trim, delete, join                              #
     # ------------------------------------------------------------------ #
 
+    def _refresh_edit_target(self):
+        """Say which line the edit buttons would act on, live.
+
+        Without this the buttons are a leap of faith: the panel counts points
+        picked but never says which LINE that named, so Trim and Delete are
+        pressed blind and a Join silently keeps whichever line the click order
+        happened to put first. The names shown here are the ones the buttons
+        will use.
+        """
+        labels = []
+        for label, _point in self._picked_lines_cached():
+            if label not in labels:
+                labels.append(label)
+
+        if not labels:
+            self.edit_label.setText(
+                "Click a traced line — on the centreline or near its points — "
+                "then:")
+        elif len(labels) == 1:
+            self.edit_label.setText(
+                f"<b>{_line_name(labels[0])}</b> is picked. Trim cuts the "
+                f"segment you clicked; Delete removes the line. Join needs a "
+                f"second line.")
+        else:
+            self.edit_label.setText(
+                f"<b>{_line_name(labels[0])}</b>, then "
+                f"<b>{_line_name(labels[1])}</b> — Join keeps "
+                f"{_line_name(labels[0])}. Trim and Delete act on "
+                f"{_line_name(labels[0])}.")
+
     def _line_labels(self):
         """Per-point line label from the LINES, not from the branch.
 
@@ -822,41 +888,99 @@ class LineExtensionWindow(QDialog):
             labels[line.indices] = label
         return labels
 
-    def _picked_lines_in_order(self):
-        """``[(label, point), ...]`` for the picks that landed on a traced line,
-        in the order they were clicked.
+    def _line_under(self, point):
+        """The label of the traced line nearest *point*, or None if none is near.
+
+        "Near" is one search reach of the growth that produced these lines, so
+        it scales with the feature rather than being a guess in metres. This is
+        what lets a click land BESIDE a line and still name it — on the grey
+        points around a cable, on a yellow candidate next to it, anywhere within
+        reach — instead of having to hit the centreline itself.
+        """
+        reach = (self.grower.cylinder_length * self.grower.reach_factor
+                 * _CLICK_REACH_FACTOR)
+        best, best_dist = None, reach
+        for label, line in enumerate(self.lines):
+            _seg, dist = self.grower.nearest_segment(line, point)
+            if dist < best_dist:
+                best, best_dist = label, dist
+        return best
+
+    def _picked_lines_in_order(self, stop_after=2):
+        """``[(label, point), ...]`` naming the lines the user clicked, in the
+        order they clicked them, stopping once *stop_after* distinct lines are
+        named.
 
         Click order is the whole reason this does not go through
         ``picked_cloud_indices``: that returns a sorted set, and Join has to know
-        which line was clicked FIRST. Polygons are ignored for the same reason —
-        these three operations are single clicks on a line, not area selections.
+        which line was clicked FIRST.
 
-        A click on a centreline resolves through the depth buffer to a world
-        position on that line, and the viewer snaps it to the nearest point,
-        which is one of the line's own. So "click the centreline" and "click the
-        line's points" arrive here as the same thing.
+        Each pick names a line two ways, in order of certainty. If the picked
+        point IS on a traced line, that line wins outright — nothing is more
+        direct than clicking the thing itself. Otherwise the nearest centreline
+        within reach is taken (``_line_under``), which is what makes clicking
+        *near* a line work: the depth buffer only resolves geometry that was
+        actually drawn at that pixel, so a click three pixels off a centreline
+        lands on whatever is behind it, and before this that was the end of it.
+
+        Bounded at ``_EDIT_PICK_SCAN`` picks: a polygon selection leaves
+        millions, and this is called from the 5 Hz poll to keep the readout live.
         """
         if self.viewer is None or self.viewer.points is None:
             return []
+
+        rows = np.fromiter(self.viewer.picked_points_indices, dtype=np.int64,
+                           count=len(self.viewer.picked_points_indices))
+        rows = rows[(rows >= 0) & (rows < len(self.viewer.points))]
+        if rows.size == 0:
+            return []
+        rows = rows[:_EDIT_PICK_SCAN]
+
+        # One batch query rather than one per pick.
+        coords = np.asarray(self.viewer.points[rows, :3], dtype=np.float32)
+        _dist, cloud_rows = self.grower.kdtree.query(coords)
         labels = self._line_labels()
-        picked = []
-        for i in self.viewer.picked_points_indices:
-            if i >= len(self.viewer.points):
-                continue
-            xyz = np.asarray(self.viewer.points[i, :3], dtype=float)
-            _dist, row = self.grower.kdtree.query(xyz.astype(np.float32))
+
+        picked, seen = [], set()
+        for xyz, row in zip(coords.astype(float), np.atleast_1d(cloud_rows)):
             row = int(row)
-            if 0 <= row < len(labels) and labels[row] >= 0:
-                picked.append((int(labels[row]), xyz))
+            label = int(labels[row]) if 0 <= row < len(labels) else -1
+            if label < 0:
+                label = self._line_under(xyz)
+            if label is None:
+                continue
+            picked.append((int(label), xyz))
+            seen.add(int(label))
+            if stop_after is not None and len(seen) >= stop_after:
+                break
         return picked
 
+    def _picked_lines_cached(self):
+        """``_picked_lines_in_order`` for the readout, recomputed only when the
+        picks change. The poll asks five times a second; the answer does not."""
+        picks = () if self.viewer is None else tuple(
+            self.viewer.picked_points_indices[:_EDIT_PICK_SCAN])
+        fingerprint = (len(getattr(self.viewer, "picked_points_indices", ())),
+                       picks, len(self.lines))
+        if self._picked_lines_cache[0] != fingerprint:
+            self._picked_lines_cache = (fingerprint, self._picked_lines_in_order())
+        return self._picked_lines_cache[1]
+
     def _no_line_picked(self, what):
+        reach = self.grower.cylinder_length * self.grower.reach_factor
+        many = len(self.viewer.picked_points_indices) > _EDIT_PICK_SCAN \
+            if self.viewer is not None else False
+        extra = (f"\n\nThere are a lot of points picked at the moment, and only "
+                 f"the first {_EDIT_PICK_SCAN} are looked through. Clear the "
+                 f"selection (Shift+Right-click, or press C) and click just the "
+                 f"line." if many else "")
         QMessageBox.information(
             self, "No Line Picked",
-            f"Click the line you want to {what} first — Shift+Click on its "
-            f"centreline or on one of its points.\n\n"
-            f"Only traced lines can be {what}ed; a click on the grey unclaimed "
-            f"points or on the yellow candidates does not name a line."
+            f"Shift+Click the line you want to {what} first — on its centreline, "
+            f"on its points, or anywhere within {reach:.1f} m of it.\n\n"
+            f"Nothing picked landed that near a traced line. The panel names the "
+            f"line as soon as one is picked, so you can check before pressing."
+            + extra
         )
 
     def _restructure(self, new_lines, note):

@@ -582,11 +582,31 @@ class LinearRegionGrower:
         one being edited, and a click that landed slightly off the polyline
         still means the segment it landed nearest.
         """
+        return self.nearest_segment(line, point)[0]
+
+    def nearest_segment(self, line, point):
+        """``(segment index, distance)`` for the segment of *line*'s centerline
+        nearest *point*, or ``(None, inf)`` when it has no centerline.
+
+        The distance is what lets a caller ask the other question — *which* of
+        several lines the user meant — without repeating the projection maths
+        per line.
+        """
         centerline = line.centerline
         if centerline is None or len(centerline) < 2:
-            return None
-        owner = self._nearest_segment(centerline, np.asarray(point, float))
-        return None if owner.size == 0 else int(owner[0])
+            return None, float("inf")
+        pts = np.asarray(centerline, dtype=float)
+        point = np.asarray(point, dtype=float)
+
+        a, b = pts[:-1], pts[1:]
+        ab = b - a
+        denom = np.einsum("ij,ij->i", ab, ab)
+        denom = np.where(denom < 1e-18, 1.0, denom)
+        t = np.clip(np.einsum("sj,sj->s", point - a, ab) / denom, 0.0, 1.0)
+        closest = a + t[:, None] * ab
+        dist = np.linalg.norm(point - closest, axis=1)
+        best = int(np.argmin(dist))
+        return best, float(dist[best])
 
     def trim_segment(self, line, seg_i):
         """Cut segment *seg_i* out of *line*.
