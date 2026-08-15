@@ -23,21 +23,25 @@ class PointPickingMixin:
             tuple: (screen_x, screen_y, valid_mask) arrays of shape (N,).
         """
         n = pts_3d.shape[0]
-        ones = np.ones((n, 1), dtype=np.float64)
-        pts_homo = np.hstack([pts_3d, ones])
+        pts_homo = np.empty((n, 4), dtype=np.float64)
+        pts_homo[:, :3] = pts_3d
+        pts_homo[:, 3] = 1.0
 
-        clip = pts_homo @ mv @ proj
+        # Collapse the two 4x4s first. Written as ``pts_homo @ mv @ proj`` this
+        # evaluates left to right and runs two N-sized matrix products, with a
+        # full (N, 4) intermediate between them; folding the matrices leaves one.
+        clip = pts_homo @ (mv @ proj)
         w = clip[:, 3]
         valid_mask = w > 0
 
-        ndc_x = np.zeros(n, dtype=np.float64)
-        ndc_y = np.zeros(n, dtype=np.float64)
-        ndc_x[valid_mask] = clip[valid_mask, 0] / w[valid_mask]
-        ndc_y[valid_mask] = clip[valid_mask, 1] / w[valid_mask]
+        # Normalise in place in the clip buffer rather than into fresh arrays.
+        ndc = clip[:, :2]
+        np.divide(ndc, w[:, None], out=ndc, where=valid_mask[:, None])
+        ndc[~valid_mask] = 0.0
 
         vp_x, vp_y, vp_w, vp_h = viewport[0], viewport[1], viewport[2], viewport[3]
-        screen_x = (ndc_x + 1.0) * 0.5 * vp_w + vp_x
-        screen_y = (1.0 - ndc_y) * 0.5 * vp_h + vp_y
+        screen_x = ndc[:, 0] * (0.5 * vp_w) + (0.5 * vp_w + vp_x)
+        screen_y = (0.5 * vp_h + vp_y) - ndc[:, 1] * (0.5 * vp_h)
 
         return screen_x, screen_y, valid_mask
 
@@ -88,17 +92,107 @@ class PointPickingMixin:
 
         threshold = self.max_extent * self.picking_point_threshold_factor
 
-        self._ensure_kdtree()
-        if self._kdtree is not None:
-            min_distance, min_index = self._kdtree.query(pick_point, k=1)
-        else:
-            distances = np.linalg.norm(self.points[:, :3] - pick_point, axis=1)
-            min_index = np.argmin(distances)
-            min_distance = distances[min_index]
+        min_index = self._nearest_point_within(pick_point, threshold)
+        if min_index is None:
+            return None, None
+        return min_index, self.points[min_index, :3].copy()
 
-        if min_distance < threshold:
-            return min_index, self.points[min_index, :3].copy()
-        return None, None
+    def _nearest_point_within(self, target, radius):
+        """Row of ``self.points`` closest to *target*, or None if none is within
+        *radius*.
+
+        The one place every snap-to-point goes through — Shift+Left select,
+        Ctrl+Shift+Right cluster deselect, and double-click to re-centre the
+        view — so all three get the same speed from one implementation.
+
+        Uses the per-branch pick grid when it is ready, which measures the
+        distance to the points in the cursor's cell instead of to every point in
+        the cloud. Falls back to a straight scan while a grid is still building,
+        which is what this did before the grid existed.
+
+        The *radius* is worth knowing about: it is
+        ``max_extent * picking_point_threshold_factor`` and the factor defaults
+        to 1.0, so it is the whole size of the cloud and excludes nothing. It is
+        honoured rather than assumed small.
+
+        Args:
+            target: (3,) world coordinates.
+            radius: Maximum accepted distance.
+
+        Returns:
+            int row index, or None.
+        """
+        ready, index = self._nearest_via_pick_grids(target, radius)
+        if ready:
+            return index
+        return self._nearest_by_scan(target, radius)
+
+    def _nearest_via_pick_grids(self, target, radius):
+        """``(ready, index)`` from the per-branch pick grids.
+
+        *ready* is False when any visible branch has no grid yet, in which case
+        the caller scans instead. All-or-nothing on purpose: mixing a gridded
+        branch with a scanned one would give the same answer but two code paths
+        to keep in step for no gain, since the grids arrive together anyway.
+        """
+        offsets = self._branch_offsets
+        if not offsets:
+            return False, None
+
+        best_sq = float(radius) ** 2
+        best_index = None
+
+        for uid, (start, _end) in offsets.items():
+            grid = self._pick_grid_for(uid)
+            if grid is None:
+                return False, None
+
+            slc = self._branch_vertices.get(uid)
+            if slc is None or len(slc) == 0:
+                continue
+
+            row, sq = grid.nearest(slc, target, max_dist=radius)
+            if row is not None and sq < best_sq:
+                best_sq, best_index = sq, start + int(row)
+
+        return True, best_index
+
+    def _nearest_by_scan(self, target, radius):
+        """Row of ``self.points`` closest to *target* by straight scan.
+
+        The fallback for while a pick grid is still being built. Chunked so the
+        intermediate masks stay bounded on a very large buffer.
+        """
+        pts = self.points
+        if pts is None or len(pts) == 0:
+            return None
+
+        tx, ty, tz = (float(target[0]), float(target[1]), float(target[2]))
+        best_sq = float(radius) ** 2
+        best_index = None
+
+        for start in range(0, len(pts), self._PICK_SCAN_CHUNK):
+            block = pts[start:start + self._PICK_SCAN_CHUNK, :3]
+
+            near = np.abs(block[:, 0] - tx) < radius
+            np.logical_and(near, np.abs(block[:, 1] - ty) < radius, out=near)
+            np.logical_and(near, np.abs(block[:, 2] - tz) < radius, out=near)
+            rows = np.flatnonzero(near)
+            if rows.size == 0:
+                continue
+
+            near_pts = block[rows].astype(np.float64)
+            near_pts[:, 0] -= tx
+            near_pts[:, 1] -= ty
+            near_pts[:, 2] -= tz
+            sq = np.einsum('ij,ij->i', near_pts, near_pts)
+
+            j = int(np.argmin(sq))
+            if sq[j] < best_sq:
+                best_sq = float(sq[j])
+                best_index = start + int(rows[j])
+
+        return best_index
 
     def pick_point(self, mouse_pos, select=True):
         """
@@ -206,38 +300,39 @@ class PointPickingMixin:
         # Ensure OpenGL context is current
         self.makeCurrent()
 
-        # Use stored matrices
-        viewport = self.viewport
+        # Project all picked points in one pass rather than a gluProject call
+        # each: a polygon selection leaves millions of picked points, and a GL
+        # round trip per point makes a single right-click take seconds.
+        selected = np.fromiter(
+            self.picked_points_indices, dtype=np.int64,
+            count=len(self.picked_points_indices)
+        )
+        selected = selected[(selected >= 0) & (selected < len(self.points))]
+        if selected.size == 0:
+            return
 
-        # Convert mouse position to screen space coordinates
-        click_x = mouse_pos.x()
-        click_y = viewport[3] - mouse_pos.y()  # Invert Y coordinate (adjust if necessary)
+        mv = np.array(self.model_view_matrix, dtype=np.float64)
+        proj = np.array(self.projection_matrix, dtype=np.float64)
+        screen_x, screen_y, valid_mask = self._project_points_to_screen(
+            self.points[selected, :3].astype(np.float64), mv, proj, self.viewport
+        )
 
-        # Project picked points to screen space
-        screen_positions = []
-        for index in self.picked_points_indices:
-            point_3d = self.points[index, :3]
-            screen_pos = self.project_to_screen(point_3d)
-            screen_positions.append((index, screen_pos))
+        # _project_points_to_screen reports Qt widget coordinates (top-left
+        # origin, Y down), which is what mouse_pos already is — no Y flip.
+        dx = screen_x - mouse_pos.x()
+        dy = screen_y - mouse_pos.y()
+        dist_sq = dx * dx + dy * dy
+        dist_sq[~valid_mask] = np.inf
 
-        # Find the closest picked point to the mouse click
-        min_distance = float('inf')
-        closest_index = None
-        for index, screen_pos in screen_positions:
-            dx = screen_pos[0] - click_x
-            dy = screen_pos[1] - click_y
-            distance = np.hypot(dx, dy)
-            if distance < min_distance:
-                min_distance = distance
-                closest_index = index
+        nearest = int(np.argmin(dist_sq))
 
         # Define a threshold in pixels (e.g., radius of the sphere in screen space)
         # TODO: Not sure if the pixel threshold is appropriate for all cases
         pixel_threshold = self.pixel_threshold
 
-        if min_distance <= pixel_threshold:
+        if dist_sq[nearest] <= pixel_threshold ** 2:
             # Remove the point from picked points
-            self.picked_points_indices.remove(closest_index)
+            self.picked_points_indices.remove(int(selected[nearest]))
             # Invalidate stored polygons so plugins fall back to coordinate matching
             self._selection_polygons.clear()
 

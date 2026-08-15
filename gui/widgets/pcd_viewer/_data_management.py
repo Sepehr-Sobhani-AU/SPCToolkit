@@ -1,8 +1,10 @@
 import logging
+import threading
 import traceback
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import numpy as np
-from scipy.spatial import cKDTree
+
+from core.services.point_grid import PointGrid
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,17 @@ class DataManagementMixin:
         # Lazy derived state, invalidated by set_branches().
         self._combined_points_cache: Optional[np.ndarray] = None
         self._branch_offsets_cache: Optional[Dict[str, Tuple[int, int]]] = None
-        self._kdtree: Optional[cKDTree] = None
+        # (fingerprint, positions) for the picked-point highlight draw. Keyed
+        # rather than invalidated — see _picked_positions().
+        self._picked_positions_cache: Optional[Tuple[Tuple, np.ndarray]] = None
+
+        # uid -> PointGrid over that branch's DRAWN points, so a click measures
+        # one cell instead of the whole cloud. Built in the background on first
+        # pick and dropped alongside the VBO when the drawn rows are replaced —
+        # see _pick_grid_for(). Not built eagerly: a session that never clicks
+        # never pays for one.
+        self._pick_grids: Dict[str, PointGrid] = {}
+        self._pick_grid_building: Set[str] = set()
 
         # Line geometry (e.g. mesh wireframes, CAD polylines). Independent of point data.
         self.line_vertices = None  # Nx3 float32
@@ -91,7 +103,25 @@ class DataManagementMixin:
         return self._branch_offsets_cache or {}
 
     def _build_combined(self) -> None:
-        """Build the combined Nx6 array and the matching offsets map."""
+        """Build the combined Nx6 array and the matching offsets map.
+
+        With one visible branch — the normal case — this aliases that branch's
+        slice rather than copying it. ``np.concatenate`` always allocates and
+        copies, even from a one-item list, so the old code held the same points
+        twice and paid for it on every branch change: measured at 0.38 s and a
+        doubled footprint for a single 20M-point branch, which is ~3 s and
+        4.1 GB at 170M.
+
+        Aliasing is only safe while nothing writes through ``self.points``,
+        because a write would land in the branch's live render data and leave
+        the VBO showing something else. Nothing does — ``points`` is a read-only
+        property, every use of it in the viewer is a read, and the only writes to
+        a branch array happen in ``rendering_coordinator`` on a freshly created
+        array before anyone else sees it. The array is marked non-writeable in
+        both paths so that stays true: a future write fails loudly here instead
+        of silently corrupting the display, and it fails the same way whether one
+        branch is visible or several.
+        """
         slices: List[np.ndarray] = []
         offsets: Dict[str, Tuple[int, int]] = {}
         offset = 0
@@ -108,7 +138,13 @@ class DataManagementMixin:
             self._branch_offsets_cache = {}
             return
 
-        self._combined_points_cache = np.concatenate(slices, axis=0)
+        if len(slices) == 1:
+            combined = slices[0]
+        else:
+            combined = np.concatenate(slices, axis=0)
+
+        combined.flags.writeable = False
+        self._combined_points_cache = combined
         self._branch_offsets_cache = offsets
 
     # ------------------------------------------------------------------
@@ -146,6 +182,7 @@ class DataManagementMixin:
             if v is not None:
                 self._pending_vbo_deletions.append(v)
             self._branch_vertices.pop(uid, None)
+            self._pick_grids.pop(uid, None)
 
         # Update or add slices. Identity check keeps the VBO when the
         # producer hands us back the same cached slice.
@@ -155,16 +192,19 @@ class DataManagementMixin:
                 v = self._branch_vbos.pop(uid, None)
                 if v is not None:
                     self._pending_vbo_deletions.append(v)
+                # The pick grid numbers the rows of the OLD slice, so it goes
+                # exactly where the VBO does. Same condition, so the two can
+                # never drift apart.
+                self._pick_grids.pop(uid, None)
             self._branch_vertices[uid] = slc
 
         self._visible_branches = list(visible_order)
         self._branch_sample_indices = dict(sample_indices_by_uid or {})
 
-        # Invalidate lazy derived state. self.points / _branch_offsets /
-        # _kdtree will be rebuilt on first access.
+        # Invalidate lazy derived state. self.points / _branch_offsets will be
+        # rebuilt on first access.
         self._combined_points_cache = None
         self._branch_offsets_cache = None
-        self._kdtree = None
         # The emphasis itself survives — it is held in source rows, which a
         # re-render does not change. Only the rendered rows it maps onto do.
         self._emphasis_rows_cache.clear()
@@ -235,6 +275,56 @@ class DataManagementMixin:
         out = np.full(local_indices.shape, -1, dtype=np.int64)
         out[valid] = np.asarray(indices)[local_indices[valid]]
         return out
+
+    # ------------------------------------------------------------------
+    # Pick grid
+    # ------------------------------------------------------------------
+
+    def _pick_grid_for(self, uid: str) -> Optional[PointGrid]:
+        """The pick grid for branch *uid*, or None while it is not ready.
+
+        Starts the build on first ask and returns None until it finishes, so the
+        window never blocks: numbering every point takes about 11 s at 170M on
+        the CPU and 1 s on the graphics card. Callers fall back to the plain
+        scan meanwhile, which is what they did before the grid existed.
+        """
+        grid = self._pick_grids.get(uid)
+        if grid is not None:
+            return grid
+
+        slc = self._branch_vertices.get(uid)
+        if slc is None or len(slc) == 0:
+            return None
+
+        if uid not in self._pick_grid_building:
+            self._pick_grid_building.add(uid)
+            threading.Thread(
+                target=self._build_pick_grid, args=(uid, slc),
+                name=f"pick-grid-{uid[:8]}", daemon=True,
+            ).start()
+        return None
+
+    def _build_pick_grid(self, uid: str, slc: np.ndarray) -> None:
+        """Number *slc*'s points by cell, off the GUI thread.
+
+        Only reads *slc*, which is non-writeable anyway (see _build_combined),
+        and only writes one dict entry, so no lock is needed.
+        """
+        try:
+            grid = PointGrid.build(slc)
+        except Exception:
+            logger.error(f"Failed to build the pick grid for {uid[:8]}:\n"
+                         f"{traceback.format_exc()}")
+            grid = None
+        finally:
+            self._pick_grid_building.discard(uid)
+
+        # The branch may have been re-rendered while this ran. Publishing a grid
+        # built from rows that are no longer drawn would point picks at the wrong
+        # points, so check identity — the same test set_branches() uses.
+        if grid is not None and self._branch_vertices.get(uid) is slc:
+            self._pick_grids[uid] = grid
+            logger.debug(f"Pick grid ready for {uid[:8]}: {len(slc):,} points")
 
     def rendered_rows(self, uid: str, cloud_indices: np.ndarray) -> np.ndarray:
         """The rendered rows of branch *uid* showing the given source rows.
@@ -324,17 +414,6 @@ class DataManagementMixin:
         return groups
 
     # ------------------------------------------------------------------
-    # KDTree (lazy, derived from combined points)
-    # ------------------------------------------------------------------
-
-    def _ensure_kdtree(self):
-        """Build the KDTree on demand. Used lazily by point picking."""
-        if self._kdtree is None:
-            pts = self.points
-            if pts is not None:
-                self._kdtree = cKDTree(pts[:, :3])
-
-    # ------------------------------------------------------------------
     # Clear / release
     # ------------------------------------------------------------------
 
@@ -359,10 +438,10 @@ class DataManagementMixin:
             self._pending_vbo_deletions.append(v)
         self._branch_vbos.clear()
         self._branch_vertices.clear()
+        self._pick_grids.clear()
         self._visible_branches = []
         self._combined_points_cache = None
         self._branch_offsets_cache = None
-        self._kdtree = None
 
     def _release_line_data(self):
         """Drop any stored line geometry."""

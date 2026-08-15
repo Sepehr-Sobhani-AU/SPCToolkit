@@ -52,6 +52,9 @@ class ViewerPropertiesMixin:
         self._MIN_ZOOM_WINDOW_SIZE_PX = 10
         self._LOD_RATE_CHANGE_THRESHOLD = 0.05
         self._PICKED_POINT_SIZE_MULTIPLIER = 5
+        # Rows per pass when scanning the combined buffer for the nearest point
+        # to a pick. Keeps the intermediate masks bounded on a 50M-point buffer.
+        self._PICK_SCAN_CHUNK = 2_000_000
 
     @property
     def point_size(self):

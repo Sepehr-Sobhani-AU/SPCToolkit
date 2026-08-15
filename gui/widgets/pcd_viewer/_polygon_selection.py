@@ -2,6 +2,8 @@ import logging
 import numpy as np
 from PyQt5.QtCore import Qt
 
+from core.services.screen_selection import select_in_polygon
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,6 +19,12 @@ class PolygonSelectionMixin:
         # Stored polygons + matrices for full-resolution re-testing by plugins.
         # Each entry is a (polygon, mv, proj, viewport) tuple.
         self._selection_polygons = []
+
+        # Snapshot of the last completed selection, kept independently of the
+        # live lists above so it survives the clearing that plugins perform
+        # after they consume a selection. Restored by "reselect previous".
+        # Shape: {"polygons": [...], "coords": (K, 3) float64 | None} or None.
+        self._remembered_selection = None
 
     def enter_polygon_mode(self):
         """Activate polygon selection mode. User clicks to add vertices."""
@@ -68,27 +76,29 @@ class PolygonSelectionMixin:
             polygon.copy(), mv.copy(), proj.copy(), tuple(self.viewport)
         ))
 
-        # Project all 3D points to screen coordinates
-        pts_3d = self.points[:, :3].astype(np.float64)
-        screen_x, screen_y, valid_mask = self._project_points_to_screen(
-            pts_3d, mv, proj, self.viewport
-        )
-
-        # Point-in-polygon test (ray casting)
-        inside = self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
+        # Which points land inside the lasso. Blocked and float32 — see
+        # core.services.screen_selection for why the whole-cloud float64 version
+        # this replaced needed 19 GB of scratch at 170M points.
+        inside = select_in_polygon(self.points, polygon, mv, proj, self.viewport,
+                                   origin=self.center)
 
         # Get indices of selected points and apply selection filters
-        new_indices = np.where(inside)[0]
+        new_indices = np.flatnonzero(inside)
         new_indices = self._filter_selection(new_indices)
 
-        # Avoid duplicates
+        # Avoid duplicates. Done with numpy rather than a set + per-index
+        # append: a lasso over a dense area yields millions of indices, and at
+        # that size the Python loop costs more than the projection and the
+        # polygon test put together. ``np.where`` above already returns unique,
+        # ascending indices, so masking is enough and keeps their order.
         if new_indices.size > 0:
-            existing = set(self.picked_points_indices)
-            for idx in new_indices:
-                idx_int = int(idx)
-                if idx_int not in existing:
-                    self.picked_points_indices.append(idx_int)
-                    existing.add(idx_int)
+            if self.picked_points_indices:
+                existing = np.fromiter(
+                    self.picked_points_indices, dtype=np.int64,
+                    count=len(self.picked_points_indices)
+                )
+                new_indices = new_indices[~np.isin(new_indices, existing)]
+            self.picked_points_indices.extend(new_indices.tolist())
 
         self.exit_polygon_mode()
 
@@ -125,7 +135,10 @@ class PolygonSelectionMixin:
         Returns:
             (N,) boolean mask aligned to ``points_3d``.
         """
-        pts = np.asarray(points_3d, dtype=np.float64)
+        # float32 throughout. The cloud is stored float32 and the comparison
+        # below is done in float32 anyway, so the float64 copy this used to make
+        # bought nothing and cost 4 GB on a 170M-point cloud.
+        pts = np.asarray(points_3d, dtype=np.float32)
         n = len(pts)
 
         poly_mask = self.retest_polygon_selection(pts[:, :3])
@@ -140,7 +153,7 @@ class PolygonSelectionMixin:
         if sel.size == 0:
             return np.zeros(n, dtype=bool)
 
-        full32 = np.ascontiguousarray(pts[:, :3].astype(np.float32))
+        full32 = np.ascontiguousarray(pts[:, :3])
         pick32 = np.ascontiguousarray(
             np.unique(self.points[sel, :3].astype(np.float32), axis=0)
         )
@@ -166,14 +179,16 @@ class PolygonSelectionMixin:
         if not self._selection_polygons:
             return None
 
-        pts = np.asarray(points_3d, dtype=np.float64)
+        pts = np.asarray(points_3d, dtype=np.float32)
         combined_mask = np.zeros(pts.shape[0], dtype=bool)
 
         for polygon, mv, proj, viewport in self._selection_polygons:
-            screen_x, screen_y, valid_mask = self._project_points_to_screen(
-                pts, mv, proj, viewport
-            )
-            combined_mask |= self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
+            # No origin passed: select_in_polygon falls back to the cloud's own
+            # first point, which is by definition close to the rest of it. That
+            # keeps the float32 arithmetic accurate even in UTM coordinates, and
+            # it does not assume this cloud is the one the viewer is centred on
+            # (plugins call this with their own full-resolution data).
+            combined_mask |= select_in_polygon(pts, polygon, mv, proj, viewport)
 
         return combined_mask
 
@@ -192,18 +207,19 @@ class PolygonSelectionMixin:
         mv = np.array(self.model_view_matrix, dtype=np.float64)
         proj = np.array(self.projection_matrix, dtype=np.float64)
 
-        # Only project the currently selected points (not all points)
-        selected_indices = np.array(self.picked_points_indices, dtype=np.int64)
-        pts_3d = self.points[selected_indices, :3].astype(np.float64)
-        screen_x, screen_y, valid_mask = self._project_points_to_screen(
-            pts_3d, mv, proj, self.viewport
+        # Only test the currently selected points, not the whole cloud — a
+        # deselect lasso can only ever remove points that are already picked.
+        selected_indices = np.fromiter(
+            self.picked_points_indices, dtype=np.int64,
+            count=len(self.picked_points_indices)
         )
+        inside = select_in_polygon(self.points[selected_indices, :3], polygon,
+                                   mv, proj, self.viewport, origin=self.center)
 
-        inside = self._points_in_polygon(screen_x, screen_y, polygon, valid_mask)
-
-        # Remove points that fall inside the polygon from the selection
-        indices_to_remove = set(int(selected_indices[i]) for i in np.where(inside)[0])
-        self.picked_points_indices[:] = [i for i in self.picked_points_indices if i not in indices_to_remove]
+        # Remove points that fall inside the polygon from the selection.
+        # ``selected_indices`` is picked_points_indices in order, so masking it
+        # keeps the survivors in order without a per-index membership test.
+        self.picked_points_indices[:] = selected_indices[~inside].tolist()
         # Invalidate stored polygons so plugins fall back to coordinate matching
         self._selection_polygons.clear()
 
@@ -225,32 +241,40 @@ class PolygonSelectionMixin:
         """
         n = len(screen_x)
         m = len(polygon)
-        inside = np.zeros(n, dtype=bool)
 
-        # Ray casting: count crossings for each point
+        # Ray casting: count crossings for each point.
+        #
+        # The scratch buffers are allocated once and reused with out=. Each edge
+        # otherwise allocates several N-sized boolean temporaries, and with a
+        # 20-vertex lasso over a 10M-point buffer that allocation traffic costs
+        # more than the comparisons it carries.
         crossings = np.zeros(n, dtype=np.int32)
+        above_1 = np.empty(n, dtype=bool)
+        above_2 = np.empty(n, dtype=bool)
+
         for i in range(m):
             x1, y1 = polygon[i]
             x2, y2 = polygon[(i + 1) % m]
-
-            # For each edge, test all valid points simultaneously
-            # A ray from (px, py) going right crosses edge if:
-            #   1. The edge straddles the ray's y-level
-            #   2. The intersection x is to the right of px
-            cond1 = (y1 <= screen_y) & (y2 > screen_y)
-            cond2 = (y2 <= screen_y) & (y1 > screen_y)
-            straddle = cond1 | cond2
-
-            # Compute x-intersection of the edge with the horizontal ray
-            # x_intersect = x1 + (screen_y - y1) / (y2 - y1) * (x2 - x1)
-            test = straddle & valid_mask
-            if not np.any(test):
-                continue
 
             dy = y2 - y1
             if dy == 0:
                 continue
 
+            # For each edge, test all valid points simultaneously.
+            # A ray from (px, py) going right crosses the edge if:
+            #   1. The edge straddles the ray's y-level — that is, exactly one
+            #      endpoint is at or below it
+            #   2. The intersection x is to the right of px
+            np.greater_equal(screen_y, y1, out=above_1)
+            np.greater_equal(screen_y, y2, out=above_2)
+            np.not_equal(above_1, above_2, out=above_1)   # straddle
+            np.logical_and(above_1, valid_mask, out=above_1)
+            test = above_1
+            if not np.any(test):
+                continue
+
+            # Compute x-intersection of the edge with the horizontal ray
+            # x_intersect = x1 + (screen_y - y1) / (y2 - y1) * (x2 - x1)
             t = (screen_y[test] - y1) / dy
             x_intersect = x1 + t * (x2 - x1)
 

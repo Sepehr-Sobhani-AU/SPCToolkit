@@ -95,8 +95,42 @@ class BranchSelectionMixin:
                 return "select" in locked.get(cid, set())
         return False
 
+    def _branch_labels_of(self, uid, labels, indices, start, end):
+        """The labels *labels* holds for whichever of *indices* belong to branch
+        *uid*.
+
+        The array counterpart of ``_label_of``, and it resolves LOD the same way
+        — through ``cloud_indices`` rather than ``indices - start``, since labels
+        are full-resolution source data while the rendered rows are whatever LOD
+        kept. Indices outside the branch, or whose source row has no label, are
+        simply not returned.
+
+        Args:
+            uid (str): Branch uid.
+            labels (np.ndarray): Full-resolution per-point labels.
+            indices (np.ndarray): Indices into the combined render buffer.
+            start (int): The branch's start offset in that buffer.
+            end (int): The branch's end offset in that buffer.
+
+        Returns:
+            tuple: (positions, label_values) — positions index into *indices*.
+        """
+        empty = np.empty(0, dtype=np.int64)
+        in_branch = np.flatnonzero((indices >= start) & (indices < end))
+        if in_branch.size == 0:
+            return empty, empty
+
+        rows = self.cloud_indices(uid, indices[in_branch] - start)
+        resolved = (rows >= 0) & (rows < len(labels))
+        return in_branch[resolved], labels[rows[resolved]]
+
     def _filter_selection_locked(self, indices):
-        """Filter out indices belonging to clusters locked against selection."""
+        """Filter out indices belonging to clusters locked against selection.
+
+        Kept for callers that want the lock rule on its own; the selection
+        pipeline uses ``_filter_locked_and_noise`` instead, which applies this
+        rule and the noise rule from a single label lookup.
+        """
         if not self._branch_offsets:
             return indices
         keep_mask = np.ones(len(indices), dtype=bool)
@@ -105,12 +139,47 @@ class BranchSelectionMixin:
             if info is None:
                 continue
             labels, locked = info
-            locked_ids = {cid for cid, locks in locked.items() if "select" in locks}
-            for i, idx in enumerate(indices):
-                if start <= idx < end:
-                    cid = self._label_of(uid, labels, idx, start)
-                    if cid is not None and cid in locked_ids:
-                        keep_mask[i] = False
+            locked_ids = [cid for cid, locks in locked.items() if "select" in locks]
+            if not locked_ids:
+                continue
+            positions, values = self._branch_labels_of(uid, labels, indices, start, end)
+            if positions.size == 0:
+                continue
+            keep_mask[positions[np.isin(values, locked_ids)]] = False
+        return indices[keep_mask]
+
+    def _filter_locked_and_noise(self, indices):
+        """Drop indices that are locked against selection *or* are noise.
+
+        Both rules ask the same question — what label does this point carry? —
+        so they share one lookup. Run separately they each resolved LOD rows and
+        gathered labels for every candidate index, and on a lasso holding a
+        million points that duplicated pass was the single largest cost of
+        closing a lasso, larger than the point-in-polygon test itself.
+        """
+        if not self._branch_offsets:
+            return indices
+
+        keep_mask = np.ones(len(indices), dtype=bool)
+        for uid, (start, end) in self._branch_offsets.items():
+            labels = self._get_cluster_labels(uid)
+            if labels is None:
+                continue
+
+            positions, values = self._branch_labels_of(uid, labels, indices, start, end)
+            if positions.size == 0:
+                continue
+
+            drop = (values == -1)                       # noise
+            info = self._get_cluster_lock_info(uid)
+            if info is not None:
+                _, locked = info
+                locked_ids = [cid for cid, locks in locked.items() if "select" in locks]
+                if locked_ids:
+                    np.logical_or(drop, np.isin(values, locked_ids), out=drop)
+
+            keep_mask[positions[drop]] = False
+
         return indices[keep_mask]
 
     def _get_cluster_labels(self, uid):
@@ -157,13 +226,9 @@ class BranchSelectionMixin:
                 mask |= (indices >= start) & (indices < end)
             indices = indices[mask]
 
-        # 2. Selection lock filter
+        # 2. Selection lock and noise, from one label lookup
         if indices.size > 0:
-            indices = self._filter_selection_locked(indices)
-
-        # 3. Noise filter
-        if indices.size > 0:
-            indices = self._filter_noise_points(indices)
+            indices = self._filter_locked_and_noise(indices)
 
         return indices
 
@@ -193,7 +258,8 @@ class BranchSelectionMixin:
             labels = self._get_cluster_labels(uid)
             if labels is None:
                 continue
-            for i, idx in enumerate(indices):
-                if start <= idx < end and self._label_of(uid, labels, idx, start) == -1:
-                    keep_mask[i] = False
+            positions, values = self._branch_labels_of(uid, labels, indices, start, end)
+            if positions.size == 0:
+                continue
+            keep_mask[positions[values == -1]] = False
         return indices[keep_mask]

@@ -2,6 +2,8 @@ import logging
 import numpy as np
 from PyQt5.QtCore import Qt
 
+from core.services.screen_selection import select_in_rect
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,14 +23,16 @@ class ZoomWindowMixin:
         thing on screen, so both are candidates.
 
         Returns:
-            numpy.ndarray: (N, 3) float64 world coordinates, or None if nothing
-            is visible.
+            numpy.ndarray: (N, 3) float32 world coordinates, or None if nothing
+            is visible. When points are the only source this is a *view* on the
+            render buffer rather than a copy — the old float64 cast duplicated
+            the whole cloud, 4 GB of it at 170M points, for no gain.
         """
         sources = []
         if self.points is not None and len(self.points) > 0:
-            sources.append(self.points[:, :3].astype(np.float64))
+            sources.append(self.points[:, :3])
         if self.line_vertices is not None and len(self.line_vertices) > 0:
-            sources.append(np.asarray(self.line_vertices, dtype=np.float64))
+            sources.append(np.asarray(self.line_vertices, dtype=np.float32))
 
         if not sources:
             return None
@@ -81,17 +85,16 @@ class ZoomWindowMixin:
         rect_top = min(y1, y2)
         rect_bottom = max(y1, y2)
 
-        # Project all 3D points to screen coordinates
+        # Which points land inside the rectangle. A rectangle is a four-sided
+        # polygon, so this goes through the same blocked float32 code as the
+        # lasso rather than projecting the whole cloud at once in float64 —
+        # which is what made zooming into a 170M-point cloud swap.
         mv = np.array(self.model_view_matrix, dtype=np.float64)
         proj = np.array(self.projection_matrix, dtype=np.float64)
-        screen_x, screen_y, valid_mask = self._project_points_to_screen(
-            pts_3d, mv, proj, self.viewport
+        inside = select_in_rect(
+            pts_3d, (rect_left, rect_top, rect_right, rect_bottom),
+            mv, proj, self.viewport, origin=self.center,
         )
-
-        # Filter points inside the rectangle and in front of camera
-        inside = (valid_mask
-                  & (screen_x >= rect_left) & (screen_x <= rect_right)
-                  & (screen_y >= rect_top) & (screen_y <= rect_bottom))
 
         if not np.any(inside):
             self.exit_zoom_window_mode()

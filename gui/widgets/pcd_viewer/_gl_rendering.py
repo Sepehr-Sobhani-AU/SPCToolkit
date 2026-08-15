@@ -275,25 +275,67 @@ class GLRenderingMixin:
         # Accessing self.points materialises the combined array; we only
         # pay that on frames where picked points actually exist.
         if not self.picked_points_indices:
+            self._picked_positions_cache = None
             return
         pts = self.points
         if pts is None:
             return
 
-        max_idx = len(pts) - 1
-        valid = [i for i in self.picked_points_indices if i <= max_idx]
-        if len(valid) != len(self.picked_points_indices):
-            self.picked_points_indices[:] = valid
+        positions = self._picked_positions(pts)
+        if positions is None or len(positions) == 0:
+            return
 
-        if valid:
-            positions = pts[valid, :3]
-            highlight_size = self.point_size * self.picked_point_highlight_size * self._PICKED_POINT_SIZE_MULTIPLIER
-            glPointSize(highlight_size)
-            glColor3f(*self.picked_point_highlight_color)
-            glBegin(GL_POINTS)
-            for pos in positions:
-                glVertex3f(pos[0], pos[1], pos[2])
-            glEnd()
+        highlight_size = self.point_size * self.picked_point_highlight_size * self._PICKED_POINT_SIZE_MULTIPLIER
+        glPointSize(highlight_size)
+        glColor3f(*self.picked_point_highlight_color)
+
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glVertexPointer(3, GL_FLOAT, 0, positions)
+        glDrawArrays(GL_POINTS, 0, len(positions))
+        glDisableClientState(GL_VERTEX_ARRAY)
+
+    def _picked_positions(self, pts):
+        """Contiguous (K, 3) float32 buffer of the picked points' coordinates.
+
+        Cached, because this runs every frame: a polygon selection can leave
+        millions of picked points, and gathering them again on each repaint
+        would make orbiting a large selection unusable.
+
+        The cache key fingerprints the selection cheaply instead of comparing
+        it. ``picked_points_indices`` is a plain list that plugins mutate
+        directly, so there is no mutation hook to hang invalidation on — but
+        every mutation in the codebase (append, remove, clear, extend, slice
+        assignment, or replacing the list outright) changes at least one of the
+        list's identity, its length, or its end values.
+
+        Args:
+            pts: The combined (N, >=3) point buffer.
+
+        Returns:
+            (K, 3) float32 array, or None when nothing is left to draw.
+        """
+        picked = self.picked_points_indices
+        key = (id(picked), len(picked), picked[0], picked[-1], id(pts))
+
+        cached = self._picked_positions_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        # Picked indices outlive the branches they came from, so the selection
+        # can still name rows a smaller combined buffer no longer has.
+        selected = np.fromiter(picked, dtype=np.int64, count=len(picked))
+        in_range = selected <= len(pts) - 1
+        if not in_range.all():
+            selected = selected[in_range]
+            picked[:] = selected.tolist()
+            if not picked:
+                self._picked_positions_cache = None
+                return None
+            key = (id(picked), len(picked), picked[0], picked[-1], id(pts))
+
+        positions = np.ascontiguousarray(pts[selected, :3], dtype=np.float32)
+        self._picked_positions_cache = (key, positions)
+        return positions
 
     def resizeGL(self, w, h):
         """
