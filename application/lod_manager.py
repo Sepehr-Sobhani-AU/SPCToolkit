@@ -20,26 +20,41 @@ class LODManager:
     DEFAULT_POINT_BUDGET = 50_000_000  # 50M points
 
     @staticmethod
-    def compute_dynamic_point_budget() -> int:
+    def compute_dynamic_point_budget(visible_branch_count: int = 1) -> int:
         """
         Calculate max renderable points based on available RAM and VRAM.
 
         Uses unified budget from MemoryManager which considers BOTH:
-        - RAM: 32 bytes/point (combined array + KDTree)
+        - RAM: 25 bytes/point with one visible branch, 49 with several
         - VRAM: 24 bytes/point (VBO)
 
         The more constrained resource determines the budget, preventing
         OOM crashes in either RAM or VRAM.
+
+        Args:
+            visible_branch_count: How many branches are about to be drawn. With
+                one, the viewer's combined array aliases that branch's slice and
+                the points are held once; with several they must be concatenated,
+                so the points are held twice and each one costs nearly double.
+                Passing the wrong count does not crash — it just makes the budget
+                too generous or too mean.
 
         Returns:
             Max points that fit in current available memory with safety margin.
         """
         from infrastructure.memory_manager import MemoryManager
 
-        max_points, limiting, details = MemoryManager.compute_unified_point_budget()
+        bytes_per_point = (MemoryManager.BYTES_PER_POINT_TOTAL_RAM
+                           if visible_branch_count <= 1
+                           else MemoryManager.BYTES_PER_POINT_TOTAL_RAM_MULTI)
+
+        max_points, limiting, details = MemoryManager.compute_unified_point_budget(
+            bytes_per_point_ram=bytes_per_point
+        )
 
         logger.debug(
-            f"Dynamic point budget: {max_points:,} (limited by {limiting})"
+            f"Dynamic point budget: {max_points:,} (limited by {limiting}, "
+            f"{bytes_per_point} bytes/point for {visible_branch_count} branch(es))"
         )
 
         return max_points

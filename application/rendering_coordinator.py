@@ -135,8 +135,12 @@ class RenderingCoordinator:
         self._total_visible_points = total_points
         logger.debug(f"Total points: {total_points:,}, all_cached: {all_cached}")
 
-        # Compute dynamic point budget from available VRAM
-        self._point_budget = LODManager.compute_dynamic_point_budget()
+        # Compute dynamic point budget from available RAM and VRAM. The branch
+        # count matters: one visible branch is held once (the viewer aliases it),
+        # several have to be concatenated and so cost nearly double per point.
+        self._point_budget = LODManager.compute_dynamic_point_budget(
+            visible_branch_count=len(uids_to_show)
+        )
         logger.debug(f"Dynamic point budget: {self._point_budget:,}")
 
         # Auto-compute LOD: enforce point budget regardless of requested sample_rate
@@ -167,7 +171,12 @@ class RenderingCoordinator:
 
         # Debug memory estimate
         points_to_check = int(total_points * sample_rate) if sample_rate < 1.0 else total_points
-        estimates = MemoryManager.estimate_render_memory(points_to_check, cached=all_cached)
+        estimates = MemoryManager.estimate_render_memory(
+            points_to_check, cached=all_cached,
+            bytes_per_point_ram=(MemoryManager.BYTES_PER_POINT_TOTAL_RAM
+                                 if len(uids_to_show) <= 1
+                                 else MemoryManager.BYTES_PER_POINT_TOTAL_RAM_MULTI),
+        )
         logger.debug(
             f"Memory estimate for {points_to_check:,} points: "
             f"RAM={estimates['ram_mb']}MB, VRAM={estimates['vram_mb']}MB"

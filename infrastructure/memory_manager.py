@@ -15,10 +15,27 @@ class MemoryManager:
     """Centralized memory management for point cloud operations."""
 
     # Memory constants (bytes per point)
+    #
+    # These decide how many points the app allows itself to draw, so they have
+    # to match what it really allocates. Getting them wrong is worse than a
+    # conservative guess: too high and the budget permits a cloud that does not
+    # fit, and the machine swaps instead of subsampling.
     BYTES_PER_POINT_VBO = 24         # 6 floats * 4 bytes (VRAM)
-    BYTES_PER_POINT_KDTREE = 8       # Estimated cKDTree overhead (RAM)
-    BYTES_PER_POINT_COMBINED = 24    # self.points array (RAM)
-    BYTES_PER_POINT_TOTAL_RAM = 32   # Combined + KDTree (RAM)
+    BYTES_PER_POINT_BRANCH = 24      # the branch's own Nx6 render slice (RAM)
+    BYTES_PER_POINT_COMBINED = 24    # the concatenated self.points copy (RAM)
+    BYTES_PER_POINT_PICK_GRID = 1    # one byte of cell id per point (RAM)
+
+    # One visible branch: self.points aliases the branch slice instead of
+    # copying it (see PCDViewerWidget._build_combined), so the points are held
+    # once, plus the pick grid.
+    BYTES_PER_POINT_TOTAL_RAM = BYTES_PER_POINT_BRANCH + BYTES_PER_POINT_PICK_GRID  # 25
+
+    # Several visible branches: they genuinely have to be concatenated into one
+    # array for global indexing, so the points are held twice.
+    BYTES_PER_POINT_TOTAL_RAM_MULTI = (BYTES_PER_POINT_BRANCH
+                                       + BYTES_PER_POINT_COMBINED
+                                       + BYTES_PER_POINT_PICK_GRID)  # 49
+
     BYTES_PER_POINT_TOTAL_VRAM = 24  # VBO only (VRAM)
 
     # Safety margins
@@ -67,13 +84,21 @@ class MemoryManager:
             return 0
 
     @staticmethod
-    def compute_unified_point_budget() -> tuple:
+    def compute_unified_point_budget(bytes_per_point_ram: int = None) -> tuple:
         """
         Compute point budget considering both RAM and VRAM constraints.
 
         The budget is determined by the more constrained resource:
-        - RAM: 32 bytes/point (combined array + KDTree)
+        - RAM: 25 bytes/point with one visible branch, 49 with several
         - VRAM: 24 bytes/point (VBO)
+
+        Args:
+            bytes_per_point_ram: Override the RAM cost per point. Callers that
+                know how many branches are visible should pass
+                ``BYTES_PER_POINT_TOTAL_RAM`` (one branch, where self.points
+                aliases the branch slice) or ``BYTES_PER_POINT_TOTAL_RAM_MULTI``
+                (several, where it is a genuine second copy). Defaults to the
+                single-branch figure, which is the normal case.
 
         Returns:
             Tuple of (max_points: int, limiting_resource: str, details: dict)
@@ -84,12 +109,15 @@ class MemoryManager:
         ram_mb = MemoryManager.get_available_ram_mb()
         vram_mb = MemoryManager.get_available_gpu_mb()
 
-        # Calculate RAM budget (32 bytes/point with safety margin)
+        if bytes_per_point_ram is None:
+            bytes_per_point_ram = MemoryManager.BYTES_PER_POINT_TOTAL_RAM
+
+        # Calculate RAM budget with safety margin
         if ram_mb > 0:
             ram_bytes = ram_mb * 1024 * 1024
             ram_budget = int(
                 (ram_bytes * MemoryManager.RAM_SAFETY_MARGIN)
-                / MemoryManager.BYTES_PER_POINT_TOTAL_RAM
+                / bytes_per_point_ram
             )
         else:
             ram_budget = float('inf')  # Unknown, don't constrain
@@ -110,6 +138,7 @@ class MemoryManager:
             'vram_mb': vram_mb,
             'ram_budget': ram_budget if ram_budget != float('inf') else None,
             'vram_budget': vram_budget if vram_budget != float('inf') else None,
+            'bytes_per_point_ram': bytes_per_point_ram,
         }
 
         # Choose the more constrained resource
@@ -139,24 +168,31 @@ class MemoryManager:
         return (max_points, limiting, details)
 
     @staticmethod
-    def estimate_render_memory(num_points: int, cached: bool = False) -> dict:
+    def estimate_render_memory(num_points: int, cached: bool = False,
+                               bytes_per_point_ram: int = None) -> dict:
         """
         Estimate memory needed to render a given number of points.
 
         Memory breakdown:
-        - RAM: combined array (24 bytes) + KDTree (8 bytes) = 32 bytes/point
+        - RAM: branch slice (24 bytes) + pick grid (1 byte) = 25 bytes/point,
+          or 49 when several branches force a concatenated second copy
         - VRAM: VBO only = 24 bytes/point
         - Overhead: 10% if cached, 30% if not cached (reconstruction temps)
 
         Args:
             num_points: Number of points to render
             cached: Whether all data is already cached in memory
+            bytes_per_point_ram: Override the RAM cost per point, as in
+                ``compute_unified_point_budget``.
 
         Returns:
             Dict with ram_mb, vram_mb, and breakdown details
         """
-        # RAM: combined array + KDTree
-        ram_base = num_points * MemoryManager.BYTES_PER_POINT_TOTAL_RAM
+        if bytes_per_point_ram is None:
+            bytes_per_point_ram = MemoryManager.BYTES_PER_POINT_TOTAL_RAM
+
+        # RAM: branch slice (+ the combined copy when several are visible)
+        ram_base = num_points * bytes_per_point_ram
 
         # VRAM: VBO only
         vram_base = num_points * MemoryManager.BYTES_PER_POINT_TOTAL_VRAM
