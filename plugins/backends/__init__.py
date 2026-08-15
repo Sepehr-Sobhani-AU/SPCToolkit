@@ -15,6 +15,7 @@ from .base import (
     HDBSCANBackend,
     KNNBackend,
     MaskingBackend,
+    ScreenSelectionBackend,
     EigenvalueBackend,
     NormalEstimationBackend,
 )
@@ -44,6 +45,12 @@ from .masking_backends import (
     NumpyMasking,
 )
 
+# Screen-space selection backends
+from .selection_backends import (
+    CuPySelection,
+    NumpySelection,
+)
+
 # Eigenvalue backends
 from .eigenvalue_backends import (
     PyTorchCUDAEigen,
@@ -64,6 +71,7 @@ __all__ = [
     'HDBSCANBackend',
     'KNNBackend',
     'MaskingBackend',
+    'ScreenSelectionBackend',
     'EigenvalueBackend',
     # DBSCAN
     'CuMLDBSCAN',
@@ -78,6 +86,9 @@ __all__ = [
     # Masking
     'CuPyMasking',
     'NumpyMasking',
+    # Screen-space selection
+    'CuPySelection',
+    'NumpySelection',
     # Eigenvalue
     'PyTorchCUDAEigen',
     'PyTorchCPUEigen',

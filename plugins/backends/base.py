@@ -134,6 +134,62 @@ class MaskingBackend(BaseBackend):
         pass
 
 
+class ScreenSelectionBackend(BaseBackend):
+    """Abstract base class for screen-space selection backends."""
+
+    @abstractmethod
+    def points_in_polygon(self, block: np.ndarray, coeffs: np.ndarray,
+                          polygon: np.ndarray, bounds: tuple,
+                          out: np.ndarray) -> np.ndarray:
+        """
+        Mark which points of one block land inside a screen polygon.
+
+        Backends receive a block, never the whole cloud: the caller
+        (``core.services.screen_selection``) owns the splitting, so that the
+        memory behaviour is the same whichever backend runs.
+
+        Args:
+            block: (N, >=3) float32 world coordinates. Only xyz is read, so an
+                interleaved xyz+rgb render buffer can be passed unchanged.
+            coeffs: (17,) float32 from ``screen_selection.screen_coeffs`` —
+                model-view, projection, viewport and origin already folded
+                together.
+            polygon: (M, 2) float32 screen vertices, Qt widget coordinates.
+            bounds: (min_x, max_x, min_y, max_y) of *polygon*, for the cheap
+                reject before the edge loop.
+            out: (N,) boolean array to write into, a view on the caller's
+                full-size answer so no per-block allocation is needed.
+
+        Returns:
+            *out*, filled in. Points behind the camera are always False.
+        """
+        pass
+
+    @abstractmethod
+    def cell_ids(self, block: np.ndarray, lo: np.ndarray, inv_step: np.ndarray,
+                 shape: tuple, out: np.ndarray) -> np.ndarray:
+        """
+        Number each point of one block by the grid cell it falls in.
+
+        Used to build the pick grid (``core.services.point_grid``). The grid is
+        small enough that the cell number fits in one byte, so this is the whole
+        index — there is no table of cells to go with it.
+
+        Args:
+            block: (N, >=3) float32 world coordinates.
+            lo: (3,) float32 low corner of the cloud's bounding box.
+            inv_step: (3,) float32 reciprocal of the cell size per axis, so the
+                per-point maths is a multiply rather than a divide.
+            shape: (nx, ny, nz) cells per axis; the product must be <= 256.
+            out: (N,) uint8 array to write into.
+
+        Returns:
+            *out*, filled in. Points on the far boundary are clamped into the
+            last cell rather than overflowing it.
+        """
+        pass
+
+
 class EigenvalueBackend(BaseBackend):
     """Abstract base class for eigenvalue computation backends."""
 

@@ -15,6 +15,7 @@ from plugins.backends import (
     HDBSCANBackend,
     KNNBackend,
     MaskingBackend,
+    ScreenSelectionBackend,
     EigenvalueBackend,
     NormalEstimationBackend,
     CuMLDBSCAN,
@@ -25,6 +26,8 @@ from plugins.backends import (
     ScipyKNN,
     CuPyMasking,
     NumpyMasking,
+    CuPySelection,
+    NumpySelection,
     PyTorchCUDAEigen,
     PyTorchCPUEigen,
     PyTorchCUDANormals,
@@ -107,6 +110,14 @@ class BackendRegistry:
             self._backends['masking'] = NumpyMasking()
             logger.info("Masking backend: NumPy (CPU)")
 
+        # Screen-space selection: CuPy (NVIDIA GPU) > NumPy
+        if self.scenario in ["FULL GPU", "PARTIAL GPU"] and self.hardware.cupy_available:
+            self._backends['selection'] = CuPySelection()
+            logger.info("Selection backend: CuPy (GPU)")
+        else:
+            self._backends['selection'] = NumpySelection()
+            logger.info("Selection backend: NumPy (CPU)")
+
         # Eigenvalues: PyTorch CUDA (NVIDIA GPU) > PyTorch CPU
         if self.scenario in ["FULL GPU", "PARTIAL GPU"] and self.hardware.pytorch_cuda:
             self._backends['eigenvalue'] = PyTorchCUDAEigen()
@@ -142,6 +153,10 @@ class BackendRegistry:
         """Get the point cloud masking backend."""
         return self._backends['masking']
 
+    def get_selection(self) -> ScreenSelectionBackend:
+        """Get the screen-space selection backend (lasso, zoom window)."""
+        return self._backends['selection']
+
     def get_eigenvalue(self) -> EigenvalueBackend:
         """Get the eigenvalue computation backend."""
         return self._backends['eigenvalue']
@@ -171,6 +186,7 @@ class BackendRegistry:
             'HDBSCAN': self._backends['hdbscan'].name,
             'KNN': self._backends['knn'].name,
             'Masking': self._backends['masking'].name,
+            'Selection': self._backends['selection'].name,
             'Eigenvalues': self._backends['eigenvalue'].name,
             'Normal Estimation': self._backends['normal_estimation'].name,
         }
@@ -188,6 +204,7 @@ class BackendRegistry:
             f"  HDBSCAN:            {report['HDBSCAN']}",
             f"  KNN:                {report['KNN']}",
             f"  Masking:            {report['Masking']}",
+            f"  Selection:          {report['Selection']}",
             f"  Eigenvalues:        {report['Eigenvalues']}",
             f"  Normal Estimation:  {report['Normal Estimation']}",
         ]
