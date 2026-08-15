@@ -16,6 +16,8 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
+from application.selection_gate import (
+    picked_cloud_indices, selectable_cloud_indices)
 from core.entities.clusters import Clusters
 
 
@@ -100,6 +102,7 @@ class ClassifyClusterPlugin(ActionPlugin):
 
         # Reconstruct the branch to get PointCloud
         selected_uid = selected_branches[0]
+        selected_node = controller.get_node(selected_uid)
         try:
             point_cloud = controller.reconstruct(selected_uid)
         except Exception as e:
@@ -138,14 +141,30 @@ class ClassifyClusterPlugin(ActionPlugin):
             )
             return
 
-        # Find which clusters contain the selected points
-        selected_cluster_ids = set()
-        for idx in selected_indices:
-            if idx < len(cluster_labels):
-                cluster_id = cluster_labels[idx]
-                # Ignore noise points (cluster_id == -1)
-                if cluster_id != -1:
-                    selected_cluster_ids.add(cluster_id)
+        # Find which clusters contain the selected points.
+        #
+        # This used to index cluster_labels with picked_points_indices directly.
+        # Those are rows of the viewer's rendered buffer, and cluster_labels is
+        # full-resolution source data — under LOD the viewer draws a subsample,
+        # so rendered row 5 may be cloud row 50 and the label read belonged to
+        # an unrelated point. picked_cloud_indices does the translation (and
+        # re-tests any lasso at full resolution); `allowed` keeps that widening
+        # to what the viewer would have let the user pick.
+        allowed = selectable_cloud_indices(selected_node, len(point_cloud.points))
+        picked_rows = picked_cloud_indices(viewer_widget, point_cloud.points,
+                                           allowed=allowed)
+        if picked_rows is None or len(picked_rows) == 0:
+            QMessageBox.warning(
+                main_window,
+                "No Points Selected",
+                "Could not retrieve coordinates for the selected points."
+            )
+            return
+
+        picked_rows = picked_rows[picked_rows < len(cluster_labels)]
+        selected_cluster_ids = {
+            cid for cid in np.unique(cluster_labels[picked_rows]) if cid != -1
+        }
 
         if not selected_cluster_ids:
             QMessageBox.warning(

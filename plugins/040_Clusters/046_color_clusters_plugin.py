@@ -11,13 +11,14 @@ Workflow:
 """
 
 import numpy as np
-from scipy.spatial import cKDTree
 from typing import Dict, Any
 from PyQt5.QtWidgets import QMessageBox, QColorDialog
 from PyQt5.QtGui import QColor
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
+from application.selection_gate import (
+    picked_cloud_indices, selectable_cloud_indices)
 
 
 class ColorClustersPlugin(ActionPlugin):
@@ -60,17 +61,6 @@ class ColorClustersPlugin(ActionPlugin):
                                 "using Shift+Click or Polygon selection.")
             return
 
-        # Get 3D coordinates of picked points from the viewer's combined vertex buffer
-        picked_coords = []
-        for idx in selected_indices:
-            if idx < len(viewer_widget.points):
-                picked_coords.append(viewer_widget.points[idx, :3])
-        if not picked_coords:
-            QMessageBox.warning(main_window, "No Points Selected",
-                                "Could not retrieve coordinates for selected points.")
-            return
-        picked_coords = np.array(picked_coords, dtype=np.float32)
-
         # Reconstruct to get cluster_labels attribute
         try:
             point_cloud = controller.reconstruct(selected_uid)
@@ -87,17 +77,22 @@ class ColorClustersPlugin(ActionPlugin):
 
         labels = cluster_labels
 
-        # Match picked coordinates to the reconstructed point cloud via KDTree
-        tree = cKDTree(point_cloud.points)
-        distances, local_indices = tree.query(picked_coords)
+        # Map the picks onto rows of the reconstructed cloud. The shared helper
+        # coordinate-matches them *and* re-tests any lasso at full resolution,
+        # which the hand-rolled loop this replaces did not. `allowed` keeps that
+        # widening inside what the viewer would have let the user pick, so a
+        # lasso cannot reach into a cluster locked against selection.
+        allowed = selectable_cloud_indices(node, len(point_cloud.points))
+        picked_rows = picked_cloud_indices(viewer_widget, point_cloud.points,
+                                           allowed=allowed)
+        if picked_rows is None or len(picked_rows) == 0:
+            QMessageBox.warning(main_window, "No Points Selected",
+                                "Could not retrieve coordinates for selected points.")
+            return
 
-        # Find affected cluster IDs (excluding noise -1)
-        affected_cluster_ids = set()
-        for local_idx in local_indices:
-            if local_idx < len(labels):
-                cid = labels[local_idx]
-                if cid != -1:
-                    affected_cluster_ids.add(int(cid))
+        # Affected cluster IDs, noise excluded
+        picked_rows = picked_rows[picked_rows < len(labels)]
+        affected_cluster_ids = {cid for cid in np.unique(labels[picked_rows]) if cid != -1}
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",

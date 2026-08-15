@@ -178,12 +178,16 @@ class CreaseEdgePlugin(ActionPlugin):
                 "two surfaces itself.")
             return
         viewer_points = np.asarray(viewer_widget.points)
-        coords = viewer_points[[i for i in picked if i < len(viewer_points)], :3]
-        if len(coords) == 0:
+        rows = np.fromiter(picked, dtype=np.intp, count=len(picked))
+        rows = rows[(rows >= 0) & (rows < len(viewer_points))]
+        if rows.size == 0:
             QMessageBox.warning(main_window, "No Point Picked",
                                 "Could not read the picked point coordinates.")
             return
-        seed_point = coords.mean(axis=0)
+        # Mean of the picked positions, in float32 — a seed location, not an
+        # index, so this stays in the viewer's own coordinate space rather than
+        # going through the cloud-index mapping the cluster plugins need.
+        seed_point = viewer_points[rows, :3].astype(np.float32).mean(axis=0)
 
         # --- Reconstruct the whole branch (the data the march searches) ---
         try:

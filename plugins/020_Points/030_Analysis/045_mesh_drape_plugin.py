@@ -32,7 +32,6 @@ import numpy as np
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QMessageBox
 from scipy.ndimage import gaussian_filter as _np_gaussian_filter
-from scipy.spatial import cKDTree
 
 try:
     import cupy as _cp
@@ -44,6 +43,8 @@ except Exception:  # pragma: no cover - CuPy is optional
     _HAS_CUPY = False
 
 from config.config import global_variables
+from application.selection_gate import (
+    picked_cloud_indices, selectable_cloud_indices)
 from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
 from plugins.interfaces import ActionPlugin
@@ -162,21 +163,20 @@ class MeshDrapePlugin(ActionPlugin):
                 return
             cluster_labels = cluster_labels.astype(np.int32)
 
-            # Map viewer-picked world XYZs to nearest points in the reconstructed
-            # cloud to read their cluster ids.
-            viewer_pts = viewer_widget.points
-            picked_xyz = []
-            for idx in picked_indices:
-                if 0 <= idx < len(viewer_pts):
-                    picked_xyz.append(viewer_pts[idx, :3])
-            if not picked_xyz:
+            # Map the picks onto rows of the reconstructed cloud to read their
+            # cluster ids. The shared helper coordinate-matches the clicks and
+            # re-tests any lasso at full resolution, replacing the Python loop
+            # that gathered coordinates one pick at a time; `allowed` keeps the
+            # widening to what the viewer would have let the user pick.
+            allowed = selectable_cloud_indices(node, len(all_points))
+            picked_rows = picked_cloud_indices(viewer_widget, all_points,
+                                               allowed=allowed)
+            if picked_rows is None or len(picked_rows) == 0:
                 QMessageBox.warning(main_window, "Invalid Pick",
                                     "Picked point indices are out of range.")
                 return
-            picked_xyz = np.asarray(picked_xyz, dtype=np.float32)
-            kd = cKDTree(all_points)
-            _, nearest = kd.query(picked_xyz)
-            picked_cluster_ids = {int(cluster_labels[i]) for i in nearest}
+            picked_rows = picked_rows[picked_rows < len(cluster_labels)]
+            picked_cluster_ids = {int(c) for c in np.unique(cluster_labels[picked_rows])}
             picked_cluster_ids.discard(-1)
             if not picked_cluster_ids:
                 QMessageBox.warning(main_window, "Noise Pick",

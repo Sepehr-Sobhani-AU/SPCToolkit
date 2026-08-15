@@ -53,7 +53,7 @@ from core.services.linear_region_grower import (
     STOP_REASONS,
 )
 from plugins.dialogs.line_extension_window import LineExtensionWindow
-from application.selection_gate import picked_cloud_indices
+from application.selection_gate import picked_cloud_indices, selectable_cloud_indices
 
 
 _MODE_MAP = {
@@ -232,7 +232,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         pc_points = point_cloud.points
 
         # --- Map the picked seeds and group them into separate lines ---
-        seeds = self._resolve_seed_groups(viewer_widget, pc_points, params, main_window)
+        seeds = self._resolve_seed_groups(viewer_widget, pc_points, params,
+                                          main_window, node=node)
         if seeds is None:
             return
         seed_groups, tree_kd = seeds
@@ -378,15 +379,24 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
         return selected_uid, node, point_cloud, linearity
 
-    def _resolve_seed_groups(self, viewer_widget, pc_points, params, main_window):
+    def _resolve_seed_groups(self, viewer_widget, pc_points, params, main_window,
+                             node=None):
         """Map the picked viewer points to reconstructed-cloud indices (coord
         match + polygon re-test) and group them into separate lines with DBSCAN.
+
+        *node* supplies what may be picked. Without it the polygon re-test hands
+        back every point the lasso encloses, locked clusters and noise included,
+        because that widening happens in cloud-index space where the viewer's
+        own filters no longer apply — the viewer would report 32 seeds while
+        this produced thousands, and a bush would be traced as a line.
 
         Returns ``(seed_groups, tree_kd)`` — the KD-tree is reused by the grower —
         or ``None`` when no usable seed group is found (a QMessageBox is shown).
         """
         tree_kd = cKDTree(pc_points)
-        seed_indices = picked_cloud_indices(viewer_widget, pc_points, tree_kd)
+        allowed = selectable_cloud_indices(node, len(pc_points))
+        seed_indices = picked_cloud_indices(viewer_widget, pc_points, tree_kd,
+                                            allowed=allowed)
         if seed_indices is None:
             QMessageBox.warning(main_window, "No Points",
                                 "Could not retrieve coordinates for selected points.")

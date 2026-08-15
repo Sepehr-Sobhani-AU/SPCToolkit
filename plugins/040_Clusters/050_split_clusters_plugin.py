@@ -10,12 +10,13 @@ Workflow:
 """
 
 import numpy as np
-from scipy.spatial import cKDTree
 from typing import Dict, Any
 from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
+from application.selection_gate import (
+    picked_cloud_indices, selectable_cloud_indices)
 from core.entities.clusters import Clusters
 
 
@@ -58,19 +59,6 @@ class SplitClustersPlugin(ActionPlugin):
                                 "Please select points to cut using Shift+Click or Polygon selection.")
             return
 
-        # Get 3D coordinates of picked points from the viewer's combined vertex buffer.
-        # picked_points_indices are indices into the viewer's combined buffer (all visible
-        # branches), so we must match by coordinates rather than using indices directly.
-        picked_coords = []
-        for idx in selected_indices:
-            if idx < len(viewer_widget.points):
-                picked_coords.append(viewer_widget.points[idx, :3])
-        if not picked_coords:
-            QMessageBox.warning(main_window, "No Points Selected",
-                                "Could not retrieve coordinates for selected points.")
-            return
-        picked_coords = np.array(picked_coords, dtype=np.float32)
-
         # Reconstruct to get cluster_labels attribute
         try:
             point_cloud = controller.reconstruct(selected_uid)
@@ -87,31 +75,25 @@ class SplitClustersPlugin(ActionPlugin):
 
         labels = cluster_labels.copy()
 
-        # Match picked coordinates to the reconstructed point cloud via KDTree
-        # (always needed to identify which cluster IDs are targeted)
-        tree = cKDTree(point_cloud.points)
-        distances, local_indices = tree.query(picked_coords)
+        # Map the picks onto rows of the reconstructed cloud. The shared helper
+        # coordinate-matches the clicks *and* re-tests any lasso at full
+        # resolution, which is what the two branches this replaces did by hand.
+        # `allowed` keeps that widening inside what the viewer would have let
+        # the user pick, so a lasso cannot cut into a locked cluster.
+        allowed = selectable_cloud_indices(node, len(point_cloud.points))
+        picked_rows = picked_cloud_indices(viewer_widget, point_cloud.points,
+                                           allowed=allowed)
+        if picked_rows is None or len(picked_rows) == 0:
+            QMessageBox.warning(main_window, "No Points Selected",
+                                "Could not retrieve coordinates for selected points.")
+            return
 
-        # Determine targeted cluster IDs from KDTree matches (excluding noise -1)
-        affected_cluster_ids = set()
-        for local_idx in local_indices:
-            if local_idx < len(labels):
-                cid = labels[local_idx]
-                if cid != -1:
-                    affected_cluster_ids.add(cid)
-
-        # Try polygon re-test for full-resolution selection
-        polygon_mask = viewer_widget.retest_polygon_selection(point_cloud.points)
-        if polygon_mask is not None:
-            # Full-resolution: all points inside polygon AND in targeted clusters
-            polygon_indices = np.where(polygon_mask)[0]
-            selected_set = set()
-            for idx in polygon_indices:
-                if labels[idx] in affected_cluster_ids:
-                    selected_set.add(int(idx))
-        else:
-            # Fallback: shift+click selection, use KDTree matches directly
-            selected_set = set(int(i) for i in local_indices)
+        # Targeted cluster IDs, and the points to cut — noise belongs to no
+        # cluster, so it is never cut and never names a target.
+        picked_rows = picked_rows[picked_rows < len(labels)]
+        picked_labels = labels[picked_rows]
+        selected_rows = picked_rows[picked_labels != -1]
+        affected_cluster_ids = {cid for cid in np.unique(picked_labels) if cid != -1}
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",
@@ -135,14 +117,16 @@ class SplitClustersPlugin(ActionPlugin):
         new_labels = labels.copy()
         new_label_id = int(labels.max()) + 1
 
+        # One boolean mask of the selection, built once. It used to be rebuilt
+        # from a Python set *inside* the per-cluster loop below, so a lasso
+        # holding a million points paid that loop once for every cluster it
+        # touched.
+        selected_mask = np.zeros(len(labels), dtype=bool)
+        selected_mask[selected_rows] = True
+
         for cluster_id in sorted(affected_cluster_ids):
             # Mask: points in this cluster AND in the selection
-            mask = np.zeros(len(labels), dtype=bool)
-            cluster_mask = (labels == cluster_id)
-            for idx in selected_set:
-                if idx < len(labels):
-                    mask[idx] = True
-            mask = mask & cluster_mask
+            mask = selected_mask & (labels == cluster_id)
 
             if np.any(mask):
                 new_labels[mask] = new_label_id

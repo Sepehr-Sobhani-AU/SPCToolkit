@@ -127,6 +127,52 @@ def selection_present(kind: Optional[str]) -> bool:
     return True
 
 
+def selectable_cloud_indices(node, n_points=None):
+    """Which rows of *node*'s cloud the viewer would let the user select.
+
+    ``picked_cloud_indices`` widens a polygon selection to full resolution, and
+    that widening bypasses the viewer's own filters because they work in
+    rendered-index space (see that function's note). This answers the same
+    question in *cloud*-index space, so callers have something to pass as
+    ``allowed``: a point is admissible unless its cluster is locked against
+    selection, or it is noise.
+
+    Args:
+        node: The DataNode the plugin is about to operate on.
+        n_points: Length of the cloud, when the caller knows it. Used only to
+            notice that the labels describe a different cloud, in which case
+            they are ignored rather than trusted.
+
+    Returns:
+        Sorted ``np.intp`` array of admissible rows, or ``None`` when the node
+        carries no usable cluster labels — meaning nothing is excluded, which is
+        exactly what ``allowed=None`` means to ``picked_cloud_indices``.
+    """
+    if node is None or getattr(node, "data_type", None) != "cluster_labels":
+        return None
+
+    clusters = getattr(node, "data", None)
+    labels = getattr(clusters, "labels", None)
+    if labels is None:
+        return None
+
+    labels = np.asarray(labels)
+    if n_points is not None and len(labels) != n_points:
+        logger.warning(
+            f"Cluster labels ({len(labels):,}) do not match the cloud "
+            f"({n_points:,}); not filtering the selection by them."
+        )
+        return None
+
+    admissible = labels != -1                       # noise is never selectable
+    locked = getattr(clusters, "locked_clusters", None) or {}
+    locked_ids = [cid for cid, locks in locked.items() if "select" in locks]
+    if locked_ids:
+        np.logical_and(admissible, ~np.isin(labels, locked_ids), out=admissible)
+
+    return np.flatnonzero(admissible).astype(np.intp)
+
+
 def picked_cloud_indices(viewer, pc_points, kdtree=None, allowed=None):
     """Map the viewer's current point picks onto indices into *pc_points*.
 
@@ -153,22 +199,36 @@ def picked_cloud_indices(viewer, pc_points, kdtree=None, allowed=None):
     Pass *kdtree* (a ``cKDTree`` over *pc_points*) when the caller already has
     one. Returns a sorted index array, or ``None`` when the picks could not be
     resolved to any coordinate at all — which callers report as "no points".
+
+    Everything here is done with numpy rather than Python loops and sets. A
+    lasso leaves millions of picked points, and at that size building a list of
+    per-point slices and then a ``set`` of boxed integers costs seconds and
+    hundreds of MB on its own — more than the polygon re-test it feeds.
     """
-    coords = [viewer.points[i, :3] for i in viewer.picked_points_indices
-              if i < len(viewer.points)]
-    if not coords:
+    viewer_points = viewer.points
+    if viewer_points is None or not viewer.picked_points_indices:
+        return None
+
+    picked_rows = np.fromiter(viewer.picked_points_indices, dtype=np.intp,
+                              count=len(viewer.picked_points_indices))
+    picked_rows = picked_rows[(picked_rows >= 0) & (picked_rows < len(viewer_points))]
+    if picked_rows.size == 0:
         return None
 
     if kdtree is None:
         kdtree = cKDTree(pc_points)
-    _dist, local = kdtree.query(np.asarray(coords, dtype=np.float32))
-    picked = set(int(i) for i in np.atleast_1d(local))
+    _dist, local = kdtree.query(
+        np.ascontiguousarray(viewer_points[picked_rows, :3], dtype=np.float32))
+    indices = np.atleast_1d(np.asarray(local, dtype=np.intp))
 
     polygon_mask = viewer.retest_polygon_selection(pc_points)
     if polygon_mask is not None:
-        picked |= set(int(i) for i in np.where(polygon_mask)[0])
+        # union with the re-tested polygon, still sorted and unique afterwards
+        indices = np.union1d(indices, np.flatnonzero(polygon_mask))
+    else:
+        indices = np.unique(indices)
 
-    indices = np.array(sorted(picked), dtype=np.intp)
+    indices = indices.astype(np.intp, copy=False)
     if allowed is None:
         return indices
     return np.intersect1d(indices, np.asarray(allowed, dtype=np.intp))

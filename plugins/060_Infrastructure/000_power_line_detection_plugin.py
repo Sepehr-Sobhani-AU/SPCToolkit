@@ -15,6 +15,8 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
+from application.selection_gate import (
+    picked_cloud_indices, selectable_cloud_indices)
 from core.entities.clusters import Clusters
 from core.entities.masks import Masks
 from core.entities.point_cloud import PointCloud
@@ -160,27 +162,21 @@ class PowerLineDetectionPlugin(ActionPlugin):
         pc_points = point_cloud.points
 
         # --- Map picked points to reconstructed point cloud via coordinate matching ---
-        picked_coords = []
-        for idx in selected_indices:
-            if idx < len(viewer_widget.points):
-                picked_coords.append(viewer_widget.points[idx, :3])
-        if not picked_coords:
+        # Coordinate-match the clicks and re-test any lasso at full resolution.
+        # This is what the hand-rolled block here used to do, minus the Python
+        # sets of boxed integers — a lasso leaves millions of picks and those
+        # sets cost more than the re-test they were merging. `allowed` also
+        # keeps the widening inside what the viewer would have let the user
+        # pick, so locked clusters and noise cannot become seeds.
+        tree_kd = cKDTree(pc_points)
+        allowed = selectable_cloud_indices(node, len(pc_points))
+        seed_indices = picked_cloud_indices(viewer_widget, pc_points, tree_kd,
+                                            allowed=allowed)
+        if seed_indices is None:
             QMessageBox.warning(main_window, "No Points",
                                 "Could not retrieve coordinates for selected points.")
             return
-        picked_coords = np.array(picked_coords, dtype=np.float32)
 
-        tree_kd = cKDTree(pc_points)
-        _, local_indices = tree_kd.query(picked_coords)
-        seed_set = set(int(i) for i in local_indices)
-
-        # Polygon re-test for full-resolution coverage
-        polygon_mask = viewer_widget.retest_polygon_selection(pc_points)
-        if polygon_mask is not None:
-            polygon_indices = np.where(polygon_mask)[0]
-            seed_set |= set(int(i) for i in polygon_indices)
-
-        seed_indices = np.array(sorted(seed_set), dtype=np.intp)
         if len(seed_indices) < 10:
             QMessageBox.warning(main_window, "Not Enough Points",
                                 f"Only {len(seed_indices)} seed points mapped. Need at least 10.")
