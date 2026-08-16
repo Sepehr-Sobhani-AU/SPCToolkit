@@ -288,8 +288,8 @@ def _scan_all(points, tx, ty, tz, limit_sq, block=BUILD_BLOCK):
 def _squared_distances(points, rows, tx, ty, tz):
     """Squared distances from the given rows of *points* to (tx, ty, tz).
 
-    float32 throughout, with the offset applied before squaring, so a UTM-scale
-    coordinate never gets squared at full magnitude.
+    float32 throughout, with the offset applied before squaring, so what gets
+    squared is a distance within the cloud rather than a coordinate.
     """
     near = np.asarray(points[rows, :3], dtype=np.float32)
     near[:, 0] -= np.float32(tx)

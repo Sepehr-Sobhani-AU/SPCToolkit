@@ -19,12 +19,15 @@ size. Only the answer grows with the cloud, and that is one byte per point.
 Measured over 20M points, the float32 answer differed from float64 on a single
 point, which sat 1.7e-06 pixels from the lasso boundary.
 
-Getting float32 right needs one precaution. The viewer draws with
-``glTranslatef(-center)``, so world coordinates and the model-view translation
-are both large and cancel each other. In float32 that cancellation destroys the
-result for a cloud in UTM coordinates. ``screen_coeffs`` therefore folds an
-origin near the data into the constant terms **in float64**, so the per-point
-arithmetic only ever sees small offsets from that origin.
+``screen_coeffs`` also folds an origin near the data into the constant terms in
+float64, so the per-point arithmetic only sees small offsets from it. This is
+insurance, not a necessity: every importer already subtracts ``min_bound`` and
+records it as ``PointCloud.translation`` (see the LAS/e57/npy importers and
+``services/file_manager``), so coordinates reach the viewer starting at zero and
+never at survey magnitude. What is left for the folding to absorb is the camera
+translation, which is large when you zoom deep into a big site. Measured on a
+5 km site zoomed to about a metre, it holds the error at 6e-05 px where dropping
+it gives 3e-03 px — both far below anything visible, so nothing depends on it.
 """
 
 import logging
@@ -65,8 +68,10 @@ def screen_coeffs(mv, proj, viewport, origin) -> np.ndarray:
         proj: 4x4 projection matrix, same convention.
         viewport: (vp_x, vp_y, vp_w, vp_h).
         origin: (3,) world point near the data. Subtracted from every point
-            before the per-point maths so large coordinates never cancel in
-            float32. The viewer's ``center`` is the natural choice.
+            before the per-point maths, so what float32 has to cancel is bounded
+            by the cloud's extent rather than by the camera translation. The
+            viewer's ``center`` is the natural choice. See the module docstring
+            for why this is insurance rather than a requirement.
 
     Returns:
         (17,) float32 array laid out as described in the module constants.
@@ -82,8 +87,8 @@ def screen_coeffs(mv, proj, viewport, origin) -> np.ndarray:
     out = np.empty(N_COEFFS, dtype=np.float32)
     for slot, (col, scale) in enumerate(((0, half_w), (1, half_h), (3, 1.0))):
         a, b, c, d = m[0, col], m[1, col], m[2, col], m[3, col]
-        # Constant term for the shifted origin, evaluated in float64: this is
-        # where the large-coordinate cancellation happens, once, exactly.
+        # Constant term for the shifted origin, evaluated in float64 so the
+        # cancellation happens once, exactly, instead of per point in float32.
         d = ox * a + oy * b + oz * c + d
         out[slot * 4: slot * 4 + 4] = np.array([a, b, c, d]) * scale
 
@@ -154,9 +159,9 @@ def select_in_polygon(points, polygon, mv, proj, viewport,
             viewer's interleaved xyz+rgb buffer can be passed straight in.
         polygon: (M, 2) screen-space vertices in Qt widget coordinates.
         mv, proj, viewport: the camera the polygon was drawn against.
-        origin: (3,) point near the data, folded into the coefficients so
-            float32 stays accurate on large coordinates. Defaults to the first
-            point, which is always inside the cloud and so always close enough.
+        origin: (3,) point near the data, folded into the coefficients (see
+            ``screen_coeffs``). Defaults to the first point, which is by
+            definition inside the cloud and so always close enough.
         block: points carried through at once.
         backend: override the registry's choice (used by the tests to compare
             the CPU and GPU paths against each other).

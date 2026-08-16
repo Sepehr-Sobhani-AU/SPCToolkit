@@ -185,9 +185,8 @@ class PolygonSelectionMixin:
         for polygon, mv, proj, viewport in self._selection_polygons:
             # No origin passed: select_in_polygon falls back to the cloud's own
             # first point, which is by definition close to the rest of it. That
-            # keeps the float32 arithmetic accurate even in UTM coordinates, and
-            # it does not assume this cloud is the one the viewer is centred on
-            # (plugins call this with their own full-resolution data).
+            # avoids assuming this cloud is the one the viewer is centred on —
+            # plugins call this with their own full-resolution data.
             combined_mask |= select_in_polygon(pts, polygon, mv, proj, viewport)
 
         return combined_mask
