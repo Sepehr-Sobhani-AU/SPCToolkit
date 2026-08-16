@@ -93,7 +93,7 @@ class ZoomWindowMixin:
         proj = np.array(self.projection_matrix, dtype=np.float64)
         inside = select_in_rect(
             pts_3d, (rect_left, rect_top, rect_right, rect_bottom),
-            mv, proj, self.viewport, origin=self.center,
+            mv, proj, self.viewport,
         )
 
         if not np.any(inside):

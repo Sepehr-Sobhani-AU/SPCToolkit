@@ -151,9 +151,8 @@ class ScreenSelectionBackend(BaseBackend):
         Args:
             block: (N, >=3) float32 world coordinates. Only xyz is read, so an
                 interleaved xyz+rgb render buffer can be passed unchanged.
-            coeffs: (17,) float32 from ``screen_selection.screen_coeffs`` —
-                model-view, projection, viewport and origin already folded
-                together.
+            coeffs: (14,) float32 from ``screen_selection.screen_coeffs`` —
+                model-view, projection and viewport already folded together.
             polygon: (M, 2) float32 screen vertices, Qt widget coordinates.
             bounds: (min_x, max_x, min_y, max_y) of *polygon*, for the cheap
                 reject before the edge loop.

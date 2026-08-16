@@ -19,15 +19,13 @@ size. Only the answer grows with the cloud, and that is one byte per point.
 Measured over 20M points, the float32 answer differed from float64 on a single
 point, which sat 1.7e-06 pixels from the lasso boundary.
 
-``screen_coeffs`` also folds an origin near the data into the constant terms in
-float64, so the per-point arithmetic only sees small offsets from it. This is
-insurance, not a necessity: every importer already subtracts ``min_bound`` and
-records it as ``PointCloud.translation`` (see the LAS/e57/npy importers and
-``services/file_manager``), so coordinates reach the viewer starting at zero and
-never at survey magnitude. What is left for the folding to absorb is the camera
-translation, which is large when you zoom deep into a big site. Measured on a
-5 km site zoomed to about a metre, it holds the error at 6e-05 px where dropping
-it gives 3e-03 px — both far below anything visible, so nothing depends on it.
+float32 is safe here because the project shifts clouds to the origin on import:
+every importer subtracts ``min_bound`` and records it as
+``PointCloud.translation`` (see the LAS/e57/npy/semantickitti importers and
+``services/file_manager``), and export and Identify Point add it back through
+``find_root_translation``. Coordinates therefore reach the viewer starting at
+zero, never at survey magnitude, and nothing here has to defend against a
+cancellation that cannot happen.
 """
 
 import logging
@@ -45,11 +43,10 @@ DEFAULT_BLOCK = 8_000_000
 #   4- 7  ay by cy dy   numerator of screen Y (viewport scale folded in)
 #   8-11  aw bw cw dw   clip W (depth); W <= 0 means behind the camera
 #  12-13  tx ty         viewport centre offset
-#  14-16  ox oy oz      origin the coefficients were folded around
-N_COEFFS = 17
+N_COEFFS = 14
 
 
-def screen_coeffs(mv, proj, viewport, origin) -> np.ndarray:
+def screen_coeffs(mv, proj, viewport) -> np.ndarray:
     """Fold model-view, projection and viewport into coefficients for float32 use.
 
     The viewer's projection is::
@@ -67,34 +64,24 @@ def screen_coeffs(mv, proj, viewport, origin) -> np.ndarray:
             appears transposed in numpy — hence row-vector multiplication).
         proj: 4x4 projection matrix, same convention.
         viewport: (vp_x, vp_y, vp_w, vp_h).
-        origin: (3,) world point near the data. Subtracted from every point
-            before the per-point maths, so what float32 has to cancel is bounded
-            by the cloud's extent rather than by the camera translation. The
-            viewer's ``center`` is the natural choice. See the module docstring
-            for why this is insurance rather than a requirement.
 
     Returns:
-        (17,) float32 array laid out as described in the module constants.
+        (14,) float32 array laid out as described in the module constants.
     """
-    # Everything here is 4x4 or smaller, so float64 costs nothing and keeps the
-    # constant terms exact — that is the whole point of folding the origin in.
+    # Everything here is 4x4 or smaller, so collapsing it in float64 costs
+    # nothing and keeps the coefficients exact.
     m = np.asarray(mv, dtype=np.float64) @ np.asarray(proj, dtype=np.float64)
-    ox, oy, oz = (float(v) for v in origin)
 
     vp_x, vp_y, vp_w, vp_h = (float(v) for v in viewport)
     half_w, half_h = 0.5 * vp_w, 0.5 * vp_h
 
     out = np.empty(N_COEFFS, dtype=np.float32)
     for slot, (col, scale) in enumerate(((0, half_w), (1, half_h), (3, 1.0))):
-        a, b, c, d = m[0, col], m[1, col], m[2, col], m[3, col]
-        # Constant term for the shifted origin, evaluated in float64 so the
-        # cancellation happens once, exactly, instead of per point in float32.
-        d = ox * a + oy * b + oz * c + d
-        out[slot * 4: slot * 4 + 4] = np.array([a, b, c, d]) * scale
+        column = np.array([m[0, col], m[1, col], m[2, col], m[3, col]])
+        out[slot * 4: slot * 4 + 4] = column * scale
 
     out[12] = half_w + vp_x
     out[13] = half_h + vp_y
-    out[14:17] = (ox, oy, oz)
     return out
 
 
@@ -103,7 +90,7 @@ def project_block(block, coeffs):
 
     Args:
         block: (N, >=3) float32 array; only the first three columns are read.
-        coeffs: the (17,) array from ``screen_coeffs``.
+        coeffs: the (14,) array from ``screen_coeffs``.
 
     Returns:
         (screen_x, screen_y, valid) — float32, float32, bool, each (N,).
@@ -112,9 +99,9 @@ def project_block(block, coeffs):
         False hold no meaningful position.
     """
     c = coeffs
-    u = block[:, 0] - c[14]
-    v = block[:, 1] - c[15]
-    t = block[:, 2] - c[16]
+    u = block[:, 0]
+    v = block[:, 1]
+    t = block[:, 2]
 
     w = u * c[8] + v * c[9] + t * c[10] + c[11]
     valid = w > 0
@@ -151,7 +138,7 @@ def _resolve_backend(backend):
 
 
 def select_in_polygon(points, polygon, mv, proj, viewport,
-                      origin=None, block=DEFAULT_BLOCK, backend=None):
+                      block=DEFAULT_BLOCK, backend=None):
     """Boolean mask over *points* marking those inside *polygon* on screen.
 
     Args:
@@ -159,9 +146,6 @@ def select_in_polygon(points, polygon, mv, proj, viewport,
             viewer's interleaved xyz+rgb buffer can be passed straight in.
         polygon: (M, 2) screen-space vertices in Qt widget coordinates.
         mv, proj, viewport: the camera the polygon was drawn against.
-        origin: (3,) point near the data, folded into the coefficients (see
-            ``screen_coeffs``). Defaults to the first point, which is by
-            definition inside the cloud and so always close enough.
         block: points carried through at once.
         backend: override the registry's choice (used by the tests to compare
             the CPU and GPU paths against each other).
@@ -176,9 +160,7 @@ def select_in_polygon(points, polygon, mv, proj, viewport,
     if n == 0 or len(poly) < 3:
         return out
 
-    if origin is None:
-        origin = points[0, :3]
-    coeffs = screen_coeffs(mv, proj, viewport, origin)
+    coeffs = screen_coeffs(mv, proj, viewport)
     bounds = polygon_bounds(poly)
     impl = _resolve_backend(backend)
 
@@ -190,7 +172,7 @@ def select_in_polygon(points, polygon, mv, proj, viewport,
 
 
 def select_in_rect(points, rect, mv, proj, viewport,
-                   origin=None, block=DEFAULT_BLOCK, backend=None):
+                   block=DEFAULT_BLOCK, backend=None):
     """Boolean mask over *points* marking those inside a screen rectangle.
 
     A rectangle is a four-sided polygon, so this shares every part of the
@@ -204,4 +186,4 @@ def select_in_rect(points, rect, mv, proj, viewport,
     polygon = np.array([(left, top), (right, top),
                         (right, bottom), (left, bottom)], dtype=np.float32)
     return select_in_polygon(points, polygon, mv, proj, viewport,
-                             origin=origin, block=block, backend=backend)
+                             block=block, backend=backend)

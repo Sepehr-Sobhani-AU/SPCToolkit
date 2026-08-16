@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 # two backends agree point for point rather than merely almost.
 _POLYGON_KERNEL_SOURCE = r'''
     const int base = i * stride;
-    const float u = pts[base]     - c[14];
-    const float v = pts[base + 1] - c[15];
-    const float t = pts[base + 2] - c[16];
+    const float u = pts[base];
+    const float v = pts[base + 1];
+    const float t = pts[base + 2];
 
     const float w = u * c[8] + v * c[9] + t * c[10] + c[11];
     bool result = false;

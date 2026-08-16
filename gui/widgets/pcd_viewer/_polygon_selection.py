@@ -79,8 +79,7 @@ class PolygonSelectionMixin:
         # Which points land inside the lasso. Blocked and float32 — see
         # core.services.screen_selection for why the whole-cloud float64 version
         # this replaced needed 19 GB of scratch at 170M points.
-        inside = select_in_polygon(self.points, polygon, mv, proj, self.viewport,
-                                   origin=self.center)
+        inside = select_in_polygon(self.points, polygon, mv, proj, self.viewport)
 
         # Get indices of selected points and apply selection filters
         new_indices = np.flatnonzero(inside)
@@ -183,10 +182,6 @@ class PolygonSelectionMixin:
         combined_mask = np.zeros(pts.shape[0], dtype=bool)
 
         for polygon, mv, proj, viewport in self._selection_polygons:
-            # No origin passed: select_in_polygon falls back to the cloud's own
-            # first point, which is by definition close to the rest of it. That
-            # avoids assuming this cloud is the one the viewer is centred on —
-            # plugins call this with their own full-resolution data.
             combined_mask |= select_in_polygon(pts, polygon, mv, proj, viewport)
 
         return combined_mask
@@ -213,7 +208,7 @@ class PolygonSelectionMixin:
             count=len(self.picked_points_indices)
         )
         inside = select_in_polygon(self.points[selected_indices, :3], polygon,
-                                   mv, proj, self.viewport, origin=self.center)
+                                   mv, proj, self.viewport)
 
         # Remove points that fall inside the polygon from the selection.
         # ``selected_indices`` is picked_points_indices in order, so masking it
