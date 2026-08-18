@@ -63,6 +63,14 @@ class PolygonSelectionMixin:
             self.exit_polygon_mode()
             return
 
+        # Nothing to select against. enter_polygon_mode() refuses to start
+        # without points, but a lasso already in progress survives the branches
+        # being hidden under it, and there is no cloud left to test by the time
+        # it closes.
+        if self.points is None:
+            self.exit_polygon_mode()
+            return
+
         polygon = np.array(self._polygon_vertices, dtype=np.float64)  # (M, 2)
 
         # OpenGL's glGetDoublev returns column-major matrices. In numpy (row-major)
@@ -196,6 +204,10 @@ class PolygonSelectionMixin:
             self.exit_polygon_mode()
             return
 
+        if self.points is None:
+            self.exit_polygon_mode()
+            return
+
         polygon = np.array(self._polygon_vertices, dtype=np.float64)  # (M, 2)
 
         mv = np.array(self.model_view_matrix, dtype=np.float64)
@@ -207,6 +219,21 @@ class PolygonSelectionMixin:
             self.picked_points_indices, dtype=np.int64,
             count=len(self.picked_points_indices)
         )
+
+        # Drop picks that no longer address a drawn point. The list deliberately
+        # outlives set_branches(), so after LOD drops a level — or a branch is
+        # hidden — it still holds indices past the end of the shorter buffer,
+        # and indexing with them raises. Everything else that consumes the list
+        # already guards this way (deselect_point_at, _picked_positions); this
+        # path did not.
+        in_range = (selected_indices >= 0) & (selected_indices < len(self.points))
+        selected_indices = selected_indices[in_range]
+        if selected_indices.size == 0:
+            self.picked_points_indices.clear()
+            self._selection_polygons.clear()
+            self.exit_polygon_mode()
+            return
+
         inside = select_in_polygon(self.points[selected_indices, :3], polygon,
                                    mv, proj, self.viewport)
 

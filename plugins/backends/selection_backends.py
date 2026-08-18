@@ -74,9 +74,16 @@ _POLYGON_KERNEL_SOURCE = r'''
 # the cloud.
 _CELL_KERNEL_SOURCE = r'''
     const int base = i * stride;
-    int ix = (int)((pts[base]     - lox) * invx);
-    int iy = (int)((pts[base + 1] - loy) * invy);
-    int iz = (int)((pts[base + 2] - loz) * invz);
+    const float fx = (pts[base]     - lox) * invx;
+    const float fy = (pts[base + 1] - loy) * invy;
+    const float fz = (pts[base + 2] - loz) * invz;
+    // NaN converts to an implementation-defined int, which would put the GPU
+    // and CPU paths in different cells. Send it to cell 0 explicitly, matching
+    // _cell_ids_numpy. Every comparison with NaN is false, so isnan() is the
+    // only way to catch it.
+    int ix = isnan(fx) ? 0 : (int)fx;
+    int iy = isnan(fy) ? 0 : (int)fy;
+    int iz = isnan(fz) ? 0 : (int)fz;
     ix = ix < 0 ? 0 : (ix >= nx ? nx - 1 : ix);
     iy = iy < 0 ? 0 : (iy >= ny ? ny - 1 : iy);
     iz = iz < 0 ? 0 : (iz >= nz ? nz - 1 : iz);
@@ -121,8 +128,15 @@ def _cell_ids_numpy(block, lo, inv_step, shape, out):
         np.multiply(cell_f, inv_step[axis], out=cell_f)
         np.floor(cell_f, out=cell_f)
         # Clamp: a point exactly on the far face of the bounding box would
-        # otherwise index one cell past the end of this axis.
+        # otherwise index one cell past the end of this axis. This also folds
+        # +/-inf into the edge cells.
         np.clip(cell_f, 0, n_cells - 1, out=cell_f)
+        # NaN survives both floor and clip, and casting it to int is undefined —
+        # it warns on the CPU and would differ from the GPU. Send those points
+        # to cell 0, which is where the plain scan effectively left them: never
+        # the nearest point to anything, because every comparison with NaN is
+        # False.
+        np.nan_to_num(cell_f, copy=False, nan=0.0)
         np.copyto(cell_i, cell_f, casting='unsafe')
         idx *= n_cells
         idx += cell_i

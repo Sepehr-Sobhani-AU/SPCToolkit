@@ -256,13 +256,32 @@ class PointGrid:
 
 
 def _bounds(points, block):
-    """(low, high) corners of the xyz bounding box, in float32, read in blocks."""
+    """(low, high) corners of the xyz bounding box, in float32, read in blocks.
+
+    Non-finite coordinates are ignored rather than propagated. ``np.minimum``
+    spreads a NaN to the whole result, so one bad point — which a scanner or a
+    lossy export can produce — would make the box NaN on that axis, every cell
+    number on it garbage, and the grid collapse to a handful of cells. The plain
+    scan this replaced shrugged NaN off, because ``abs(x - tx) < radius`` is
+    False for it, so ignoring them here keeps the old behaviour: they clamp into
+    an edge cell and are never the nearest point to anything.
+    """
     lo = np.full(3, np.inf, dtype=np.float32)
     hi = np.full(3, -np.inf, dtype=np.float32)
     for start in range(0, len(points), block):
         chunk = points[start:start + block, :3]
-        np.minimum(lo, chunk.min(axis=0), out=lo)
-        np.maximum(hi, chunk.max(axis=0), out=hi)
+        # `where=` rather than nanmin/nanmax: same answer, and it stays quiet on
+        # a block whose whole column is non-finite instead of warning per block.
+        finite = np.isfinite(chunk)
+        np.minimum(lo, np.min(chunk, axis=0, where=finite, initial=np.inf), out=lo)
+        np.maximum(hi, np.max(chunk, axis=0, where=finite, initial=-np.inf), out=hi)
+
+    # Every point on an axis was non-finite: nanmin leaves +/-inf, which would
+    # give an infinite span. Fall back to a unit box so the arithmetic stays
+    # finite and everything lands in cell 0, as it does for a flat axis.
+    degenerate = ~(np.isfinite(lo) & np.isfinite(hi))
+    lo[degenerate] = np.float32(0.0)
+    hi[degenerate] = np.float32(0.0)
     return lo, hi
 
 
@@ -279,10 +298,23 @@ def _scan_all(points, tx, ty, tz, limit_sq, block=BUILD_BLOCK):
         chunk = np.asarray(points[start:start + block, :3], dtype=np.float32)
         offset = chunk - np.array([tx, ty, tz], dtype=np.float32)
         sq = np.einsum('ij,ij->i', offset, offset)
+        _reject_non_finite(sq)
         j = int(np.argmin(sq))
         if sq[j] < best_sq:
             best_sq, best_row = float(sq[j]), start + j
     return best_row, best_sq
+
+
+def _reject_non_finite(sq):
+    """Turn non-finite squared distances into +inf, in place.
+
+    A NaN coordinate gives a NaN distance, and ``np.argmin`` returns the index
+    of a NaN rather than skipping it — so a single bad point in a cell would
+    hide the real nearest one and the click would find nothing. +inf loses every
+    comparison instead, which is how the plain scan behaved: ``abs(x - tx) <
+    radius`` is False for NaN, so those points were simply never candidates.
+    """
+    np.nan_to_num(sq, copy=False, nan=np.inf, posinf=np.inf, neginf=np.inf)
 
 
 def _squared_distances(points, rows, tx, ty, tz):
@@ -295,7 +327,9 @@ def _squared_distances(points, rows, tx, ty, tz):
     near[:, 0] -= np.float32(tx)
     near[:, 1] -= np.float32(ty)
     near[:, 2] -= np.float32(tz)
-    return np.einsum('ij,ij->i', near, near)
+    sq = np.einsum('ij,ij->i', near, near)
+    _reject_non_finite(sq)
+    return sq
 
 
 def _resolve_backend(backend):

@@ -60,12 +60,16 @@ class DataManagementMixin:
         # rather than invalidated — see _picked_positions().
         self._picked_positions_cache: Optional[Tuple[Tuple, np.ndarray]] = None
 
-        # uid -> PointGrid over that branch's DRAWN points, so a click measures
-        # one cell instead of the whole cloud. Built in the background on first
-        # pick and dropped alongside the VBO when the drawn rows are replaced —
-        # see _pick_grid_for(). Not built eagerly: a session that never clicks
-        # never pays for one.
-        self._pick_grids: Dict[str, PointGrid] = {}
+        # uid -> (drawn slice, PointGrid over it), so a click measures one cell
+        # instead of the whole cloud. Built in the background on first pick and
+        # dropped alongside the VBO when the drawn rows are replaced — see
+        # _pick_grid_for(). Not built eagerly: a session that never clicks never
+        # pays for one.
+        #
+        # The slice is stored *with* the grid rather than checked separately,
+        # so that reading the pair and confirming it is current is a single
+        # dict lookup. See _build_pick_grid for the race that closes.
+        self._pick_grids: Dict[str, Tuple[np.ndarray, PointGrid]] = {}
         self._pick_grid_building: Set[str] = set()
 
         # Line geometry (e.g. mesh wireframes, CAD polylines). Independent of point data.
@@ -288,13 +292,17 @@ class DataManagementMixin:
         the CPU and 1 s on the graphics card. Callers fall back to the plain
         scan meanwhile, which is what they did before the grid existed.
         """
-        grid = self._pick_grids.get(uid)
-        if grid is not None:
-            return grid
-
         slc = self._branch_vertices.get(uid)
         if slc is None or len(slc) == 0:
             return None
+
+        # One lookup yields both the grid and the rows it was built over, so a
+        # grid can never be paired with a slice it does not describe.
+        cached = self._pick_grids.get(uid)
+        if cached is not None:
+            built_over, grid = cached
+            if built_over is slc:
+                return grid
 
         if uid not in self._pick_grid_building:
             self._pick_grid_building.add(uid)
@@ -308,7 +316,15 @@ class DataManagementMixin:
         """Number *slc*'s points by cell, off the GUI thread.
 
         Only reads *slc*, which is non-writeable anyway (see _build_combined),
-        and only writes one dict entry, so no lock is needed.
+        and publishes by storing the grid together with the array it describes.
+
+        That pairing is what makes this safe without a lock. Checking
+        ``self._branch_vertices[uid] is slc`` and *then* assigning would be two
+        statements on this thread while set_branches() swaps the slice on the
+        GUI thread; interleaved between them, a grid built over rows that are no
+        longer drawn would be stored against the rows that are, and a click
+        would index past the end of a shorter buffer. Storing the pair moves the
+        check to the reader, where it is a single dict lookup.
         """
         try:
             grid = PointGrid.build(slc)
@@ -319,11 +335,8 @@ class DataManagementMixin:
         finally:
             self._pick_grid_building.discard(uid)
 
-        # The branch may have been re-rendered while this ran. Publishing a grid
-        # built from rows that are no longer drawn would point picks at the wrong
-        # points, so check identity — the same test set_branches() uses.
-        if grid is not None and self._branch_vertices.get(uid) is slc:
-            self._pick_grids[uid] = grid
+        if grid is not None:
+            self._pick_grids[uid] = (slc, grid)
             logger.debug(f"Pick grid ready for {uid[:8]}: {len(slc):,} points")
 
     def rendered_rows(self, uid: str, cloud_indices: np.ndarray) -> np.ndarray:
