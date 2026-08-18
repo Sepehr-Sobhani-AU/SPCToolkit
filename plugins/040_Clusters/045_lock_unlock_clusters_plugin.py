@@ -183,5 +183,4 @@ class LockUnlockClustersPlugin(ActionPlugin):
         main_window.render_visible_data(zoom_extent=False)
 
         # Clear selection
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget.update()
+        viewer_widget.clear_selection()

@@ -54,9 +54,7 @@ class KeyInputMixin:
                                              QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if reply == QMessageBox.Yes:
                     # Clear all selected points if confirmed
-                    self.picked_points_indices.clear()
-                    self._selection_polygons.clear()
-                    self.update()
+                    self.clear_selection()
         elif event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_R:
             self.reset_view()
         elif event.key() == Qt.Key_F:

@@ -20,12 +20,6 @@ class PolygonSelectionMixin:
         # Each entry is a (polygon, mv, proj, viewport) tuple.
         self._selection_polygons = []
 
-        # Snapshot of the last completed selection, kept independently of the
-        # live lists above so it survives the clearing that plugins perform
-        # after they consume a selection. Restored by "reselect previous".
-        # Shape: {"polygons": [...], "coords": (K, 3) float64 | None} or None.
-        self._remembered_selection = None
-
     def enter_polygon_mode(self):
         """Activate polygon selection mode. User clicks to add vertices."""
         if self.points is None:
@@ -113,13 +107,16 @@ class PolygonSelectionMixin:
         """Drop all picked points and stored selection polygons, then repaint.
 
         Called after a plugin consumes the selection so highlighted points are
-        de-highlighted once the operation completes.
+        de-highlighted once the operation completes. This is the one place that
+        knows what "clearing the selection" means — everywhere else calls it
+        rather than clearing the two lists by hand, which is how 17 of the 20
+        previous call sites came to leave the stored polygons behind.
         """
         self.picked_points_indices.clear()
         self._selection_polygons.clear()
         self.update()
 
-    def get_selection_mask_for(self, points_3d):
+    def get_selection_mask_for(self, points_3d, allowed=None):
         """Boolean mask over *full-resolution* ``points_3d`` marking the user's
         current selection.
 
@@ -136,8 +133,23 @@ class PolygonSelectionMixin:
           coordinates (exact float32 row equality, since the rendered slice is
           just a subsample of the same source coordinates).
 
+        **The polygon re-test does not go through the viewer's selection
+        filters.** The viewer applies them when the lasso closes
+        (``_filter_selection``: branch membership, cluster locks, noise) — but
+        they work in rendered-index space, and re-testing works in cloud-index
+        space, so the widened result comes back ungated. A lasso drawn over a
+        few permitted points otherwise returns every point it encloses, locked
+        clusters and noise included.
+
+        A caller that knows which rows are admissible passes them as *allowed*;
+        the mask is intersected with them. ``selection_gate`` has
+        ``selectable_cloud_indices(node, len(points))`` for exactly this, and it
+        is the same gate ``picked_cloud_indices`` takes — anything that cares
+        what it is operating on should pass it.
+
         Args:
             points_3d: (N, >=3) array of full-resolution world coordinates.
+            allowed: optional row indices of *points_3d* that may be selected.
 
         Returns:
             (N,) boolean mask aligned to ``points_3d``.
@@ -150,7 +162,7 @@ class PolygonSelectionMixin:
 
         poly_mask = self.retest_polygon_selection(pts[:, :3])
         if poly_mask is not None:
-            return poly_mask
+            return self._gate_mask(poly_mask, allowed)
 
         if not self.picked_points_indices or self.points is None:
             return np.zeros(n, dtype=bool)
@@ -167,7 +179,21 @@ class PolygonSelectionMixin:
         void_dtype = np.dtype((np.void, full32.dtype.itemsize * 3))
         fv = full32.reshape(-1).view(void_dtype)
         pv = pick32.reshape(-1).view(void_dtype)
-        return np.isin(fv, pv)
+        # The coordinate-match branch starts from points the viewer already
+        # filtered, so it needs no gate of its own — but honour one if given, so
+        # both branches of this method mean the same thing.
+        return self._gate_mask(np.isin(fv, pv), allowed)
+
+    @staticmethod
+    def _gate_mask(mask, allowed):
+        """*mask* restricted to the rows in *allowed*, or unchanged if None."""
+        if allowed is None:
+            return mask
+        gate = np.zeros(len(mask), dtype=bool)
+        allowed = np.asarray(allowed, dtype=np.intp)
+        allowed = allowed[(allowed >= 0) & (allowed < len(mask))]
+        gate[allowed] = True
+        return mask & gate
 
     def retest_polygon_selection(self, points_3d):
         """
@@ -223,14 +249,13 @@ class PolygonSelectionMixin:
         # Drop picks that no longer address a drawn point. The list deliberately
         # outlives set_branches(), so after LOD drops a level — or a branch is
         # hidden — it still holds indices past the end of the shorter buffer,
-        # and indexing with them raises. Everything else that consumes the list
-        # already guards this way (deselect_point_at, _picked_positions); this
-        # path did not.
+        # and indexing with them raises. Every path that indexes with this list
+        # has to clamp: deselect_point_at, deselect_cluster_at,
+        # _picked_positions and this one.
         in_range = (selected_indices >= 0) & (selected_indices < len(self.points))
         selected_indices = selected_indices[in_range]
         if selected_indices.size == 0:
-            self.picked_points_indices.clear()
-            self._selection_polygons.clear()
+            self.clear_selection()
             self.exit_polygon_mode()
             return
 
@@ -246,62 +271,3 @@ class PolygonSelectionMixin:
 
         self.exit_polygon_mode()
 
-    @staticmethod
-    def _points_in_polygon(screen_x, screen_y, polygon, valid_mask):
-        """
-        Vectorized ray-casting point-in-polygon test.
-
-        Args:
-            screen_x: (N,) array of screen X coordinates
-            screen_y: (N,) array of screen Y coordinates
-            polygon: (M, 2) array of polygon vertices in screen coords
-            valid_mask: (N,) boolean mask for points in front of camera
-
-        Returns:
-            (N,) boolean array — True for points inside the polygon
-        """
-        n = len(screen_x)
-        m = len(polygon)
-
-        # Ray casting: count crossings for each point.
-        #
-        # The scratch buffers are allocated once and reused with out=. Each edge
-        # otherwise allocates several N-sized boolean temporaries, and with a
-        # 20-vertex lasso over a 10M-point buffer that allocation traffic costs
-        # more than the comparisons it carries.
-        crossings = np.zeros(n, dtype=np.int32)
-        above_1 = np.empty(n, dtype=bool)
-        above_2 = np.empty(n, dtype=bool)
-
-        for i in range(m):
-            x1, y1 = polygon[i]
-            x2, y2 = polygon[(i + 1) % m]
-
-            dy = y2 - y1
-            if dy == 0:
-                continue
-
-            # For each edge, test all valid points simultaneously.
-            # A ray from (px, py) going right crosses the edge if:
-            #   1. The edge straddles the ray's y-level — that is, exactly one
-            #      endpoint is at or below it
-            #   2. The intersection x is to the right of px
-            np.greater_equal(screen_y, y1, out=above_1)
-            np.greater_equal(screen_y, y2, out=above_2)
-            np.not_equal(above_1, above_2, out=above_1)   # straddle
-            np.logical_and(above_1, valid_mask, out=above_1)
-            test = above_1
-            if not np.any(test):
-                continue
-
-            # Compute x-intersection of the edge with the horizontal ray
-            # x_intersect = x1 + (screen_y - y1) / (y2 - y1) * (x2 - x1)
-            t = (screen_y[test] - y1) / dy
-            x_intersect = x1 + t * (x2 - x1)
-
-            crosses = x_intersect > screen_x[test]
-            crossings[test] += crosses.astype(np.int32)
-
-        # Odd number of crossings = inside
-        inside = (crossings % 2 == 1) & valid_mask
-        return inside

@@ -58,6 +58,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.data_node import DataNode
 from core.entities.vector_feature import VectorFeature
 from core.services.ransac import fit
+from application.selection_gate import selectable_cloud_indices
 
 logger = logging.getLogger(__name__)
 
@@ -426,7 +427,13 @@ class FitCylinderConePlugin(ActionPlugin):
         if cluster_labels is not None:
             cluster_labels = np.asarray(cluster_labels)
             try:
-                selection_mask = viewer_widget.get_selection_mask_for(points)
+                # `allowed` keeps a lasso's full-resolution widening inside what
+                # the viewer would have let the user pick, so locked clusters
+                # and noise cannot be fitted.
+                allowed = selectable_cloud_indices(
+                    controller.get_node(selected_uid), len(points))
+                selection_mask = viewer_widget.get_selection_mask_for(
+                    points, allowed=allowed)
             except Exception as exc:
                 logger.warning("Selection mask failed: %s", exc)
                 selection_mask = None

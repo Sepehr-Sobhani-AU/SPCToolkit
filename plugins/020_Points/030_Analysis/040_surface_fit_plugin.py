@@ -176,8 +176,7 @@ class SurfaceFitPlugin(ActionPlugin):
             f"{n_cluster:,} points, degree={degree}"
         )
 
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget.update()
+        viewer_widget.clear_selection()
 
         grid_resolution = int(params["grid_resolution"])
         distance_threshold = float(params["distance_threshold"])

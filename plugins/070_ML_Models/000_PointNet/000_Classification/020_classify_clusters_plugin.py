@@ -30,6 +30,7 @@ from models.pointnet.inference import (
     classify_clusters_batch
 )
 from plugins.dialogs.classification_progress_dialog import ClassificationProgressDialog
+from application.selection_gate import picked_cloud_indices, selectable_cloud_indices
 
 
 class ClassifyClustersMLPlugin(ActionPlugin):
@@ -232,14 +233,24 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                         "Use Shift+Click to select points, or choose 'All Clusters' mode."
                     )
 
-                # Find which clusters contain the selected points
-                selected_cluster_ids = set()
-                for idx in selected_indices:
-                    if idx < len(cluster_labels):
-                        cluster_id = cluster_labels[idx]
-                        # Ignore noise points (cluster_id == -1)
-                        if cluster_id != -1:
-                            selected_cluster_ids.add(cluster_id)
+                # Find which clusters contain the selected points. Goes through
+                # the shared mapping rather than indexing cluster_labels with
+                # picked_points_indices: those are rows of the viewer's
+                # LOD-subsampled render buffer while the labels are
+                # full-resolution, so under LOD the label read belongs to an
+                # unrelated point.
+                allowed = selectable_cloud_indices(
+                    controller.get_node(selected_uid), len(point_cloud.points))
+                picked_rows = picked_cloud_indices(
+                    viewer_widget, point_cloud.points, allowed=allowed)
+                if picked_rows is None or len(picked_rows) == 0:
+                    raise ValueError(
+                        "Could not retrieve coordinates for the selected points."
+                    )
+                picked_rows = picked_rows[picked_rows < len(cluster_labels)]
+                selected_cluster_ids = {
+                    cid for cid in np.unique(cluster_labels[picked_rows]) if cid != -1
+                }
 
                 if not selected_cluster_ids:
                     raise ValueError(
@@ -388,8 +399,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                 main_window.render_visible_data(zoom_extent=False)
 
             # Clear point selection
-            viewer_widget.picked_points_indices.clear()
-            viewer_widget.update()
+            viewer_widget.clear_selection()
 
             # Mark progress dialog as complete
             progress_dialog.classification_completed(stats)

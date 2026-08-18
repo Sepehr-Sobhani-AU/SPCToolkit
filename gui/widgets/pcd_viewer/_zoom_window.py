@@ -40,9 +40,20 @@ class ZoomWindowMixin:
             return sources[0]
         return np.concatenate(sources, axis=0)
 
+    def _has_zoom_window_geometry(self):
+        """Whether there is anything a zoom rectangle could be measured against.
+
+        Deliberately not ``_zoom_window_geometry() is None``: with both points
+        and line geometry on screen that concatenates the whole cloud — 2 GB and
+        ~3 s at 170M points — purely to answer a yes/no, and then
+        _execute_zoom_window pays it again.
+        """
+        return ((self.points is not None and len(self.points) > 0)
+                or (self.line_vertices is not None and len(self.line_vertices) > 0))
+
     def enter_zoom_window_mode(self):
         """Activate zoom window mode. User drags a rectangle to zoom into that region."""
-        if self._zoom_window_geometry() is None:
+        if not self._has_zoom_window_geometry():
             return
         if self._polygon_mode:
             self.exit_polygon_mode()

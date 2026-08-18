@@ -24,6 +24,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import logging
+import time
 import warnings
 
 import numpy as np
@@ -153,15 +155,97 @@ def test_a_stale_pick_grid_is_never_used():
     v.set_branches({"A": small}, ["A"])          # rows replaced under it
     assert v._pick_grid_for("A") is None, "a grid for the old rows was handed out"
 
-    # Worse case: the build finishes *after* the swap and publishes anyway.
+    # Worse case: the build finishes *after* the swap and tries to publish. It
+    # must not land at all — an entry for a branch that no longer draws those
+    # rows is unreachable, so it would leak the grid and pin the whole slice.
     v._build_pick_grid("A", big)
-    assert v._pick_grid_for("A") is None, "a late grid for the old rows was used"
+    stored = v._pick_grids.get("A")
+    assert stored is None or stored[0] is v._branch_vertices["A"], \
+        "a grid for the old rows was published"
+
+    # Whatever is handed out from here on must describe the rows now drawn,
+    # whether that is a fresh grid or None while one builds.
+    for _ in range(200):
+        grid = v._pick_grid_for("A")
+        if grid is not None:
+            assert grid.n_points == len(small), \
+                f"grid covers {grid.n_points} rows, buffer has {len(small)}"
+            break
+        time.sleep(0.05)
 
     target = small[7, :3]
     got = v._nearest_point_within(target, v.max_extent)
     expected = _nearest_by_brute_force(small, target)
     assert got == expected, f"picked {got}, expected {expected}"
-    print("  stale grid ignored; pick fell back to the scan and was correct")
+    print("  stale grid never published; the pick was correct either way")
+
+
+def test_a_failed_build_is_not_retried_every_click():
+    """A build that raises must not respawn a thread on every click.
+
+    Each attempt redoes the full O(N) numbering, so a cloud whose build runs out
+    of memory would stack up a fresh multi-second thread every time the user
+    clicks, forever.
+    """
+    v = _viewer()
+    slc = _cloud(5_000, seed=8)
+    v.set_branches({"A": slc}, ["A"])
+
+    from core.services import point_grid
+    original = point_grid.PointGrid.build
+    attempts = []
+
+    def exploding_build(*args, **kwargs):
+        attempts.append(1)
+        raise MemoryError("simulated")
+
+    point_grid.PointGrid.build = staticmethod(exploding_build)
+    # The viewer logs the failure with a traceback, which is correct — GPU and
+    # build errors are reported, never swallowed. Quiet it here so the expected
+    # traceback does not read like a test failure.
+    grid_log = logging.getLogger("gui.widgets.pcd_viewer._data_management")
+    previous_level = grid_log.level
+    grid_log.setLevel(logging.CRITICAL)
+    try:
+        for _ in range(10):
+            v._nearest_point_within(slc[0, :3], v.max_extent)
+            time.sleep(0.05)
+    finally:
+        point_grid.PointGrid.build = original
+        grid_log.setLevel(previous_level)
+
+    assert len(attempts) == 1, f"{len(attempts)} build attempts over 10 clicks"
+    assert "A" in v._pick_grid_failed
+
+    # New rows must get a fresh attempt.
+    v.set_branches({"A": _cloud(5_000, seed=9)}, ["A"])
+    assert "A" not in v._pick_grid_failed, "the failure outlived the rows it happened for"
+    print(f"  failed build attempted {len(attempts)}x over 10 clicks, reset on re-render")
+
+
+def test_every_visible_branch_starts_building_on_one_click():
+    """One click must start every branch's build, not one per click.
+
+    Returning as soon as a branch was missing meant N visible branches needed N
+    clicks — each a full scan of the whole combined buffer — before the grid
+    path engaged at all.
+    """
+    v = _viewer()
+    branches = {f"B{i}": _cloud(20_000, seed=20 + i) for i in range(4)}
+    v.set_branches(branches, list(branches))
+
+    v._nearest_via_pick_grids(branches["B0"][0, :3], v.max_extent)   # one click
+    for _ in range(200):
+        if all(u in v._pick_grids for u in branches):
+            break
+        time.sleep(0.05)
+
+    ready = sum(1 for u in branches if u in v._pick_grids)
+    assert ready == len(branches), f"only {ready}/{len(branches)} grids built after one click"
+
+    got, _ = v._nearest_via_pick_grids(branches["B0"][0, :3], v.max_extent)
+    assert got is True, "the grid path did not engage once every grid was ready"
+    print(f"  one click started all {len(branches)} builds; grid path engaged next click")
 
 
 def test_one_bad_coordinate_does_not_degrade_the_grid():
@@ -203,6 +287,82 @@ def test_one_bad_coordinate_does_not_degrade_the_grid():
         print(f"  one NaN + one inf, {backend.name}: {cells}/242 cells, picks correct")
 
 
+def test_deselect_cluster_after_the_buffer_shrinks():
+    """Ctrl+Shift+Right must survive picks that outlived their rows.
+
+    Sibling of test_deselect_after_the_buffer_shrinks. deselect_point_at and the
+    deselect lasso both clamp; this path did not, so it raised IndexError on the
+    same state.
+    """
+    v = _viewer()
+    big, small = _cloud(50_000, seed=10), _cloud(10_000, seed=11)
+    v.set_branches({"A": big}, ["A"])
+    _close_lasso(v, _FULL_SCREEN)
+    v.set_branches({"A": small}, ["A"])
+    assert max(v.picked_points_indices) >= len(v.points)
+
+    # Stand in for the depth-buffer unprojection, which needs a live GL context.
+    v._unproject_mouse_to_nearest_point = lambda _pos: (0, small[0, :3])
+    v.deselect_cluster_at(None)
+
+    survivors = np.asarray(v.picked_points_indices, dtype=np.int64)
+    assert survivors.size == 0 or survivors.max() < len(v.points), \
+        "stale picks were kept after a cluster deselect"
+    print(f"  cluster deselect after shrink: {survivors.size:,} picks kept, all in range")
+
+
+def test_full_resolution_mask_honours_the_viewer_filters():
+    """What a plugin receives must match what the viewer highlighted.
+
+    The polygon re-test widens a selection in cloud-index space, where the
+    viewer's own filters no longer apply, so without a gate a lasso hands back
+    noise and select-locked clusters the user was never allowed to pick.
+    """
+    from application.selection_gate import selectable_cloud_indices
+    from core.entities.clusters import Clusters
+
+    labels = np.array([0, 0, 0, -1, -1, 5])
+    clusters = Clusters(labels=labels)
+    clusters.locked_clusters = {5: {"select"}}
+
+    class _Node:
+        data_type = "cluster_labels"
+        uid = "A"
+        data = clusters
+
+    class _Controller:
+        selected_branches = ["A"]
+
+        def get_node(self, uid):
+            return _Node()
+
+    global_variables.global_application_controller = _Controller()
+    xyz = np.column_stack([np.arange(6), np.zeros(6), np.zeros(6)]).astype(np.float32)
+    slc = np.hstack([xyz, np.ones((6, 3), dtype=np.float32)])
+
+    v = PCDViewerWidget()
+    v.resize(1280, 800)
+    v.model_view_matrix, v.projection_matrix = _MV, _PROJ
+    v.viewport = (0, 0, 1280, 800)
+    v.max_extent = 10.0
+    v.center = np.array([0.0, 0.0, 0.0])
+    v.set_branches({"A": slc}, ["A"], sample_indices_by_uid={"A": np.arange(6)})
+
+    _close_lasso(v, _FULL_SCREEN)
+    highlighted = sorted(v.picked_points_indices)
+    assert highlighted == [0, 1, 2], highlighted        # noise and locked refused
+
+    allowed = selectable_cloud_indices(_Node(), len(xyz))
+    gated = v.get_selection_mask_for(xyz, allowed=allowed)
+    assert sorted(np.flatnonzero(gated)) == highlighted, \
+        f"plugin got {np.flatnonzero(gated).tolist()}, viewer showed {highlighted}"
+
+    ungated = v.get_selection_mask_for(xyz)
+    assert ungated.sum() == 6, "the ungated path should still widen — that is the point of the gate"
+    print(f"  gated mask {np.flatnonzero(gated).tolist()} matches the viewer; "
+          f"ungated would have given {ungated.sum()}")
+
+
 def _nearest_by_brute_force(points, target):
     """Nearest row, with non-finite distances excluded — the scan's behaviour."""
     offset = np.asarray(points[:, :3], dtype=np.float32) - np.float32(target)
@@ -213,7 +373,11 @@ def _nearest_by_brute_force(points, target):
 
 if __name__ == "__main__":
     test_deselect_after_the_buffer_shrinks()
+    test_deselect_cluster_after_the_buffer_shrinks()
     test_closing_a_lasso_with_nothing_visible()
+    test_full_resolution_mask_honours_the_viewer_filters()
     test_a_stale_pick_grid_is_never_used()
+    test_a_failed_build_is_not_retried_every_click()
+    test_every_visible_branch_starts_building_on_one_click()
     test_one_bad_coordinate_does_not_degrade_the_grid()
     print("\nAll selection edge-case tests passed.")

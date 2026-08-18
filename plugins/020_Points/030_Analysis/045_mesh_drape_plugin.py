@@ -187,9 +187,17 @@ class MeshDrapePlugin(ActionPlugin):
                                                            dtype=np.int32))
             scope_tag = f"clusters_{'_'.join(str(c) for c in sorted(picked_cluster_ids))}"
         elif picked_indices:
+            # Same mapping as the cluster_labels branch above. Treating picked
+            # indices as rows of all_points is only right when nothing is
+            # subsampled; under LOD they address the render buffer and would
+            # drape a different part of the cloud.
+            picked_rows = picked_cloud_indices(viewer_widget, all_points)
+            if picked_rows is None or len(picked_rows) == 0:
+                QMessageBox.warning(main_window, "Invalid Pick",
+                                    "Picked point indices are out of range.")
+                return
             subset_mask = np.zeros(len(all_points), dtype=bool)
-            valid = [i for i in picked_indices if 0 <= i < len(all_points)]
-            subset_mask[valid] = True
+            subset_mask[picked_rows] = True
             scope_tag = "selection"
         else:
             subset_mask = np.ones(len(all_points), dtype=bool)
@@ -204,8 +212,7 @@ class MeshDrapePlugin(ActionPlugin):
             return
 
         # Clear picks so the next run starts clean.
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget.update()
+        viewer_widget.clear_selection()
 
         cell_size = float(params["cell_size"])
         smoothing_sigma = float(params["smoothing_sigma"])

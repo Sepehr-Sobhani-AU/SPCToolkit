@@ -19,6 +19,7 @@ from PyQt5.QtGui import QColor, QIcon, QPixmap
 
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
+from application.selection_gate import picked_cloud_indices
 
 
 class AnnotationWindow(QDialog):
@@ -316,19 +317,18 @@ class AnnotationWindow(QDialog):
                               "Run DBSCAN clustering first.")
             return
 
-        # Find clusters containing selected points
-        selected_indices = np.array(self.viewer.picked_points_indices, dtype=np.int64)
-        valid = selected_indices < len(cluster_labels)
-        selected_indices = selected_indices[valid]
-
-        if len(selected_indices) == 0:
+        # Find clusters containing selected points. picked_points_indices are
+        # rows of the viewer's LOD-subsampled render buffer, not of the
+        # full-resolution labels, so they have to be mapped rather than used
+        # directly — otherwise under LOD each one reads an unrelated point's
+        # label.
+        picked_rows = picked_cloud_indices(self.viewer, self.point_cloud.points)
+        if picked_rows is None or len(picked_rows) == 0:
             return
 
-        target_clusters = set()
-        for idx in selected_indices:
-            cid = cluster_labels[idx]
-            if cid >= 0:  # Ignore noise
-                target_clusters.add(cid)
+        picked_rows = picked_rows[picked_rows < len(cluster_labels)]
+        target_clusters = {cid for cid in np.unique(cluster_labels[picked_rows])
+                           if cid >= 0}
 
         if not target_clusters:
             QMessageBox.warning(self, "No Valid Clusters",
@@ -371,8 +371,7 @@ class AnnotationWindow(QDialog):
     def _clear_selection(self):
         """Clear viewer selection."""
         if self.viewer:
-            self.viewer.picked_points_indices.clear()
-            self.viewer.update()
+            self.viewer.clear_selection()
             self.last_selection_count = 0
 
     def _update_visualization(self):

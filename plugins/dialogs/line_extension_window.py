@@ -1129,8 +1129,7 @@ class LineExtensionWindow(QDialog):
 
     def _clear_picks(self):
         if self.viewer is not None:
-            self.viewer.picked_points_indices.clear()
-            self.viewer.update()
+            self.viewer.clear_selection()
 
     # ------------------------------------------------------------------ #
     # Writing back                                                       #
@@ -1262,7 +1261,7 @@ class LineExtensionWindow(QDialog):
         This is the whole of the "fade the rest and lock it" behaviour, and it
         needs no viewer support because a label already carries both halves of
         it: an unnamed/noise point is drawn grey AND refused by the picking
-        filters (``_filter_noise_points``). Unclaimed points are ``-1``, which is
+        filters (``_filter_locked_and_noise``). Unclaimed points are ``-1``, which is
         why they cannot be picked today — so the fix is not to fade anything, it
         is to stop the points the user needs from being noise.
 

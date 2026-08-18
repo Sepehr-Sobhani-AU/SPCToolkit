@@ -124,29 +124,6 @@ class BranchSelectionMixin:
         resolved = (rows >= 0) & (rows < len(labels))
         return in_branch[resolved], labels[rows[resolved]]
 
-    def _filter_selection_locked(self, indices):
-        """Filter out indices belonging to clusters locked against selection.
-
-        Kept for callers that want the lock rule on its own; the selection
-        pipeline uses ``_filter_locked_and_noise`` instead, which applies this
-        rule and the noise rule from a single label lookup.
-        """
-        if not self._branch_offsets:
-            return indices
-        keep_mask = np.ones(len(indices), dtype=bool)
-        for uid, (start, end) in self._branch_offsets.items():
-            info = self._get_cluster_lock_info(uid)
-            if info is None:
-                continue
-            labels, locked = info
-            locked_ids = [cid for cid, locks in locked.items() if "select" in locks]
-            if not locked_ids:
-                continue
-            positions, values = self._branch_labels_of(uid, labels, indices, start, end)
-            if positions.size == 0:
-                continue
-            keep_mask[positions[np.isin(values, locked_ids)]] = False
-        return indices[keep_mask]
 
     def _filter_locked_and_noise(self, indices):
         """Drop indices that are locked against selection *or* are noise.
@@ -249,17 +226,3 @@ class BranchSelectionMixin:
             return False
         return True
 
-    def _filter_noise_points(self, indices):
-        """Filter out indices that are noise points (cluster label == -1)."""
-        if not self._branch_offsets:
-            return indices
-        keep_mask = np.ones(len(indices), dtype=bool)
-        for uid, (start, end) in self._branch_offsets.items():
-            labels = self._get_cluster_labels(uid)
-            if labels is None:
-                continue
-            positions, values = self._branch_labels_of(uid, labels, indices, start, end)
-            if positions.size == 0:
-                continue
-            keep_mask[positions[values == -1]] = False
-        return indices[keep_mask]

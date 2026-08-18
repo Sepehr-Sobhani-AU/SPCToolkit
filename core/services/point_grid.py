@@ -42,6 +42,8 @@ costs 31 s on the CPU, forces a graphics card, and doubles the memory.
 import logging
 import numpy as np
 
+from core.services.screen_selection import resolve_backend
+
 logger = logging.getLogger(__name__)
 
 # Cells per axis. The product must stay <= 256 so a cell number fits in a byte.
@@ -107,7 +109,7 @@ class PointGrid:
         step = (span / np.asarray(shape, dtype=np.float32)).astype(np.float32)
         inv_step = (np.float32(1.0) / step).astype(np.float32)
 
-        impl = _resolve_backend(backend)
+        impl = resolve_backend(backend)
         cell_ids = np.empty(n, dtype=np.uint8)
         for start in range(0, n, block):
             stop = min(start + block, n)
@@ -330,18 +332,3 @@ def _squared_distances(points, rows, tx, ty, tz):
     sq = np.einsum('ij,ij->i', near, near)
     _reject_non_finite(sq)
     return sq
-
-
-def _resolve_backend(backend):
-    """The backend to number cells with: the caller's, else the registry's."""
-    if backend is not None:
-        return backend
-    try:
-        from config.config import global_variables
-        registry = global_variables.global_backend_registry
-        if registry is not None:
-            return registry.get_selection()
-    except Exception as exc:                        # registry not up yet (tests)
-        logger.debug(f"Selection backend registry unavailable ({exc}); using NumPy")
-    from plugins.backends.selection_backends import NumpySelection
-    return NumpySelection()

@@ -122,8 +122,20 @@ def polygon_bounds(polygon):
             float(poly[:, 1].min()), float(poly[:, 1].max()))
 
 
-def _resolve_backend(backend):
-    """The selection backend to use: the caller's, else the registry's."""
+def resolve_backend(backend=None):
+    """The selection backend to use: the caller's, else the registry's.
+
+    Shared with ``core.services.point_grid``, which numbers grid cells through
+    the same CPU/GPU pair.
+
+    Args:
+        backend: an explicit backend to use, or None to ask the registry. The
+            tests pass one to compare the CPU and GPU paths against each other.
+
+    Returns:
+        A ``ScreenSelectionBackend``. Falls back to NumPy when the registry is
+        not up yet, which is the normal state under unit tests.
+    """
     if backend is not None:
         return backend
     try:
@@ -162,7 +174,7 @@ def select_in_polygon(points, polygon, mv, proj, viewport,
 
     coeffs = screen_coeffs(mv, proj, viewport)
     bounds = polygon_bounds(poly)
-    impl = _resolve_backend(backend)
+    impl = resolve_backend(backend)
 
     for start in range(0, n, block):
         stop = min(start + block, n)

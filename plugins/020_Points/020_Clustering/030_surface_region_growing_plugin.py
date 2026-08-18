@@ -199,8 +199,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
                                 "Please Shift+click a non-noise cluster point.")
             return
 
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget.update()
+        viewer_widget.clear_selection()
 
         # --- Reconstruct parent PointCloud ---
         parent_uid = node.parent_uid

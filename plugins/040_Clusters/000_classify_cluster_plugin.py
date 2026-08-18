@@ -250,8 +250,7 @@ class ClassifyClusterPlugin(ActionPlugin):
             main_window.render_visible_data(zoom_extent=False)
 
         # Clear selection after classification
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget.update()
+        viewer_widget.clear_selection()
 
         # Show success message
         cluster_list = ", ".join(str(cid) for cid in sorted(selected_cluster_ids))

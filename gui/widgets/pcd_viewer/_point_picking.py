@@ -133,7 +133,13 @@ class PointPickingMixin:
         *ready* is False when any visible branch has no grid yet, in which case
         the caller scans instead. All-or-nothing on purpose: mixing a gridded
         branch with a scanned one would give the same answer but two code paths
-        to keep in step for no gain, since the grids arrive together anyway.
+        to keep in step for no gain.
+
+        Every branch is asked for its grid even once one is known to be missing,
+        so that one click starts every build. Returning early instead meant only
+        the first branch without a grid began building, so N visible branches
+        needed N clicks — each of them a full scan — before the fast path ever
+        engaged.
         """
         offsets = self._branch_offsets
         if not offsets:
@@ -141,21 +147,20 @@ class PointPickingMixin:
 
         best_sq = float(radius) ** 2
         best_index = None
+        ready = True
 
         for uid, (start, _end) in offsets.items():
             grid = self._pick_grid_for(uid)
             if grid is None:
-                return False, None
-
-            slc = self._branch_vertices.get(uid)
-            if slc is None or len(slc) == 0:
+                ready = False
                 continue
 
+            slc = self._branch_vertices.get(uid)
             row, sq = grid.nearest(slc, target, max_dist=radius)
             if row is not None and sq < best_sq:
                 best_sq, best_index = sq, start + int(row)
 
-        return True, best_index
+        return (True, best_index) if ready else (False, None)
 
     def _nearest_by_scan(self, target, radius):
         """Row of ``self.points`` closest to *target* by straight scan.
@@ -214,37 +219,6 @@ class PointPickingMixin:
         else:
             self.deselect_point_at(mouse_pos)
 
-    def project_to_screen(self, point_3d):
-        """
-        Project a 3D point onto the screen space.
-
-        This method takes a 3D point in the world coordinate system and projects it onto the 2D screen space using the
-        current model-view matrix, projection matrix, and viewport settings. The resulting screen coordinates can be
-        used for tasks such as selecting or highlighting points in the point cloud.
-
-        Args:
-            point_3d (numpy.ndarray): A 3-element array representing the (x, y, z) coordinates of the point to be
-                projected.
-
-        Returns:
-            numpy.ndarray: A 3-element array representing the (x, y, z) coordinates of the projected point in screen
-            space.
-        """
-
-        # Ensure OpenGL context is current
-        self.makeCurrent()
-
-        # Use stored matrices
-        modelview = self.model_view_matrix
-        projection = self.projection_matrix
-        viewport = self.viewport
-
-        # Use gluProject to project the point
-        screen_pos = gluProject(
-            point_3d[0], point_3d[1], point_3d[2],
-            modelview, projection, viewport
-        )
-        return np.array(screen_pos)
 
     def select_point_at(self, mouse_pos):
         """
@@ -357,8 +331,19 @@ class PointPickingMixin:
         # Get the color of the clicked point
         target_color = self.points[clicked_index, 3:6]
 
+        # Drop picks that no longer address a drawn point before indexing with
+        # them. picked_points_indices outlives set_branches() on purpose, so
+        # after LOD drops a level it still holds rows past the end of the
+        # shorter buffer — and negative entries would wrap to the far end of it
+        # rather than being ignored.
+        selected = np.fromiter(self.picked_points_indices, dtype=np.int64,
+                               count=len(self.picked_points_indices))
+        selected = selected[(selected >= 0) & (selected < len(self.points))]
+        if selected.size == 0:
+            self.clear_selection()
+            return
+
         # Vectorized removal of all selected points matching this color
-        selected = np.array(self.picked_points_indices, dtype=np.int64)
         colors = self.points[selected, 3:6]
         matches = np.all(colors == target_color, axis=1)
         self.picked_points_indices[:] = selected[~matches].tolist()

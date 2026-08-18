@@ -243,6 +243,7 @@ When `DynamicDialog` is insufficient (progress bars, preview viewers, multi-step
 | `DataGenerationProgressDialog` | `data_generation_progress_dialog.py` | `GenerateTrainingDataPlugin` (batch generation progress) |
 | `ClassificationProgressDialog` | `classification_progress_dialog.py` | `ClassifyClustersMLPlugin` (inference progress) |
 | `ClassAnalysisWindow` | `class_analysis_window.py` | `AnalyzeClassesPlugin` (class distribution charts) |
+| `ShortcutsDialog` | `shortcuts_dialog.py` | `KeyboardShortcutsPlugin`, `MouseControlsPlugin` (input reference tables) |
 
 **Note:** `TrainingProgressWindow` uses `pyqtSignal` (`cancel_requested`) — this is a justified exception for a standalone modal dialog with a cancel button, not a violation of the singleton-over-signal convention.
 
@@ -403,6 +404,8 @@ Typical workflow: user adds a new `.py` file to `plugins/SomeMenu/`, clicks "Sca
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
 | Help | system_info | Action | `SystemInfoPlugin` |
+| Help/Keyboard and Mouse Handling | keyboard_shortcuts | Action | `KeyboardShortcutsPlugin` |
+| Help/Keyboard and Mouse Handling | mouse_controls | Action | `MouseControlsPlugin` |
 
 ### Plugins
 

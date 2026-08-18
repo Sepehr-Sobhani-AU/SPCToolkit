@@ -244,8 +244,7 @@ class ContourGrowingPlugin(ActionPlugin):
         self._add_result_branch(controller, tree_widget, node, feature, params)
 
         main_window.render_visible_data(zoom_extent=False)
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget.update()
+        viewer_widget.clear_selection()
 
         self._show_summary(main_window, tracer, polylines, level, stopped_early)
 

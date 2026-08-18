@@ -346,9 +346,7 @@ class PowerLineDetectionPlugin(ActionPlugin):
 
         # --- Render and clear selection ---
         main_window.render_visible_data(zoom_extent=False)
-        viewer_widget.picked_points_indices.clear()
-        viewer_widget._selection_polygons.clear()
-        viewer_widget.update()
+        viewer_widget.clear_selection()
 
         n_cables = len(cluster_names)
         n_remaining = int(remaining_mask.sum())

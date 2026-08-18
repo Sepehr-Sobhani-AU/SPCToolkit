@@ -71,11 +71,22 @@ class _FakeViewer:
     def __init__(self, offsets, points=None):
         self._branch_offsets = offsets
         self.picked_points_indices = []
+        self._selection_polygons = []
         self.focused_on = None
         self.points = points
         self.polygon_mask = None       # what retest_polygon_selection returns
         self.emphasis = {}             # uid -> (emphasised, faded)
         self.line_width = 1.0          # the viewer's real default
+
+    def clear_selection(self):
+        """Mirrors the real viewer: picks and stored polygons go together.
+
+        Callers use this rather than emptying picked_points_indices by hand,
+        precisely so a stale polygon cannot outlive the picks it produced.
+        """
+        self.picked_points_indices.clear()
+        self._selection_polygons.clear()
+        self.polygon_mask = None
 
     def set_point_emphasis(self, uid, emphasised=None, faded=None):
         if emphasised is None and faded is None:
