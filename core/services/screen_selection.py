@@ -31,11 +31,9 @@ cancellation that cannot happen.
 import logging
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from core.services.compute_backend import DEFAULT_BLOCK, resolve_backend
 
-# Points carried through the pipeline at once. Sized so the scratch arrays stay
-# in the hundreds of MB rather than scaling with the cloud.
-DEFAULT_BLOCK = 8_000_000
+logger = logging.getLogger(__name__)
 
 # Layout of the array returned by screen_coeffs(). Kept as one flat float32
 # array because it is passed straight into a CUDA kernel as scalars.
@@ -122,33 +120,6 @@ def polygon_bounds(polygon):
             float(poly[:, 1].min()), float(poly[:, 1].max()))
 
 
-def resolve_backend(backend=None):
-    """The selection backend to use: the caller's, else the registry's.
-
-    Shared with ``core.services.point_grid``, which numbers grid cells through
-    the same CPU/GPU pair.
-
-    Args:
-        backend: an explicit backend to use, or None to ask the registry. The
-            tests pass one to compare the CPU and GPU paths against each other.
-
-    Returns:
-        A ``ScreenSelectionBackend``. Falls back to NumPy when the registry is
-        not up yet, which is the normal state under unit tests.
-    """
-    if backend is not None:
-        return backend
-    try:
-        from config.config import global_variables
-        registry = global_variables.global_backend_registry
-        if registry is not None:
-            return registry.get_selection()
-    except Exception as exc:                       # registry not up yet (tests)
-        logger.debug(f"Selection backend registry unavailable ({exc}); using NumPy")
-    from plugins.backends.selection_backends import NumpySelection
-    return NumpySelection()
-
-
 def select_in_polygon(points, polygon, mv, proj, viewport,
                       block=DEFAULT_BLOCK, backend=None):
     """Boolean mask over *points* marking those inside *polygon* on screen.
@@ -174,7 +145,7 @@ def select_in_polygon(points, polygon, mv, proj, viewport,
 
     coeffs = screen_coeffs(mv, proj, viewport)
     bounds = polygon_bounds(poly)
-    impl = resolve_backend(backend)
+    impl = resolve_backend("selection", backend)
 
     for start in range(0, n, block):
         stop = min(start + block, n)

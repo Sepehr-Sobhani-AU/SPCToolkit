@@ -32,9 +32,10 @@ import numpy as np
 from PyQt5.QtWidgets import QApplication
 
 from config.config import global_variables
-from core.services.point_grid import PointGrid
+from core.services.spatial_grid import SpatialGrid
 from gui.widgets.pcd_viewer.pcd_viewer_widget import PCDViewerWidget
 from plugins.backends.selection_backends import CuPySelection, NumpySelection
+from plugins.backends.grid_backends import CuPyGrid, NumpyGrid
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -191,15 +192,15 @@ def test_a_failed_build_is_not_retried_every_click():
     slc = _cloud(5_000, seed=8)
     v.set_branches({"A": slc}, ["A"])
 
-    from core.services import point_grid
-    original = point_grid.PointGrid.build
+    from core.services import spatial_grid
+    original = spatial_grid.SpatialGrid.build
     attempts = []
 
     def exploding_build(*args, **kwargs):
         attempts.append(1)
         raise MemoryError("simulated")
 
-    point_grid.PointGrid.build = staticmethod(exploding_build)
+    spatial_grid.SpatialGrid.build = staticmethod(exploding_build)
     # The viewer logs the failure with a traceback, which is correct — GPU and
     # build errors are reported, never swallowed. Quiet it here so the expected
     # traceback does not read like a test failure.
@@ -211,7 +212,7 @@ def test_a_failed_build_is_not_retried_every_click():
             v._nearest_point_within(slc[0, :3], v.max_extent)
             time.sleep(0.05)
     finally:
-        point_grid.PointGrid.build = original
+        spatial_grid.SpatialGrid.build = original
         grid_log.setLevel(previous_level)
 
     assert len(attempts) == 1, f"{len(attempts)} build attempts over 10 clicks"
@@ -260,10 +261,10 @@ def test_one_bad_coordinate_does_not_degrade_the_grid():
     dirty[123, 0] = np.nan
     dirty[456, 2] = np.inf
 
-    backends = [NumpySelection()]
+    backends = [NumpyGrid()]
     try:
         import cupy  # noqa: F401
-        backends.append(CuPySelection())
+        backends.append(CuPyGrid())
     except Exception:
         pass
 
@@ -271,7 +272,7 @@ def test_one_bad_coordinate_does_not_degrade_the_grid():
     for backend in backends:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            grid = PointGrid.build(dirty, backend=backend)
+            grid = SpatialGrid.build(dirty, backend=backend)
 
         cells = np.unique(grid.cell_ids).size
         assert cells == 242, f"{backend.name}: only {cells} of 242 cells used"

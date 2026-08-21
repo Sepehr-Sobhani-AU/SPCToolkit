@@ -164,27 +164,80 @@ class ScreenSelectionBackend(BaseBackend):
         """
         pass
 
+
+class SpatialGridBackend(BaseBackend):
+    """Abstract base class for spatial grid (cell numbering) backends.
+
+    Deliberately separate from ``ScreenSelectionBackend``. Numbering points by
+    the box they fall in has nothing to do with a screen, a camera or a lasso —
+    it is what ``core.services.spatial_grid`` uses to index a cloud, and any
+    service that needs a cheap spatial index uses it through there.
+    """
+
     @abstractmethod
     def cell_ids(self, block: np.ndarray, lo: np.ndarray, inv_step: np.ndarray,
                  shape: tuple, out: np.ndarray) -> np.ndarray:
         """
         Number each point of one block by the grid cell it falls in.
 
-        Used to build the pick grid (``core.services.point_grid``). The grid is
-        small enough that the cell number fits in one byte, so this is the whole
-        index — there is no table of cells to go with it.
+        Backends receive a block, never the whole cloud: the caller
+        (``core.services.spatial_grid``) owns the splitting, so the memory
+        behaviour is the same whichever backend runs.
 
         Args:
-            block: (N, >=3) float32 world coordinates.
+            block: (N, >=3) float32 world coordinates. Only xyz is read, so an
+                interleaved xyz+rgb render buffer can be passed unchanged.
             lo: (3,) float32 low corner of the cloud's bounding box.
             inv_step: (3,) float32 reciprocal of the cell size per axis, so the
                 per-point maths is a multiply rather than a divide.
-            shape: (nx, ny, nz) cells per axis; the product must be <= 256.
-            out: (N,) uint8 array to write into.
+            shape: (nx, ny, nz) cells per axis. The cell number is
+                ``(ix * ny + iy) * nz + iz``.
+            out: (N,) integer array to write into. Its dtype sets the width —
+                ``uint8`` when the grid has at most 256 cells, ``int32``
+                otherwise. The caller chooses; backends must honour it.
 
         Returns:
             *out*, filled in. Points on the far boundary are clamped into the
-            last cell rather than overflowing it.
+            last cell rather than overflowing it, and non-finite coordinates go
+            to cell 0.
+        """
+        pass
+
+    @abstractmethod
+    def block_bounds(self, block: np.ndarray) -> tuple:
+        """
+        Low and high corner of one block's xyz bounding box.
+
+        Non-finite coordinates must be ignored rather than propagated: one NaN
+        would otherwise make the box NaN on that axis, every cell number on it
+        garbage, and the grid collapse to a handful of cells.
+
+        Args:
+            block: (N, >=3) float32 world coordinates.
+
+        Returns:
+            ``(lo, hi)``, each a (3,) float32 array. An axis whose every value
+            in this block was non-finite comes back as ``+inf`` / ``-inf`` so
+            the caller can combine blocks with plain min/max and notice at the
+            end.
+        """
+        pass
+
+    @abstractmethod
+    def argsort(self, cell_ids: np.ndarray) -> np.ndarray:
+        """
+        Row indices of *cell_ids* ordered by cell — a counting sort in effect.
+
+        Used to bucket a grid so that fetching one cell is a slice rather than a
+        scan over the whole index. Must be stable, so that two grids built from
+        the same points are byte-identical whichever backend ran.
+
+        Args:
+            cell_ids: (N,) uint8, uint16 or int32 cell number per point.
+
+        Returns:
+            (N,) int32 row indices. int32 rather than the platform default
+            because it halves the index: 0.63 GB at 168M points, not 1.26 GB.
         """
         pass
 

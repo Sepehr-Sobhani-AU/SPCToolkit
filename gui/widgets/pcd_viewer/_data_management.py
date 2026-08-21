@@ -4,7 +4,7 @@ import traceback
 from typing import Dict, List, Optional, Set, Tuple
 import numpy as np
 
-from core.services.point_grid import PointGrid
+from core.services.spatial_grid import SpatialGrid
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class DataManagementMixin:
         # rather than invalidated — see _picked_positions().
         self._picked_positions_cache: Optional[Tuple[Tuple, np.ndarray]] = None
 
-        # uid -> (drawn slice, PointGrid over it), so a click measures one cell
+        # uid -> (drawn slice, SpatialGrid over it), so a click measures one cell
         # instead of the whole cloud. Built in the background on first pick and
         # dropped alongside the VBO when the drawn rows are replaced — see
         # _pick_grid_for(). Not built eagerly: a session that never clicks never
@@ -69,7 +69,7 @@ class DataManagementMixin:
         # The slice is stored *with* the grid rather than checked separately,
         # so that reading the pair and confirming it is current is a single
         # dict lookup. See _build_pick_grid for the race that closes.
-        self._pick_grids: Dict[str, Tuple[np.ndarray, PointGrid]] = {}
+        self._pick_grids: Dict[str, Tuple[np.ndarray, SpatialGrid]] = {}
         self._pick_grid_building: Set[str] = set()
         # uids whose build raised. Cleared when the branch's rows are replaced,
         # so a failure costs one attempt per render rather than one per click.
@@ -290,7 +290,7 @@ class DataManagementMixin:
     # Pick grid
     # ------------------------------------------------------------------
 
-    def _pick_grid_for(self, uid: str) -> Optional[PointGrid]:
+    def _pick_grid_for(self, uid: str) -> Optional[SpatialGrid]:
         """The pick grid for branch *uid*, or None while it is not ready.
 
         Starts the build on first ask and returns None until it finishes, so the
@@ -341,7 +341,7 @@ class DataManagementMixin:
         check to the reader, where it is a single dict lookup.
         """
         try:
-            grid = PointGrid.build(slc)
+            grid = SpatialGrid.build(slc)
         except Exception:
             logger.error(f"Failed to build the pick grid for {uid[:8]}:\n"
                          f"{traceback.format_exc()}")

@@ -16,6 +16,7 @@ from .base import (
     KNNBackend,
     MaskingBackend,
     ScreenSelectionBackend,
+    SpatialGridBackend,
     EigenvalueBackend,
     NormalEstimationBackend,
 )
@@ -51,6 +52,12 @@ from .selection_backends import (
     NumpySelection,
 )
 
+# Spatial grid (cell numbering) backends
+from .grid_backends import (
+    CuPyGrid,
+    NumpyGrid,
+)
+
 # Eigenvalue backends
 from .eigenvalue_backends import (
     PyTorchCUDAEigen,
@@ -72,6 +79,7 @@ __all__ = [
     'KNNBackend',
     'MaskingBackend',
     'ScreenSelectionBackend',
+    'SpatialGridBackend',
     'EigenvalueBackend',
     # DBSCAN
     'CuMLDBSCAN',
@@ -89,6 +97,8 @@ __all__ = [
     # Screen-space selection
     'CuPySelection',
     'NumpySelection',
+    'CuPyGrid',
+    'NumpyGrid',
     # Eigenvalue
     'PyTorchCUDAEigen',
     'PyTorchCPUEigen',

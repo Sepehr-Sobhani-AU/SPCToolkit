@@ -16,6 +16,7 @@ from plugins.backends import (
     KNNBackend,
     MaskingBackend,
     ScreenSelectionBackend,
+    SpatialGridBackend,
     EigenvalueBackend,
     NormalEstimationBackend,
     CuMLDBSCAN,
@@ -28,6 +29,8 @@ from plugins.backends import (
     NumpyMasking,
     CuPySelection,
     NumpySelection,
+    CuPyGrid,
+    NumpyGrid,
     PyTorchCUDAEigen,
     PyTorchCPUEigen,
     PyTorchCUDANormals,
@@ -118,6 +121,14 @@ class BackendRegistry:
             self._backends['selection'] = NumpySelection()
             logger.info("Selection backend: NumPy (CPU)")
 
+        # Spatial grid (cell numbering): CuPy (NVIDIA GPU) > NumPy
+        if self.scenario in ["FULL GPU", "PARTIAL GPU"] and self.hardware.cupy_available:
+            self._backends['grid'] = CuPyGrid()
+            logger.info("Spatial grid backend: CuPy (GPU)")
+        else:
+            self._backends['grid'] = NumpyGrid()
+            logger.info("Spatial grid backend: NumPy (CPU)")
+
         # Eigenvalues: PyTorch CUDA (NVIDIA GPU) > PyTorch CPU
         if self.scenario in ["FULL GPU", "PARTIAL GPU"] and self.hardware.pytorch_cuda:
             self._backends['eigenvalue'] = PyTorchCUDAEigen()
@@ -157,6 +168,10 @@ class BackendRegistry:
         """Get the screen-space selection backend (lasso, zoom window)."""
         return self._backends['selection']
 
+    def get_grid(self) -> SpatialGridBackend:
+        """Get the spatial grid backend (cell numbering for any point index)."""
+        return self._backends['grid']
+
     def get_eigenvalue(self) -> EigenvalueBackend:
         """Get the eigenvalue computation backend."""
         return self._backends['eigenvalue']
@@ -187,6 +202,7 @@ class BackendRegistry:
             'KNN': self._backends['knn'].name,
             'Masking': self._backends['masking'].name,
             'Selection': self._backends['selection'].name,
+            'Spatial Grid': self._backends['grid'].name,
             'Eigenvalues': self._backends['eigenvalue'].name,
             'Normal Estimation': self._backends['normal_estimation'].name,
         }
@@ -205,6 +221,7 @@ class BackendRegistry:
             f"  KNN:                {report['KNN']}",
             f"  Masking:            {report['Masking']}",
             f"  Selection:          {report['Selection']}",
+            f"  Spatial Grid:       {report['Spatial Grid']}",
             f"  Eigenvalues:        {report['Eigenvalues']}",
             f"  Normal Estimation:  {report['Normal Estimation']}",
         ]

@@ -68,81 +68,7 @@ _POLYGON_KERNEL_SOURCE = r'''
     inside[i] = result;
 '''
 
-# Cell numbering for the pick grid. One thread per point, one byte out.
-# Clamped rather than wrapped: a point exactly on the far face of the bounding
-# box would otherwise land in cell 0 of the next row, on the opposite side of
-# the cloud.
-_CELL_KERNEL_SOURCE = r'''
-    const int base = i * stride;
-    const float fx = (pts[base]     - lox) * invx;
-    const float fy = (pts[base + 1] - loy) * invy;
-    const float fz = (pts[base + 2] - loz) * invz;
-    // NaN converts to an implementation-defined int, which would put the GPU
-    // and CPU paths in different cells. Send it to cell 0 explicitly, matching
-    // _cell_ids_numpy. Every comparison with NaN is false, so isnan() is the
-    // only way to catch it.
-    int ix = isnan(fx) ? 0 : (int)fx;
-    int iy = isnan(fy) ? 0 : (int)fy;
-    int iz = isnan(fz) ? 0 : (int)fz;
-    ix = ix < 0 ? 0 : (ix >= nx ? nx - 1 : ix);
-    iy = iy < 0 ? 0 : (iy >= ny ? ny - 1 : iy);
-    iz = iz < 0 ? 0 : (iz >= nz ? nz - 1 : iz);
-    out[i] = (unsigned char)((ix * ny + iy) * nz + iz);
-'''
-
 _kernel = None
-_cell_kernel = None
-
-
-def _cell_id_kernel():
-    """The compiled cell-numbering kernel, built on first use."""
-    global _cell_kernel
-    if _cell_kernel is None:
-        import cupy as cp
-        _cell_kernel = cp.ElementwiseKernel(
-            in_params=('raw float32 pts, int32 stride, '
-                       'float32 lox, float32 loy, float32 loz, '
-                       'float32 invx, float32 invy, float32 invz, '
-                       'int32 nx, int32 ny, int32 nz'),
-            out_params='raw uint8 out',
-            operation=_CELL_KERNEL_SOURCE,
-            name='pick_grid_cell_ids',
-        )
-    return _cell_kernel
-
-
-def _cell_ids_numpy(block, lo, inv_step, shape, out):
-    """Shared CPU implementation — also the GPU backend's fallback.
-
-    Multiplies by the reciprocal cell size rather than dividing, and reuses two
-    scratch buffers across the three axes, so a block costs three passes and no
-    repeated allocation.
-    """
-    n_pts = len(block)
-    idx = np.zeros(n_pts, dtype=np.int32)
-    cell_f = np.empty(n_pts, dtype=np.float32)
-    cell_i = np.empty(n_pts, dtype=np.int32)
-
-    for axis, n_cells in enumerate(int(v) for v in shape):
-        np.subtract(block[:, axis], lo[axis], out=cell_f)
-        np.multiply(cell_f, inv_step[axis], out=cell_f)
-        np.floor(cell_f, out=cell_f)
-        # Clamp: a point exactly on the far face of the bounding box would
-        # otherwise index one cell past the end of this axis. This also folds
-        # +/-inf into the edge cells.
-        np.clip(cell_f, 0, n_cells - 1, out=cell_f)
-        # NaN survives both floor and clip, and casting it to int is undefined —
-        # it warns on the CPU and would differ from the GPU. Send those points
-        # to cell 0, which is where the plain scan effectively left them: never
-        # the nearest point to anything, because every comparison with NaN is
-        # False.
-        np.nan_to_num(cell_f, copy=False, nan=0.0)
-        np.copyto(cell_i, cell_f, casting='unsafe')
-        idx *= n_cells
-        idx += cell_i
-
-    np.copyto(out, idx, casting='unsafe')
-    return out
 
 
 def _polygon_kernel():
@@ -214,38 +140,6 @@ class CuPySelection(ScreenSelectionBackend):
             return NumpySelection().points_in_polygon(
                 block, coeffs, polygon, bounds, out)
 
-    def cell_ids(self, block, lo, inv_step, shape, out):
-        """Number one block of points by cell; see ScreenSelectionBackend."""
-        from infrastructure.memory_manager import MemoryManager
-
-        required_mb = self._required_mb(block)
-        if not MemoryManager.can_use_gpu(required_mb):
-            return _cell_ids_numpy(block, lo, inv_step, shape, out)
-
-        import cupy as cp
-        try:
-            block = np.ascontiguousarray(block, dtype=np.float32)
-            pts_gpu = cp.asarray(block)
-            out_gpu = cp.empty(len(block), dtype=cp.uint8)
-
-            _cell_id_kernel()(
-                pts_gpu, np.int32(block.shape[1]),
-                np.float32(lo[0]), np.float32(lo[1]), np.float32(lo[2]),
-                np.float32(inv_step[0]), np.float32(inv_step[1]),
-                np.float32(inv_step[2]),
-                np.int32(shape[0]), np.int32(shape[1]), np.int32(shape[2]),
-                out_gpu, size=len(block),
-            )
-
-            out[:] = cp.asnumpy(out_gpu)
-            del pts_gpu, out_gpu
-            return out
-
-        except (cp.cuda.memory.OutOfMemoryError, MemoryError) as e:
-            logger.warning(f"GPU OOM building the pick grid: {e}, falling back to CPU")
-            MemoryManager.cleanup()
-            return _cell_ids_numpy(block, lo, inv_step, shape, out)
-
 
 class NumpySelection(ScreenSelectionBackend):
     """CPU screen-space selection using NumPy.
@@ -312,8 +206,3 @@ class NumpySelection(ScreenSelectionBackend):
 
         out[candidates] = (crossings & 1) != 0
         return out
-
-    def cell_ids(self, block, lo, inv_step, shape, out):
-        """Number one block of points by cell; see ScreenSelectionBackend."""
-        return _cell_ids_numpy(np.asarray(block, dtype=np.float32),
-                               lo, inv_step, shape, out)
