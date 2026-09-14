@@ -77,6 +77,17 @@ PICK_GRID_SHAPE = (11, 11, 2)
 UINT8_CELL_LIMIT = 256
 UINT16_CELL_LIMIT = 65_536
 
+# Columns (ix, iy pairs) below which a cell box is walked in Python rather than
+# built as index arrays. See ``_rows_in_cell_range``.
+_SCALAR_COLUMN_LIMIT = 8
+
+# The most cells any grid may have. A cell number is int32 at its widest, so
+# past this the numbering wraps negative and the bucketing fails with something
+# that says nothing about the cause. Reachable in one step from a caller with a
+# fine cell_size: 1 mm cells over a 100 m site is 10^15 cells, asked for by a
+# single plausible-looking argument.
+MAX_ADDRESSABLE_CELLS = 2 ** 31 - 1
+
 # A reasonable fallback for a caller with no natural query radius. NOT the
 # fastest choice on real data — see the module docstring. Prefer ``cell_size``.
 DEFAULT_TARGET_CELLS = 4_000_000
@@ -101,7 +112,7 @@ class SpatialGrid:
     """
 
     __slots__ = ("cell_ids", "lo", "step", "inv_step", "shape", "n_points",
-                 "n_cells", "order", "starts")
+                 "n_cells", "order", "starts", "_limit")
 
     def __init__(self, cell_ids, lo, step, shape, n_points,
                  order=None, starts=None):
@@ -110,6 +121,9 @@ class SpatialGrid:
         self.step = step
         self.inv_step = (np.float32(1.0) / step).astype(np.float32)
         self.shape = tuple(int(v) for v in shape)
+        # Held rather than rebuilt per call. cell_of runs once per query and a
+        # three-element array costs more to create than to use.
+        self._limit = np.asarray(self.shape, dtype=np.int32) - 1
         # Held explicitly rather than as len(cell_ids), because a sorted grid
         # does not keep cell_ids.
         self.n_points = int(n_points)
@@ -128,7 +142,7 @@ class SpatialGrid:
 
     @classmethod
     def build(cls, points, shape=None, cell_size=None, target_cells=None,
-              sort=False, block=DEFAULT_BLOCK, backend=None):
+              sort=False, block=DEFAULT_BLOCK, backend=None, max_cells=None):
         """Build a grid over *points*.
 
         Args:
@@ -153,6 +167,10 @@ class SpatialGrid:
                 card and the CPU scratch; does not affect the result.
             backend: override the registry's choice (used by the tests to
                 compare the CPU and GPU paths against each other).
+            max_cells: coarsen the grid rather than exceed this many cells.
+                For a caller sizing by *cell_size*, where a radius that is small
+                against the site divides the box into an offset table larger
+                than the cloud. Capped at ``MAX_ADDRESSABLE_CELLS`` either way.
 
         Returns:
             SpatialGrid, or None when there is nothing to index.
@@ -187,6 +205,17 @@ class SpatialGrid:
         shape = tuple(int(v) for v in shape)
         if any(v < 1 for v in shape):
             raise ValueError(f"grid {shape} has an axis with no cells")
+
+        ceiling = MAX_ADDRESSABLE_CELLS if max_cells is None else min(
+            int(max_cells), MAX_ADDRESSABLE_CELLS)
+        if int(np.prod(np.asarray(shape, dtype=np.int64))) > ceiling:
+            # Too fine to number. Coarsen to the ceiling rather than raise: a
+            # coarser grid hands back bigger candidate sets, which is slower and
+            # still right, and the caller's radius was a preference where the
+            # ceiling is a limit.
+            logger.info(f"Grid {shape} exceeds {ceiling:,} cells; "
+                        f"coarsening to fit")
+            shape = tuple(int(v) for v in _shape_for_target_cells(span, ceiling))
 
         step = (span / np.asarray(shape, dtype=np.float32)).astype(np.float32)
         inv_step = (np.float32(1.0) / step).astype(np.float32)
@@ -224,10 +253,8 @@ class SpatialGrid:
         cells that can answer it are then the edge ones.
         """
         position = np.asarray(position, dtype=np.float32)
-        return np.clip(
-            ((position - self.lo) * self.inv_step).astype(np.int32),
-            0, np.asarray(self.shape, dtype=np.int32) - 1,
-        )
+        return np.clip(((position - self.lo) * self.inv_step).astype(np.int32),
+                       0, self._limit)
 
     def cell_number(self, cell) -> int:
         """Flatten (ix, iy, iz) into the number stored in ``cell_ids``."""
@@ -262,13 +289,21 @@ class SpatialGrid:
         cells come back — so callers still test what they collected. That is the
         point: the grid narrows, the caller decides.
         """
-        a = self.cell_of(low)
-        b = self.cell_of(high)
-        if self.order is not None:
-            return self._rows_in_runs(*self._z_runs(a, b))
-        # Unsorted: one pass over the index answers any set of cells at once,
-        # which beats one pass per cell.
-        return np.flatnonzero(self._cell_table(self._cells_in(a, b))[self.cell_ids])
+        return self.rows_in_cell_box(self.cell_of(low), self.cell_of(high))
+
+    def rows_in_cell_box(self, low, high) -> np.ndarray:
+        """Rows in every cell of the inclusive cell-coordinate box *low*..*high*.
+
+        The cell-space form of ``rows_in_box``, for a caller that is already
+        counting in cells — a k-nearest search widening a ring at a time, say,
+        where converting back to world coordinates just to convert forward again
+        would be arithmetic that can only lose. Both corners are clamped, so a
+        box that runs off the edge of the grid is trimmed to it.
+        """
+        a = np.clip(np.asarray(low, dtype=np.int64), 0, self._limit)
+        b = np.clip(np.asarray(high, dtype=np.int64), 0, self._limit)
+        return self._rows_in_cell_range(int(a[0]), int(b[0]), int(a[1]),
+                                        int(b[1]), int(a[2]), int(b[2]))
 
     def rows_near(self, centre, radius) -> np.ndarray:
         """Rows in every cell a ball of *radius* around *centre* can reach.
@@ -277,7 +312,13 @@ class SpatialGrid:
         """
         centre = np.asarray(centre, dtype=np.float64)
         radius = float(radius)
-        return self.rows_in_box(centre - radius, centre + radius)
+        # Both corners through one cell_of rather than two. The arithmetic is
+        # three floats wide, so the call overhead is the cost, and a ball query
+        # is the one this service answers thousands of times per grown feature.
+        low, high = self.cell_of(np.stack((centre - radius, centre + radius)))
+        return self._rows_in_cell_range(int(low[0]), int(high[0]),
+                                        int(low[1]), int(high[1]),
+                                        int(low[2]), int(high[2]))
 
     # ------------------------------------------------------------------
     # Nearest point (the viewer's click path)
@@ -337,6 +378,93 @@ class SpatialGrid:
     # Internals
     # ------------------------------------------------------------------
 
+    def _rows_in_cell_range(self, ix0, ix1, iy0, iy1, iz0, iz1):
+        """Rows of every cell in the inclusive integer cell box, corners apart.
+
+        Takes six plain ints rather than two arrays because every caller has
+        them that way, and because the small-box path wants them as Python
+        numbers: building two three-element arrays to take them apart again
+        costs more than the lookup itself.
+        """
+        if self.order is None:
+            # Unsorted: one pass over the index answers any set of cells at
+            # once, which beats one pass per cell.
+            cells = self._cells_in((ix0, iy0, iz0), (ix1, iy1, iz1))
+            return np.flatnonzero(self._cell_table(cells)[self.cell_ids])
+
+        return self._rows_in_runs(
+            *self._runs_in_cell_range(ix0, ix1, iy0, iy1, iz0, iz1))
+
+    def _runs_in_cell_range(self, ix0, ix1, iy0, iy1, iz0, iz1):
+        """``(begins, ends)`` slices of ``order``, one per Z column of the box.
+
+        Each pair is a half-open range, and the pairs are what a caller holding
+        its own cell-ordered copy of the points needs: the same offsets index
+        that copy directly, so a cell becomes a slice instead of a gather.
+
+        Both are sequences, not necessarily arrays — the small-box branch builds
+        Python lists, which is the whole point of it — so consume them with
+        ``zip`` and nothing else.
+        """
+        nx, ny, nz = self.shape
+        starts = self.starts
+        columns = (ix1 - ix0 + 1) * (iy1 - iy0 + 1)
+
+        if columns > _SCALAR_COLUMN_LIMIT:
+            low = np.array((ix0, iy0, iz0), dtype=np.int64)
+            high = np.array((ix1, iy1, iz1), dtype=np.int64)
+            first, last = self._z_runs(low, high)
+            return starts[first], starts[last + 1]
+
+        # Few columns: walk them. Two aranges and a ravel cost about 7 us
+        # whatever they produce, which is most of the time a tight ball query
+        # spends, and a tight ball query is what an algorithm makes thousands
+        # of. Above the limit the arrays win again and the branch above takes
+        # over.
+        begins, ends = [], []
+        for ix in range(ix0, ix1 + 1):
+            row_base = ix * ny
+            for iy in range(iy0, iy1 + 1):
+                base = (row_base + iy) * nz
+                begins.append(starts[base + iz0])
+                ends.append(starts[base + iz1 + 1])
+        return begins, ends
+
+    def runs_near(self, centre, radius):
+        """``(begins, ends)`` slices of ``order`` covering a ball's cells.
+
+        The run form of ``rows_near``, for a caller that keeps its own copy of
+        the points in ``order``. Sorted grids only — an unsorted grid has no
+        ``order`` for the offsets to mean anything, and raises.
+
+        See ``core.services.neighbor_index``, which is what this exists for: on
+        a real 12M cloud, reading a cell as a slice of a reordered copy rather
+        than gathering scattered rows took a 0.5 m ball query from 156 us to
+        33 us. The points of one cell are next to each other in memory only if
+        something has put them there.
+        """
+        if self.order is None:
+            raise ValueError("runs_near needs a sorted grid; build with sort=True")
+        centre = np.asarray(centre, dtype=np.float64)
+        radius = float(radius)
+        low, high = self.cell_of(np.stack((centre - radius, centre + radius)))
+        return self._runs_in_cell_range(int(low[0]), int(high[0]),
+                                        int(low[1]), int(high[1]),
+                                        int(low[2]), int(high[2]))
+
+    def runs_in_cell_box(self, low, high):
+        """``(begins, ends)`` slices of ``order`` for an inclusive cell box.
+
+        The run form of ``rows_in_cell_box``; see ``runs_near``.
+        """
+        if self.order is None:
+            raise ValueError("runs_in_cell_box needs a sorted grid; "
+                             "build with sort=True")
+        a = np.clip(np.asarray(low, dtype=np.int64), 0, self._limit)
+        b = np.clip(np.asarray(high, dtype=np.int64), 0, self._limit)
+        return self._runs_in_cell_range(int(a[0]), int(b[0]), int(a[1]),
+                                        int(b[1]), int(a[2]), int(b[2]))
+
     def _z_runs(self, low, high):
         """(first, last) cell numbers of each Z column in the cell box.
 
@@ -357,15 +485,13 @@ class SpatialGrid:
         base = ((ix * ny + iy) * nz).ravel()
         return base + int(low[2]), base + int(high[2])
 
-    def _rows_in_runs(self, first, last):
+    def _rows_in_runs(self, begins, ends):
         """Rows of every cell in the given runs, sorted grids only.
 
         Each run is one slice of ``order``, so the Python loop is over columns
         rather than over cells — smaller than the cell count by a factor of the
         Z span, and independent of how fine the grid is in Z.
         """
-        begins = self.starts[first]
-        ends = self.starts[last + 1]
         parts = [self.order[b:e] for b, e in zip(begins, ends) if e > b]
         if not parts:
             return np.empty(0, dtype=self.order.dtype)
@@ -425,7 +551,8 @@ class SpatialGrid:
         low = np.array([x0, y0, z0], dtype=np.int64)
         high = np.array([x1, y1, z1], dtype=np.int64)
         if self.order is not None:
-            rows = self._rows_in_runs(*self._z_runs(low, high))
+            first, last = self._z_runs(low, high)
+            rows = self._rows_in_runs(self.starts[first], self.starts[last + 1])
         else:
             rows = np.flatnonzero(
                 self._cell_table(self._cells_in(low, high))[self.cell_ids])

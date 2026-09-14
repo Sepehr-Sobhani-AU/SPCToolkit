@@ -262,11 +262,113 @@ def test_z_run_gather_matches_a_per_cell_gather():
     biggest = 0
     for low, high in boxes:
         want = per_cell(low, high)
-        got = grid._rows_in_runs(*grid._z_runs(np.array(low), np.array(high)))
+        got = grid.rows_in_cell_box(low, high)
         assert np.array_equal(np.sort(want), np.sort(got)), (low, high)
         biggest = max(biggest, want.size)
     print(f"  {len(boxes)} cell boxes gather identically by run and by cell "
           f"(largest {biggest:,} rows)")
+
+
+def test_a_cell_size_too_fine_to_number_is_coarsened():
+    """A grid may never be asked for more cells than a cell number can hold.
+
+    ``cell_size`` is the argument that reaches this in one plausible step: a
+    query radius that is small against the site — millimetres over a hundred
+    metres — divides the bounding box into more cells than an int32 can address,
+    and the numbering silently wraps negative. Coarsening keeps the answer
+    right; raising would refuse a request that only needs to be rounded.
+    """
+    points = _cloud()
+    grid = SpatialGrid.build(points, cell_size=0.0005, sort=True,
+                             max_cells=50_000)
+    assert grid.n_cells <= 50_000, grid.n_cells
+
+    # Still a working index, not just a small one.
+    centre = points[len(points) // 2]
+    rows = grid.rows_near(centre, 1.0)
+    offsets = points[rows, :3] - centre[:3]
+    inside = np.count_nonzero(np.einsum('ij,ij->i', offsets, offsets) <= 1.0)
+    brute = points[:, :3] - centre[:3]
+    assert inside == np.count_nonzero(np.einsum('ij,ij->i', brute, brute) <= 1.0)
+
+    uncapped = SpatialGrid.build(points, cell_size=0.0005)
+    assert uncapped.n_cells <= module_max_cells(), uncapped.n_cells
+    print(f"  a 0.5 mm cell size over the cloud coarsens to "
+          f"{grid.n_cells:,} cells and still answers correctly")
+
+
+def module_max_cells():
+    from core.services.spatial_grid import MAX_ADDRESSABLE_CELLS
+    return MAX_ADDRESSABLE_CELLS
+
+
+def test_the_small_box_shortcut_answers_like_the_array_path():
+    """Few columns are walked in Python, many are built as arrays.
+
+    Two code paths behind one method, chosen on column count, so the only thing
+    that matters is that they never disagree. The shortcut exists because two
+    aranges and a ravel cost about 7 us whatever they produce, which is most of
+    what a tight ball query spends.
+    """
+    from core.services import spatial_grid as module
+
+    points = _cloud()
+    grid = SpatialGrid.build(points, target_cells=DEFAULT_TARGET_CELLS, sort=True)
+    nx, ny, nz = grid.shape
+
+    checked = 0
+    for _ in range(40):
+        low = [int(_RNG.integers(0, n)) for n in (nx, ny, nz)]
+        high = [int(_RNG.integers(lo, min(lo + 4, n))) for lo, n in
+                zip(low, (nx, ny, nz))]
+
+        limit = module._SCALAR_COLUMN_LIMIT
+        try:
+            module._SCALAR_COLUMN_LIMIT = 0            # force the array path
+            by_array = grid.rows_in_cell_box(low, high)
+            module._SCALAR_COLUMN_LIMIT = 10 ** 9      # force the Python path
+            by_walk = grid.rows_in_cell_box(low, high)
+        finally:
+            module._SCALAR_COLUMN_LIMIT = limit
+
+        assert np.array_equal(np.sort(by_array), np.sort(by_walk)), (low, high)
+        checked += 1
+    print(f"  {checked} small boxes answer the same whichever path runs")
+
+
+def test_runs_near_reads_the_same_points_as_rows_near():
+    """``runs_near`` is ``rows_near`` in offsets rather than rows.
+
+    A caller keeping its own cell-ordered copy of the points indexes it with
+    those offsets directly, which is what turns a cell from a gather into a
+    slice. It only means anything if the two agree exactly.
+    """
+    points = _cloud()
+    grid = SpatialGrid.build(points, target_cells=DEFAULT_TARGET_CELLS, sort=True)
+    ordered = points[grid.order]
+
+    for _ in range(30):
+        centre = points[int(_RNG.integers(0, len(points)))]
+        radius = float(_RNG.uniform(0.05, 4.0))
+
+        rows = grid.rows_near(centre, radius)
+        begins, ends = grid.runs_near(centre, radius)
+        parts = [ordered[b:e] for b, e in zip(begins, ends) if e > b]
+        by_run = np.concatenate(parts) if parts else np.empty((0, 3))
+
+        assert len(by_run) == len(rows)
+        assert np.array_equal(np.sort(by_run, axis=0),
+                              np.sort(points[rows], axis=0))
+
+    unsorted = SpatialGrid.build(points)
+    for call in (lambda: unsorted.runs_near(points[0], 1.0),
+                 lambda: unsorted.runs_in_cell_box((0, 0, 0), (1, 1, 1))):
+        try:
+            call()
+        except ValueError:
+            continue
+        raise AssertionError("an unsorted grid has no runs to hand out")
+    print("  runs_near reads the same points as rows_near, and needs a sort")
 
 
 def test_block_bounds_matches_the_masked_reduction():
@@ -422,6 +524,9 @@ if __name__ == "__main__":
     test_the_three_sizing_arguments_are_mutually_exclusive()
     test_sorting_does_not_change_what_is_in_a_cell()
     test_z_run_gather_matches_a_per_cell_gather()
+    test_a_cell_size_too_fine_to_number_is_coarsened()
+    test_the_small_box_shortcut_answers_like_the_array_path()
+    test_runs_near_reads_the_same_points_as_rows_near()
     test_block_bounds_matches_the_masked_reduction()
     test_argsort_buckets_identically_on_cpu_and_gpu()
     test_rows_near_never_misses_a_point_in_the_ball()
