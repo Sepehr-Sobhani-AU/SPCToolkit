@@ -16,7 +16,6 @@ from the growth parameters recorded alongside them. See
 from typing import Dict, Any
 
 import numpy as np
-from scipy.spatial import cKDTree
 from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
@@ -150,7 +149,6 @@ class ExtendLinesPlugin(ActionPlugin):
 
         return LinearRegionGrower(
             all_points=pc_points,
-            kdtree=cKDTree(pc_points),
             mode=mode,
             ransac_threshold=params.get("ransac_threshold", 0.03),
             max_iterations=params.get("ransac_iterations", 100),

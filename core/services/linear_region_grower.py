@@ -10,7 +10,8 @@ engine (``core/services/ransac.fit``):
   too few points, or empty space. Raw points only; best for isolated thin
   features (cables, pipes, rails).
 
-- ``"linearity_connected"`` — breadth-first neighbour expansion over a KD-tree,
+- ``"linearity_connected"`` — breadth-first neighbour expansion over the
+  spatial index,
   accepting a neighbour only if its *precomputed* per-point linearity is above a
   threshold. Best for edges/kerbs embedded in a surface, where an axis cylinder
   would leak into the surface. Requires a per-point linearity array (consumed
@@ -27,8 +28,8 @@ This is an *orchestrator* over RANSAC, per ``DECISIONS.md`` 2026-05-26: it calls
 from collections import deque, namedtuple
 
 import numpy as np
-from scipy.spatial import cKDTree
 
+from core.services.neighbor_index import NeighborIndex
 from core.services.ransac import fit
 from core.services.geometry_utils import unit, perp_basis, principal_axis
 from core.entities.vector_feature import VectorFeature
@@ -148,7 +149,10 @@ class LinearRegionGrower:
 
     Parameters:
         all_points: ``(N, 3)`` array — the full point cloud.
-        kdtree: Pre-built ``cKDTree`` for *all_points* (built on demand if None).
+        index: Pre-built ``NeighborIndex`` over *all_points* (built on demand if
+            None). Every neighbour query below goes through it, so the whole
+            cloud is indexed once by the shared spatial-grid service rather than
+            by a KD-tree of this algorithm's own.
         mode: One of ``AXIS_TRACE``, ``LINEARITY_CONNECTED``, ``HYBRID``.
         ransac_threshold: RANSAC line inlier distance threshold (m).
         max_iterations: Max RANSAC hypotheses tried per line fit.
@@ -173,7 +177,7 @@ class LinearRegionGrower:
     def __init__(
         self,
         all_points: np.ndarray,
-        kdtree: cKDTree = None,
+        index: NeighborIndex = None,
         mode: str = AXIS_TRACE,
         ransac_threshold: float = 0.03,
         max_iterations: int = 100,
@@ -190,7 +194,7 @@ class LinearRegionGrower:
         neighbor_k: int = 16,
     ):
         self.all_points = np.asarray(all_points)
-        self.kdtree = kdtree if kdtree is not None else cKDTree(self.all_points)
+        self.index = index if index is not None else NeighborIndex(self.all_points)
         self.mode = mode
 
         self.ransac_threshold = ransac_threshold
@@ -357,13 +361,13 @@ class LinearRegionGrower:
 
         tip = np.asarray(stop.tip, dtype=float)
         direction = unit(np.asarray(stop.direction, dtype=float))
-        candidate_idx = self.kdtree.query_ball_point(
+        candidate_idx = self.index.query_ball_point(
             tip + half * direction, np.sqrt(radius ** 2 + half ** 2)
         )
-        if not candidate_idx:
+        # `.size`, not `if not ...`: the index answers with an array, and the
+        # truth value of an array with more than one element is an error.
+        if candidate_idx.size == 0:
             return np.empty(0, dtype=np.intp)
-
-        candidate_idx = np.asarray(candidate_idx, dtype=np.intp)
         vecs = self.all_points[candidate_idx] - tip
         along = vecs @ direction
         perp_dist = np.linalg.norm(vecs - np.outer(along, direction), axis=1)
@@ -1058,7 +1062,7 @@ class LinearRegionGrower:
         anchor = seed_pts[int(np.argmin(np.abs(projections - mid)))].copy()
 
         direction = axis
-        nbr = self.kdtree.query_ball_point(anchor, self.cylinder_length)
+        nbr = self.index.query_ball_point(anchor, self.cylinder_length)
         if len(nbr) >= 2:
             local_model, _ = self._fit_line(
                 self.all_points[np.asarray(nbr, dtype=np.intp)],
@@ -1243,11 +1247,10 @@ class LinearRegionGrower:
         across a gap are visible.
         """
         centre = tip + reach_half * direction
-        candidate_idx = self.kdtree.query_ball_point(centre, reach_radius)
-        if not candidate_idx:
+        candidate_idx = self.index.query_ball_point(centre, reach_radius)
+        if candidate_idx.size == 0:
             return None
 
-        candidate_idx = np.asarray(candidate_idx, dtype=np.intp)
         pts = self.all_points[candidate_idx]
 
         # Project onto the CURRENT axis. perp_dist is each point's distance to
@@ -1386,16 +1389,16 @@ class LinearRegionGrower:
         while queue:
             i = queue.popleft()
             if use_radius:
-                nbrs = self.kdtree.query_ball_point(
+                nbrs = self.index.query_ball_point(
                     self.all_points[i], self.neighbor_radius
                 )
             else:
-                _, nbrs = self.kdtree.query(self.all_points[i], k=self.neighbor_k + 1)
+                _, nbrs = self.index.query(self.all_points[i], k=self.neighbor_k + 1)
                 nbrs = np.atleast_1d(nbrs)
 
             for j in nbrs:
                 j = int(j)
-                if j >= n or visited[j]:  # cKDTree returns n for missing neighbours
+                if j >= n or visited[j]:  # n marks a missing k-th neighbour
                     continue
                 visited[j] = True
                 if self.linearity[j] >= thr:

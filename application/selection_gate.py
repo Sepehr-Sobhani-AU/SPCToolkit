@@ -173,7 +173,7 @@ def selectable_cloud_indices(node, n_points=None):
     return np.flatnonzero(admissible).astype(np.intp)
 
 
-def picked_cloud_indices(viewer, pc_points, kdtree=None, allowed=None):
+def picked_cloud_indices(viewer, pc_points, index=None, allowed=None):
     """Map the viewer's current point picks onto indices into *pc_points*.
 
     The viewer renders a possibly sub-sampled copy of the branch, so a picked
@@ -196,9 +196,19 @@ def picked_cloud_indices(viewer, pc_points, kdtree=None, allowed=None):
     is picking should pass it — only the caller knows the answer in cloud-index
     space.
 
-    Pass *kdtree* (a ``cKDTree`` over *pc_points*) when the caller already has
-    one. Returns a sorted index array, or ``None`` when the picks could not be
-    resolved to any coordinate at all — which callers report as "no points".
+    Pass *index* when the caller already has one — a ``cKDTree`` over
+    *pc_points*, or anything with the same ``query``, such as a
+    ``core.services.neighbor_index.NeighborIndex``. Returns a sorted index
+    array, or ``None`` when the picks could not be resolved to any coordinate at
+    all — which callers report as "no points".
+
+    A tree is what gets built when nothing is passed, and deliberately so. This
+    is one batched nearest-neighbour lookup over every picked point, and a lasso
+    can leave hundreds of thousands of them: at 12M points a batch of 100,000
+    took 0.17 s through a ``cKDTree`` and 38 s through the spatial grid, which
+    answers one point at a time. The grid is the better index for the *other*
+    shape of question — a radius around a single position, asked over and over —
+    which is what the growing algorithms ask and why they use it instead.
 
     Everything here is done with numpy rather than Python loops and sets. A
     lasso leaves millions of picked points, and at that size building a list of
@@ -215,9 +225,9 @@ def picked_cloud_indices(viewer, pc_points, kdtree=None, allowed=None):
     if picked_rows.size == 0:
         return None
 
-    if kdtree is None:
-        kdtree = cKDTree(pc_points)
-    _dist, local = kdtree.query(
+    if index is None:
+        index = cKDTree(pc_points)
+    _dist, local = index.query(
         np.ascontiguousarray(viewer_points[picked_rows, :3], dtype=np.float32))
     indices = np.atleast_1d(np.asarray(local, dtype=np.intp))
 

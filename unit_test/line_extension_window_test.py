@@ -281,7 +281,7 @@ def test_a_polygon_cannot_drag_in_what_was_never_offered():
     sprawl[::3] = True                       # a third of the whole cloud
     viewer.polygon_mask = sprawl
 
-    raw = picked_cloud_indices(viewer, points, grower.kdtree)
+    raw = picked_cloud_indices(viewer, points, grower.index)
     used = window._picked_indices()
     print(f"polygon returned {len(raw):,} points; {len(used)} of them were on "
           f"offer and used")

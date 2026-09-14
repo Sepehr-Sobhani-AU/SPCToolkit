@@ -207,7 +207,6 @@ class PowerLineDetectionPlugin(ActionPlugin):
         # --- Build shared grower (axis-trace mode) and trace each cable ---
         grower = LinearRegionGrower(
             all_points=pc_points,
-            kdtree=tree_kd,
             mode=AXIS_TRACE,
             cylinder_radius=params.get("cylinder_radius", 0.5),
             cylinder_length=params.get("cylinder_length", 5.0),

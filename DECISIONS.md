@@ -707,3 +707,46 @@ The resolution is bounded at 64 picks: a polygon selection leaves millions and
 the readout runs on the 5 Hz poll. It stops as soon as two distinct lines are
 named, which is all Join needs, and the refusal message says to clear a big
 selection first.
+
+## 2026-08-23 — The growers index the cloud with the grid, not a KD-tree
+
+The linear region grower built a `cKDTree` over the whole cloud to answer "which
+points are inside this cylinder". That is the same question the viewer's picking
+asks, and it already had a service for it — so the grower now goes through
+`core/services/neighbor_index.py`, a `cKDTree`-shaped facade over
+`SpatialGrid`. Nothing above it changed: same method names, same return shapes,
+same answers, verified point for point against the tree.
+
+Measured on the real 12.4M non-ground cloud, tracing 100 features:
+
+    cKDTree        build 5.19 s   grow 1.23 s   total 6.42 s   index 521 MB
+    NeighborIndex  build 1.88 s   grow 1.24 s   total 3.13 s   index 211 MB
+
+The growing itself is the same speed, because it is bound by RANSAC fitting and
+not by neighbour lookups — a 100-feature trace made about a thousand queries.
+The whole difference is the index, and that is the point: the tree was 96-98% of
+a run. It also does not fit. Extrapolated to the 168M cloud a `cKDTree` wants
+about 7 GB, which on the 8-32 GB machines this project targets means the grower
+simply cannot run there; the grid wants 2.7 GB.
+
+**Per query the grid is slower, and deliberately accepted.** A ball query costs
+1.3-5x the tree's, worst at tight radii where the fixed overhead dominates. That
+is affordable because the number of queries is bounded by the *feature* being
+traced, not by the cloud. Two changes brought it from 8.7x to that: reading a
+cell as a slice of a cell-ordered copy of the coordinates instead of gathering
+scattered rows (156 us to 33 us on a 0.5 m ball — the same trick a KD-tree plays
+when it reorders its own data), and walking a small cell box in Python rather
+than building index arrays for it.
+
+**Batched nearest-neighbour keeps the tree, and that is not a compromise.**
+`selection_gate.picked_cloud_indices` maps every picked coordinate onto a cloud
+row in one call, and a lasso can leave hundreds of thousands of picks. At 12M
+points a batch of 100,000 took 0.17 s through the tree and 38 s through the
+grid, which answers one point at a time. Two different questions want two
+different indexes: the grid for a radius around a single position asked over and
+over, the tree for one enormous batch asked once. The line-extension window
+therefore keeps its own pick tree rather than reaching for the grower's index.
+
+Not changed here: `crease_tracer` and `contour_tracer` still build their own
+trees. They ask the same shape of question and should follow, but neither was
+measured.

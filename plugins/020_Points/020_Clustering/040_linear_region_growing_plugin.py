@@ -236,12 +236,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                           main_window, node=node)
         if seeds is None:
             return
-        seed_groups, tree_kd = seeds
+        seed_groups = seeds
 
         # --- Grow one line per group on a background thread (progress + cancel) ---
         grower = LinearRegionGrower(
             all_points=pc_points,
-            kdtree=tree_kd,
             mode=mode,
             ransac_threshold=params.get("ransac_threshold", 0.03),
             max_iterations=params.get("ransac_iterations", 100),
@@ -388,8 +387,16 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         own filters no longer apply — the viewer would report 32 seeds while
         this produced thousands, and a bush would be traced as a line.
 
-        Returns ``(seed_groups, tree_kd)`` — the KD-tree is reused by the grower —
-        or ``None`` when no usable seed group is found (a QMessageBox is shown).
+        Returns the seed groups, or ``None`` when no usable one is found (a
+        QMessageBox is shown).
+
+        The KD-tree here is local and dropped on return. It maps a batch of
+        picked coordinates onto cloud rows all at once, which is the one job in
+        this plugin a tree does far better than the grid: a lasso can leave
+        hundreds of thousands of picks, and at 12M points a batch of 100,000
+        took 0.17 s through the tree against 38 s through the grid. The grower
+        below indexes the cloud its own way, for its own kind of question — one
+        point at a time, thousands of times.
         """
         tree_kd = cKDTree(pc_points)
         allowed = selectable_cloud_indices(node, len(pc_points))
@@ -424,7 +431,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "'Seed Group Distance' or pick more points along each line.")
             return None
 
-        return seed_groups, tree_kd
+        return seed_groups
 
     def _grow_threaded(self, main_window, grower, seed_groups):
         """Run ``grower.grow_lines`` on a daemon thread with a status-bar progress
