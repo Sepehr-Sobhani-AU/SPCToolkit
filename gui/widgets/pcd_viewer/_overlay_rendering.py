@@ -48,13 +48,10 @@ class OverlayRenderingMixin:
 
         verts = self._polygon_vertices
 
-        # Choose color based on mode: red for deselect, blue for select
-        if self._polygon_deselect_mode:
-            fill_color = (1.0, 0.2, 0.2, 0.15)
-            edge_color = (1.0, 0.2, 0.2, 0.8)
-        else:
-            fill_color = (0.2, 0.4, 1.0, 0.15)
-            edge_color = (0.2, 0.4, 1.0, 0.8)
+        # One colour: whether the polygon selects or deselects is only decided
+        # by the double-click that closes it
+        fill_color = (0.2, 0.4, 1.0, 0.15)
+        edge_color = (0.2, 0.4, 1.0, 0.8)
 
         # Draw semi-transparent filled polygon (if >= 3 vertices)
         if len(verts) >= 3:

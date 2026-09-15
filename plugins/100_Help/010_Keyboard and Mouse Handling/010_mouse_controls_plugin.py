@@ -34,10 +34,10 @@ MOUSE_SECTIONS = [
         ("Left drag", "Draw the zoom rectangle; releasing zooms to it."),
         ("Right click", "Cancel zoom window mode."),
     ]),
-    ("Polygon mode (press P or Shift + P)", [
+    ("Polygon mode (press P)", [
         ("Left click", "Add a polygon vertex."),
-        ("Right click", "Close the polygon and select (or deselect) the points inside."),
-        ("Double Left click", "Close the polygon and select (or deselect) the points inside."),
+        ("Double Left click", "Close the polygon and select the points inside."),
+        ("Double Right click", "Close the polygon and deselect the points inside."),
     ]),
     ("Tree panel", [
         ("Left click", "Select a single branch, clearing any other selection."),

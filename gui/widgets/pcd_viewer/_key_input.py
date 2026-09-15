@@ -29,19 +29,12 @@ class KeyInputEventHandler:
             else:
                 self.enter_zoom_window_mode()
             return
-        elif event.key() == Qt.Key_P:
-            if event.modifiers() & Qt.ShiftModifier:
-                # Shift+P: Enter polygon deselect mode
-                if self._polygon_mode:
-                    self.exit_polygon_mode()
-                else:
-                    self.enter_polygon_deselect_mode()
+        elif event.key() == Qt.Key_P and not (event.modifiers() & Qt.ShiftModifier):
+            # P: Toggle polygon mode (double-click closes: left selects, right deselects)
+            if self._polygon_mode:
+                self.exit_polygon_mode()
             else:
-                # P: Toggle polygon selection mode
-                if self._polygon_mode:
-                    self.exit_polygon_mode()
-                else:
-                    self.enter_polygon_mode()
+                self.enter_polygon_mode()
         elif event.key() == Qt.Key_Escape:
             if self._zoom_window_mode:
                 self.exit_zoom_window_mode()

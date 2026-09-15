@@ -64,9 +64,9 @@ SPCToolkit offers two selection modes:
 ### Polygon Selection
 1. Press **P** to enter polygon selection mode
 2. Click to place polygon vertices
-3. Right-click or double-click to close the polygon
-4. All points inside the polygon are selected
-5. Press **Shift + P** for polygon deselection mode
+3. **Double left-click** to close the polygon and select the points inside
+4. **Double right-click** to close the polygon and deselect the points inside
+5. Press **Esc** to cancel
 
 ### Extracting Selections
 After selecting points, go to **Selection > Separate Selected Points** to extract them into a new branch.

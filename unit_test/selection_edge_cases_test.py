@@ -85,7 +85,6 @@ def _viewer():
 
 def _close_lasso(viewer, vertices, deselect=False):
     viewer._polygon_mode = True
-    viewer._polygon_deselect_mode = deselect
     viewer._polygon_vertices = list(vertices)
     if deselect:
         viewer._close_polygon_and_deselect()
@@ -432,6 +431,46 @@ def test_cluster_select_and_deselect_match_by_label_not_colour():
     print("  cluster select/deselect follow the label, not the shared colour")
 
 
+def test_polygon_double_click_decides_select_or_deselect():
+    """One polygon mode: left double-click selects, right double-click deselects.
+
+    A single right-click must not close the polygon, and Shift+P no longer
+    enters a separate deselect mode.
+    """
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+    from PyQt5.QtGui import QKeyEvent, QMouseEvent
+
+    def mouse(v, kind, button, x, y):
+        event = QMouseEvent(kind, QPointF(x, y), button, button, Qt.NoModifier)
+        if kind == QEvent.MouseButtonDblClick:
+            v.mouseDoubleClickEvent(event)
+        else:
+            v.mousePressEvent(event)
+
+    def draw(v, close_button):
+        v.enter_polygon_mode()
+        for x, y in _FULL_SCREEN:
+            mouse(v, QEvent.MouseButtonPress, Qt.LeftButton, x, y)
+        # A double-click arrives as a press, then the double-click event.
+        mouse(v, QEvent.MouseButtonPress, close_button, *_FULL_SCREEN[3])
+        assert v._polygon_mode, "a single click closed the polygon"
+        mouse(v, QEvent.MouseButtonDblClick, close_button, *_FULL_SCREEN[3])
+        assert not v._polygon_mode, "double-click did not close the polygon"
+
+    v = _viewer()
+    v.set_branches({"A": _cloud(5_000, seed=20)}, ["A"])
+
+    draw(v, Qt.LeftButton)
+    assert len(v.picked_points_indices) == 5_000, len(v.picked_points_indices)
+
+    draw(v, Qt.RightButton)
+    assert len(v.picked_points_indices) == 0, len(v.picked_points_indices)
+
+    v.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_P, Qt.ShiftModifier))
+    assert not v._polygon_mode, "Shift+P still enters polygon mode"
+    print("  polygon: left double-click selects, right double-click deselects")
+
+
 def _nearest_by_brute_force(points, target):
     """Nearest row, with non-finite distances excluded — the scan's behaviour."""
     offset = np.asarray(points[:, :3], dtype=np.float32) - np.float32(target)
@@ -445,6 +484,7 @@ if __name__ == "__main__":
     test_deselect_cluster_after_the_buffer_shrinks()
     test_cluster_select_and_deselect_match_by_label_not_colour()
     test_closing_a_lasso_with_nothing_visible()
+    test_polygon_double_click_decides_select_or_deselect()
     test_full_resolution_mask_honours_the_viewer_filters()
     test_a_stale_pick_grid_is_never_used()
     test_a_failed_build_is_not_retried_every_click()

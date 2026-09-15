@@ -48,18 +48,13 @@ class MouseInputEventHandler:
                 self.exit_zoom_window_mode()
             return
 
-        # Polygon mode: left-click adds vertex, right-click closes polygon
+        # Polygon mode: left-click adds a vertex. Closing is done by a double-click
+        # (see mouseDoubleClickEvent), so a single right-click does nothing.
         if self._polygon_mode:
             if event.button() == Qt.LeftButton:
                 self._polygon_vertices.append((event.x(), event.y()))
                 self.update()
-                return
-            elif event.button() == Qt.RightButton:
-                if self._polygon_deselect_mode:
-                    self._close_polygon_and_deselect()
-                else:
-                    self._close_polygon_and_select()
-                return
+            return
 
         self.last_mouse_pos = event.pos()
         modifiers = event.modifiers()
@@ -117,13 +112,13 @@ class MouseInputEventHandler:
         if self._zoom_window_mode:
             return
 
-        # Polygon mode: double-click closes polygon
+        # Polygon mode: left double-click closes and selects, right double-click
+        # closes and deselects
         if self._polygon_mode:
             if event.button() == Qt.LeftButton:
-                if self._polygon_deselect_mode:
-                    self._close_polygon_and_deselect()
-                else:
-                    self._close_polygon_and_select()
+                self._close_polygon_and_select()
+            elif event.button() == Qt.RightButton:
+                self._close_polygon_and_deselect()
             return
 
         if event.button() == Qt.LeftButton:

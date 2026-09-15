@@ -13,7 +13,6 @@ class PolygonSelectionMixin:
     def _init_polygon_state(self):
         """Initialize polygon selection state."""
         self._polygon_mode = False        # Whether polygon selection mode is active
-        self._polygon_deselect_mode = False  # Whether polygon is for deselection (vs selection)
         self._polygon_vertices = []       # List of (x, y) tuples in Qt widget coordinates
 
         # Stored polygons + matrices for full-resolution re-testing by plugins.
@@ -21,24 +20,14 @@ class PolygonSelectionMixin:
         self._selection_polygons = []
 
     def enter_polygon_mode(self):
-        """Activate polygon selection mode. User clicks to add vertices."""
+        """Activate polygon mode. Left clicks add vertices; a left double-click
+        closes the polygon and selects, a right double-click closes it and
+        deselects."""
         if self.points is None:
             return
         if self._zoom_window_mode:
             self.exit_zoom_window_mode()
         self._polygon_mode = True
-        self._polygon_vertices = []
-        self.setCursor(Qt.CrossCursor)
-        self.update()
-
-    def enter_polygon_deselect_mode(self):
-        """Activate polygon deselect mode. User draws a polygon to remove points from selection."""
-        if self.points is None:
-            return
-        if self._zoom_window_mode:
-            self.exit_zoom_window_mode()
-        self._polygon_mode = True
-        self._polygon_deselect_mode = True
         self._polygon_vertices = []
         self.setCursor(Qt.CrossCursor)
         self.update()
@@ -46,7 +35,6 @@ class PolygonSelectionMixin:
     def exit_polygon_mode(self):
         """Deactivate polygon selection mode and restore normal cursor."""
         self._polygon_mode = False
-        self._polygon_deselect_mode = False
         self._polygon_vertices = []
         self.setCursor(Qt.ArrowCursor)
         self.update()

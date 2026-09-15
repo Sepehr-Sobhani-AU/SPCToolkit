@@ -20,8 +20,8 @@ KEYBOARD_SECTIONS = [
         ("Z", "Toggle zoom window mode, then drag a rectangle to zoom into it."),
     ]),
     ("Selection — 3D viewer", [
-        ("P", "Toggle polygon selection mode."),
-        ("Shift + P", "Toggle polygon deselect mode (removes points from the selection)."),
+        ("P", "Toggle polygon mode. Double Left click closes it and selects; "
+              "double Right click closes it and deselects."),
         ("Esc", "Cancel zoom window or polygon mode. Otherwise, deselect all points "
                 "after confirmation."),
     ]),
