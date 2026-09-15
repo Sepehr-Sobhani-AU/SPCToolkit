@@ -30,7 +30,7 @@ import numpy as np
 from core.services.compute_backend import DEFAULT_BLOCK
 from core.services.spatial_grid import (
     DEFAULT_TARGET_CELLS, SpatialGrid, _bounds, _bucket, _cell_dtype,
-    _shape_for_cell_size, _shape_for_target_cells, PICK_GRID_SHAPE,
+    _shape_for_cell_size, _shape_for_target_cells, COARSE_SPATIAL_INDEX_SHAPE,
 )
 from plugins.backends.grid_backends import NumpyGrid
 
@@ -190,8 +190,6 @@ def build_by_phase(points, backend, shape=None, cell_size=None,
         shape = _shape_for_cell_size(span, cell_size)
     elif target_cells is not None:
         shape = _shape_for_target_cells(span, target_cells)
-    elif shape is None:
-        shape = PICK_GRID_SHAPE
     shape = tuple(int(v) for v in shape)
     step = (span / np.asarray(shape, dtype=np.float32)).astype(np.float32)
     inv_step = (np.float32(1.0) / step).astype(np.float32)
@@ -231,7 +229,7 @@ def run(points, radius):
     targets = points[rng.integers(0, n, 200)].astype(np.float64)
 
     configs = [
-        ("viewer  11x11x2 unsorted", dict()),
+        ("coarse  11x11x2 unsorted", dict(shape=COARSE_SPATIAL_INDEX_SHAPE)),
         (f"algo    {DEFAULT_TARGET_CELLS:,} sorted",
          dict(target_cells=DEFAULT_TARGET_CELLS, sort=True)),
     ]

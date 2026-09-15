@@ -23,18 +23,18 @@ class MemoryManager:
     BYTES_PER_POINT_VBO = 24         # 6 floats * 4 bytes (VRAM)
     BYTES_PER_POINT_BRANCH = 24      # the branch's own Nx6 render slice (RAM)
     BYTES_PER_POINT_COMBINED = 24    # the concatenated self.points copy (RAM)
-    BYTES_PER_POINT_PICK_GRID = 1    # one byte of cell id per point (RAM)
+    BYTES_PER_POINT_COARSE_INDEX = 1  # one byte of cell id per point (RAM)
 
     # One visible branch: self.points aliases the branch slice instead of
     # copying it (see PCDViewerWidget._build_combined), so the points are held
-    # once, plus the pick grid.
-    BYTES_PER_POINT_TOTAL_RAM = BYTES_PER_POINT_BRANCH + BYTES_PER_POINT_PICK_GRID  # 25
+    # once, plus the coarse spatial index.
+    BYTES_PER_POINT_TOTAL_RAM = BYTES_PER_POINT_BRANCH + BYTES_PER_POINT_COARSE_INDEX  # 25
 
     # Several visible branches: they genuinely have to be concatenated into one
     # array for global indexing, so the points are held twice.
     BYTES_PER_POINT_TOTAL_RAM_MULTI = (BYTES_PER_POINT_BRANCH
                                        + BYTES_PER_POINT_COMBINED
-                                       + BYTES_PER_POINT_PICK_GRID)  # 49
+                                       + BYTES_PER_POINT_COARSE_INDEX)  # 49
 
     BYTES_PER_POINT_TOTAL_VRAM = 24  # VBO only (VRAM)
 
@@ -174,7 +174,7 @@ class MemoryManager:
         Estimate memory needed to render a given number of points.
 
         Memory breakdown:
-        - RAM: branch slice (24 bytes) + pick grid (1 byte) = 25 bytes/point,
+        - RAM: branch slice (24 bytes) + coarse spatial index (1 byte) = 25 bytes/point,
           or 49 when several branches force a concatenated second copy
         - VRAM: VBO only = 24 bytes/point
         - Overhead: 10% if cached, 30% if not cached (reconstruction temps)

@@ -750,3 +750,11 @@ therefore keeps its own pick tree rather than reaching for the grower's index.
 Not changed here: `crease_tracer` and `contour_tracer` still build their own
 trees. They ask the same shape of question and should follow, but neither was
 measured.
+
+## 2026-09-15 — The (11, 11, 2) grid is the "coarse spatial index"
+The 242-cell, one-byte, unsorted `SpatialGrid` was called the "pick grid" because
+click-picking used it first. That name made it sound viewer-only, when it is a
+general index plugins and analysis will use to filter points. It is now always
+called the **coarse spatial index**: `COARSE_SPATIAL_INDEX_SHAPE`, built with
+`SpatialGrid.build_coarse_spatial_index()`. `_SHAPE` stays on the constant
+because the constant is the cell counts, not the index itself.

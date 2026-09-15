@@ -63,17 +63,17 @@ class DataManagementMixin:
         # uid -> (drawn slice, SpatialGrid over it), so a click measures one cell
         # instead of the whole cloud. Built in the background on first pick and
         # dropped alongside the VBO when the drawn rows are replaced — see
-        # _pick_grid_for(). Not built eagerly: a session that never clicks never
+        # _coarse_index_for(). Not built eagerly: a session that never clicks never
         # pays for one.
         #
         # The slice is stored *with* the grid rather than checked separately,
         # so that reading the pair and confirming it is current is a single
-        # dict lookup. See _build_pick_grid for the race that closes.
-        self._pick_grids: Dict[str, Tuple[np.ndarray, SpatialGrid]] = {}
-        self._pick_grid_building: Set[str] = set()
+        # dict lookup. See _build_coarse_index for the race that closes.
+        self._coarse_indexes: Dict[str, Tuple[np.ndarray, SpatialGrid]] = {}
+        self._coarse_index_building: Set[str] = set()
         # uids whose build raised. Cleared when the branch's rows are replaced,
         # so a failure costs one attempt per render rather than one per click.
-        self._pick_grid_failed: Set[str] = set()
+        self._coarse_index_failed: Set[str] = set()
 
         # Line geometry (e.g. mesh wireframes, CAD polylines). Independent of point data.
         self.line_vertices = None  # Nx3 float32
@@ -189,8 +189,8 @@ class DataManagementMixin:
             if v is not None:
                 self._pending_vbo_deletions.append(v)
             self._branch_vertices.pop(uid, None)
-            self._pick_grids.pop(uid, None)
-            self._pick_grid_failed.discard(uid)
+            self._coarse_indexes.pop(uid, None)
+            self._coarse_index_failed.discard(uid)
 
         # Update or add slices. Identity check keeps the VBO when the
         # producer hands us back the same cached slice.
@@ -200,12 +200,12 @@ class DataManagementMixin:
                 v = self._branch_vbos.pop(uid, None)
                 if v is not None:
                     self._pending_vbo_deletions.append(v)
-                # The pick grid numbers the rows of the OLD slice, so it goes
+                # The coarse spatial index numbers the rows of the OLD slice, so it goes
                 # exactly where the VBO does. Same condition, so the two can
                 # never drift apart. A previous build failure is forgotten
                 # here too, so new rows always get a fresh attempt.
-                self._pick_grids.pop(uid, None)
-                self._pick_grid_failed.discard(uid)
+                self._coarse_indexes.pop(uid, None)
+                self._coarse_index_failed.discard(uid)
             self._branch_vertices[uid] = slc
 
         self._visible_branches = list(visible_order)
@@ -287,11 +287,11 @@ class DataManagementMixin:
         return out
 
     # ------------------------------------------------------------------
-    # Pick grid
+    # Coarse spatial index
     # ------------------------------------------------------------------
 
-    def _pick_grid_for(self, uid: str) -> Optional[SpatialGrid]:
-        """The pick grid for branch *uid*, or None while it is not ready.
+    def _coarse_index_for(self, uid: str) -> Optional[SpatialGrid]:
+        """The coarse spatial index for branch *uid*, or None while it is not ready.
 
         Starts the build on first ask and returns None until it finishes, so the
         window never blocks: numbering every point takes about 11 s at 170M on
@@ -304,7 +304,7 @@ class DataManagementMixin:
 
         # One lookup yields both the grid and the rows it was built over, so a
         # grid can never be paired with a slice it does not describe.
-        cached = self._pick_grids.get(uid)
+        cached = self._coarse_indexes.get(uid)
         if cached is not None:
             built_over, grid = cached
             if built_over is slc:
@@ -315,18 +315,18 @@ class DataManagementMixin:
         # redoes the full O(N) numbering — so a cloud whose build runs out of
         # memory would stack up a fresh multi-second thread every time the user
         # clicks. Recorded by uid, not by array, so it pins nothing.
-        if uid in self._pick_grid_failed:
+        if uid in self._coarse_index_failed:
             return None
 
-        if uid not in self._pick_grid_building:
-            self._pick_grid_building.add(uid)
+        if uid not in self._coarse_index_building:
+            self._coarse_index_building.add(uid)
             threading.Thread(
-                target=self._build_pick_grid, args=(uid, slc),
-                name=f"pick-grid-{uid[:8]}", daemon=True,
+                target=self._build_coarse_index, args=(uid, slc),
+                name=f"coarse-index-{uid[:8]}", daemon=True,
             ).start()
         return None
 
-    def _build_pick_grid(self, uid: str, slc: np.ndarray) -> None:
+    def _build_coarse_index(self, uid: str, slc: np.ndarray) -> None:
         """Number *slc*'s points by cell, off the GUI thread.
 
         Only reads *slc*, which is non-writeable anyway (see _build_combined),
@@ -341,9 +341,9 @@ class DataManagementMixin:
         check to the reader, where it is a single dict lookup.
         """
         try:
-            grid = SpatialGrid.build(slc)
+            grid = SpatialGrid.build_coarse_spatial_index(slc)
         except Exception:
-            logger.error(f"Failed to build the pick grid for {uid[:8]}:\n"
+            logger.error(f"Failed to build the coarse spatial index for {uid[:8]}:\n"
                          f"{traceback.format_exc()}")
             grid = None
 
@@ -351,16 +351,16 @@ class DataManagementMixin:
             # Remember the failure so clicks fall back to the scan instead of
             # restarting the build every time. set_branches() clears it when the
             # branch's rows are replaced, so a re-render gets a fresh attempt.
-            self._pick_grid_failed.add(uid)
+            self._coarse_index_failed.add(uid)
         elif self._branch_vertices.get(uid) is slc:
             # Publish only while the branch still draws these rows. Without this
             # a build that lands after its branch was hidden re-adds an entry
             # that set_branches() has already dropped and nothing can reach
             # again — leaking the grid and pinning the whole render slice.
-            self._pick_grids[uid] = (slc, grid)
-            logger.debug(f"Pick grid ready for {uid[:8]}: {len(slc):,} points")
+            self._coarse_indexes[uid] = (slc, grid)
+            logger.debug(f"Coarse spatial index ready for {uid[:8]}: {len(slc):,} points")
 
-        self._pick_grid_building.discard(uid)
+        self._coarse_index_building.discard(uid)
 
     def rendered_rows(self, uid: str, cloud_indices: np.ndarray) -> np.ndarray:
         """The rendered rows of branch *uid* showing the given source rows.
@@ -474,8 +474,8 @@ class DataManagementMixin:
             self._pending_vbo_deletions.append(v)
         self._branch_vbos.clear()
         self._branch_vertices.clear()
-        self._pick_grids.clear()
-        self._pick_grid_failed.clear()
+        self._coarse_indexes.clear()
+        self._coarse_index_failed.clear()
         self._visible_branches = []
         self._combined_points_cache = None
         self._branch_offsets_cache = None

@@ -10,7 +10,7 @@
 #      Deselecting with a lasso indexed straight into it.
 #   2. A lasso already in progress survives its branches being hidden, so
 #      self.points is None by the time the polygon closes.
-#   3. A pick grid is built on a background thread. Publishing it after
+#   3. A coarse spatial index is built on a background thread. Publishing it after
 #      checking the branch still holds the same rows was two statements, so a
 #      re-render in between could pair a grid with rows it does not describe.
 #   4. One non-finite coordinate made the grid's bounding box NaN on that axis,
@@ -137,7 +137,7 @@ def test_closing_a_lasso_with_nothing_visible():
     print("  lasso closed with nothing visible: select and deselect both fine")
 
 
-def test_a_stale_pick_grid_is_never_used():
+def test_a_stale_coarse_index_is_never_used():
     """A grid published for rows that are no longer drawn must be ignored.
 
     The build runs on a background thread. This drives the interleaving the
@@ -149,24 +149,24 @@ def test_a_stale_pick_grid_is_never_used():
     big, small = _cloud(50_000, seed=4), _cloud(10_000, seed=5)
 
     v.set_branches({"A": big}, ["A"])
-    v._build_pick_grid("A", big)                 # grid for the 50,000 rows
-    assert v._pick_grid_for("A") is not None
+    v._build_coarse_index("A", big)                 # grid for the 50,000 rows
+    assert v._coarse_index_for("A") is not None
 
     v.set_branches({"A": small}, ["A"])          # rows replaced under it
-    assert v._pick_grid_for("A") is None, "a grid for the old rows was handed out"
+    assert v._coarse_index_for("A") is None, "a grid for the old rows was handed out"
 
     # Worse case: the build finishes *after* the swap and tries to publish. It
     # must not land at all — an entry for a branch that no longer draws those
     # rows is unreachable, so it would leak the grid and pin the whole slice.
-    v._build_pick_grid("A", big)
-    stored = v._pick_grids.get("A")
+    v._build_coarse_index("A", big)
+    stored = v._coarse_indexes.get("A")
     assert stored is None or stored[0] is v._branch_vertices["A"], \
         "a grid for the old rows was published"
 
     # Whatever is handed out from here on must describe the rows now drawn,
     # whether that is a fresh grid or None while one builds.
     for _ in range(200):
-        grid = v._pick_grid_for("A")
+        grid = v._coarse_index_for("A")
         if grid is not None:
             assert grid.n_points == len(small), \
                 f"grid covers {grid.n_points} rows, buffer has {len(small)}"
@@ -215,11 +215,11 @@ def test_a_failed_build_is_not_retried_every_click():
         grid_log.setLevel(previous_level)
 
     assert len(attempts) == 1, f"{len(attempts)} build attempts over 10 clicks"
-    assert "A" in v._pick_grid_failed
+    assert "A" in v._coarse_index_failed
 
     # New rows must get a fresh attempt.
     v.set_branches({"A": _cloud(5_000, seed=9)}, ["A"])
-    assert "A" not in v._pick_grid_failed, "the failure outlived the rows it happened for"
+    assert "A" not in v._coarse_index_failed, "the failure outlived the rows it happened for"
     print(f"  failed build attempted {len(attempts)}x over 10 clicks, reset on re-render")
 
 
@@ -234,16 +234,16 @@ def test_every_visible_branch_starts_building_on_one_click():
     branches = {f"B{i}": _cloud(20_000, seed=20 + i) for i in range(4)}
     v.set_branches(branches, list(branches))
 
-    v._nearest_via_pick_grids(branches["B0"][0, :3], v.max_extent)   # one click
+    v._nearest_via_coarse_indexes(branches["B0"][0, :3], v.max_extent)   # one click
     for _ in range(200):
-        if all(u in v._pick_grids for u in branches):
+        if all(u in v._coarse_indexes for u in branches):
             break
         time.sleep(0.05)
 
-    ready = sum(1 for u in branches if u in v._pick_grids)
+    ready = sum(1 for u in branches if u in v._coarse_indexes)
     assert ready == len(branches), f"only {ready}/{len(branches)} grids built after one click"
 
-    got, _ = v._nearest_via_pick_grids(branches["B0"][0, :3], v.max_extent)
+    got, _ = v._nearest_via_coarse_indexes(branches["B0"][0, :3], v.max_extent)
     assert got is True, "the grid path did not engage once every grid was ready"
     print(f"  one click started all {len(branches)} builds; grid path engaged next click")
 
@@ -271,7 +271,7 @@ def test_one_bad_coordinate_does_not_degrade_the_grid():
     for backend in backends:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            grid = SpatialGrid.build(dirty, backend=backend)
+            grid = SpatialGrid.build_coarse_spatial_index(dirty, backend=backend)
 
         cells = np.unique(grid.cell_ids).size
         assert cells == 242, f"{backend.name}: only {cells} of 242 cells used"
@@ -486,7 +486,7 @@ if __name__ == "__main__":
     test_closing_a_lasso_with_nothing_visible()
     test_polygon_double_click_decides_select_or_deselect()
     test_full_resolution_mask_honours_the_viewer_filters()
-    test_a_stale_pick_grid_is_never_used()
+    test_a_stale_coarse_index_is_never_used()
     test_a_failed_build_is_not_retried_every_click()
     test_every_visible_branch_starts_building_on_one_click()
     test_one_bad_coordinate_does_not_degrade_the_grid()

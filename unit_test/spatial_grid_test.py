@@ -2,7 +2,7 @@
 #
 # Tests for core.services.spatial_grid, the shared point index.
 #
-# It grew out of the viewer's pick grid, which was one coarse unsorted grid
+# It grew out of the viewer's click picking, which used one coarse unsorted grid
 # tuned for a single mouse click. It is now a service two very different callers
 # share: the viewer still wants 242 cells and no sorting, while an algorithm
 # wants cells sized to its query radius and the rows bucketed so a lookup is a
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 from core.services.spatial_grid import (
-    DEFAULT_TARGET_CELLS, PICK_GRID_SHAPE, UINT8_CELL_LIMIT, UINT16_CELL_LIMIT,
+    DEFAULT_TARGET_CELLS, COARSE_SPATIAL_INDEX_SHAPE, UINT8_CELL_LIMIT, UINT16_CELL_LIMIT,
     SpatialGrid, _bounds,
 )
 from plugins.backends.grid_backends import NumpyGrid
@@ -48,16 +48,16 @@ def _gpu_backend():
         return None
 
 
-def test_viewer_preset_is_unchanged():
-    """The default is still the pick grid: 242 cells, one byte, no sorting.
+def test_coarse_spatial_index_preset_is_unchanged():
+    """The coarse spatial index: 242 cells, one byte, no sorting.
 
     Generalising the service must not quietly change what the viewer builds —
     the one-byte cell number is what keeps the index at 0.17 GB rather than
     0.68 GB on a 170M point cloud, and sorting is deliberately skipped because
     nobody can perceive it on a mouse click.
     """
-    grid = SpatialGrid.build(_cloud())
-    assert grid.shape == PICK_GRID_SHAPE, grid.shape
+    grid = SpatialGrid.build_coarse_spatial_index(_cloud())
+    assert grid.shape == COARSE_SPATIAL_INDEX_SHAPE, grid.shape
     assert grid.n_cells <= UINT8_CELL_LIMIT
     assert grid.cell_ids.dtype == np.uint8, grid.cell_ids.dtype
     assert not grid.sorted
@@ -137,17 +137,18 @@ def test_a_sorted_grid_drops_its_cell_ids():
           f"(order only; starts is per cell)")
 
 
-def test_the_three_sizing_arguments_are_mutually_exclusive():
-    pairs = [("shape", "cell_size"), ("shape", "target_cells"),
-             ("cell_size", "target_cells")]
+def test_exactly_one_sizing_argument_is_required():
+    """No sizing argument is refused too: there is no hidden default grid."""
     values = {"shape": (4, 4, 4), "cell_size": 2.0, "target_cells": 1000}
-    for a, b in pairs:
+    cases = [(), ("shape", "cell_size"), ("shape", "target_cells"),
+             ("cell_size", "target_cells")]
+    for names in cases:
         try:
-            SpatialGrid.build(_cloud(1000), **{a: values[a], b: values[b]})
+            SpatialGrid.build(_cloud(1000), **{n: values[n] for n in names})
         except ValueError:
             continue
-        raise AssertionError(f"expected ValueError for {a} + {b}")
-    print("  shape / cell_size / target_cells all refuse each other")
+        raise AssertionError(f"expected ValueError for {names or 'no sizing'}")
+    print("  no sizing, or two at once, is refused")
 
 
 def test_sorting_does_not_change_what_is_in_a_cell():
@@ -176,7 +177,7 @@ def test_rows_near_never_misses_a_point_in_the_ball():
     grids = {
         "sorted": SpatialGrid.build(points, cell_size=2.0, sort=True),
         "unsorted": SpatialGrid.build(points, cell_size=2.0, sort=False),
-        "viewer": SpatialGrid.build(points),
+        "viewer": SpatialGrid.build_coarse_spatial_index(points),
     }
 
     for radius in (0.15, 1.5, 6.0):
@@ -193,7 +194,7 @@ def test_rows_near_never_misses_a_point_in_the_ball():
 
 def test_a_query_outside_the_cloud_is_answered_not_crashed():
     points = _cloud(5_000)
-    for grid in (SpatialGrid.build(points),
+    for grid in (SpatialGrid.build_coarse_spatial_index(points),
                  SpatialGrid.build(points, cell_size=2.0, sort=True)):
         rows = grid.rows_near([1e4, -1e4, 500.0], 1.0)
         assert isinstance(rows, np.ndarray)
@@ -208,7 +209,7 @@ def test_nearest_agrees_with_brute_force():
     """The viewer's click path, on every configuration of the service."""
     points = _cloud(120_000)
     grids = {
-        "viewer": SpatialGrid.build(points),
+        "viewer": SpatialGrid.build_coarse_spatial_index(points),
         "fine-sorted": SpatialGrid.build(points, cell_size=2.0, sort=True),
         "fine-unsorted": SpatialGrid.build(points, cell_size=2.0, sort=False),
     }
@@ -360,7 +361,7 @@ def test_runs_near_reads_the_same_points_as_rows_near():
         assert np.array_equal(np.sort(by_run, axis=0),
                               np.sort(points[rows], axis=0))
 
-    unsorted = SpatialGrid.build(points)
+    unsorted = SpatialGrid.build_coarse_spatial_index(points)
     for call in (lambda: unsorted.runs_near(points[0], 1.0),
                  lambda: unsorted.runs_in_cell_box((0, 0, 0), (1, 1, 1))):
         try:
@@ -473,7 +474,7 @@ def test_an_unsupported_output_width_is_refused():
 
 def test_degenerate_clouds():
     """Empty, single point, and a flat axis — all of which real data produces."""
-    assert SpatialGrid.build(np.empty((0, 3), dtype=np.float32)) is None
+    assert SpatialGrid.build_coarse_spatial_index(np.empty((0, 3), dtype=np.float32)) is None
 
     one = np.zeros((1, 3), dtype=np.float32)
     grid = SpatialGrid.build(one, cell_size=1.0, sort=True)
@@ -516,12 +517,12 @@ def test_one_bad_coordinate_does_not_collapse_the_grid():
 
 
 if __name__ == "__main__":
-    test_viewer_preset_is_unchanged()
+    test_coarse_spatial_index_preset_is_unchanged()
     test_cell_size_gives_a_finer_grid()
     test_target_cells_never_exceeds_its_ceiling()
     test_every_cell_width_is_reachable()
     test_a_sorted_grid_drops_its_cell_ids()
-    test_the_three_sizing_arguments_are_mutually_exclusive()
+    test_exactly_one_sizing_argument_is_required()
     test_sorting_does_not_change_what_is_in_a_cell()
     test_z_run_gather_matches_a_per_cell_gather()
     test_a_cell_size_too_fine_to_number_is_coarsened()

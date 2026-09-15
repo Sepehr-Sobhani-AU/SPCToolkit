@@ -106,7 +106,7 @@ class PointPickingMixin:
         re-centre the view — so they all get the same speed from one
         implementation.
 
-        Uses the per-branch pick grid when it is ready, which measures the
+        Uses the per-branch coarse spatial index when it is ready, which measures the
         distance to the points in the cursor's cell instead of to every point in
         the cloud. Falls back to a straight scan while a grid is still building,
         which is what this did before the grid existed.
@@ -123,13 +123,13 @@ class PointPickingMixin:
         Returns:
             int row index, or None.
         """
-        ready, index = self._nearest_via_pick_grids(target, radius)
+        ready, index = self._nearest_via_coarse_indexes(target, radius)
         if ready:
             return index
         return self._nearest_by_scan(target, radius)
 
-    def _nearest_via_pick_grids(self, target, radius):
-        """``(ready, index)`` from the per-branch pick grids.
+    def _nearest_via_coarse_indexes(self, target, radius):
+        """``(ready, index)`` from the per-branch coarse spatial indexes.
 
         *ready* is False when any visible branch has no grid yet, in which case
         the caller scans instead. All-or-nothing on purpose: mixing a gridded
@@ -151,7 +151,7 @@ class PointPickingMixin:
         ready = True
 
         for uid, (start, _end) in offsets.items():
-            grid = self._pick_grid_for(uid)
+            grid = self._coarse_index_for(uid)
             if grid is None:
                 ready = False
                 continue
@@ -166,7 +166,7 @@ class PointPickingMixin:
     def _nearest_by_scan(self, target, radius):
         """Row of ``self.points`` closest to *target* by straight scan.
 
-        The fallback for while a pick grid is still being built. Chunked so the
+        The fallback for while a coarse spatial index is still being built. Chunked so the
         intermediate masks stay bounded on a very large buffer.
         """
         pts = self.points

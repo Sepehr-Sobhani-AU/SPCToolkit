@@ -12,11 +12,12 @@ them, and measures only those.
 
 **Two shapes of use, one class.**
 
-*Coarse and unsorted* — the viewer's pick grid. 11 x 11 x 2 = 242 cells so the
-cell number fits in one byte (0.17 GB at 170M points rather than 0.68 GB), no
-sorting, and ``nearest()`` answers one click. Finding the rows in a cell means
-reading the whole index array, which is ~2 ms at 20M — invisible on a mouse
-click, and it buys back the 8 s a full scan used to cost.
+*Coarse and unsorted* — the **coarse spatial index**, built with
+``build_coarse_spatial_index()``. 11 x 11 x 2 = 242 cells so the cell number
+fits in one byte (0.17 GB at 170M points rather than 0.68 GB), no sorting, and
+``nearest()`` answers one click. Finding the rows in a cell means reading the
+whole index array, which is ~2 ms at 20M — invisible on a mouse click, and it
+buys back the 8 s a full scan used to cost.
 
 *Fine and sorted* — what an algorithm wants. ``target_cells=`` for the
 resolution and ``sort=True`` so the rows of a cell are a slice instead of a
@@ -68,10 +69,10 @@ from core.services.compute_backend import DEFAULT_BLOCK, resolve_backend
 
 logger = logging.getLogger(__name__)
 
-# The viewer's pick-grid shape. Cells per axis; the product is <= 256, so a cell
-# number fits in one byte. Two rows in Z because a survey bounding box is usually
+# The coarse spatial index's shape. Cells per axis; the product is <= 256, so a
+# cell number fits in one byte. Two rows in Z because a survey bounding box is usually
 # much flatter than it is wide.
-PICK_GRID_SHAPE = (11, 11, 2)
+COARSE_SPATIAL_INDEX_SHAPE = (11, 11, 2)
 
 # How many cells each integer width can number.
 UINT8_CELL_LIMIT = 256
@@ -141,6 +142,16 @@ class SpatialGrid:
     # ------------------------------------------------------------------
 
     @classmethod
+    def build_coarse_spatial_index(cls, points, **kwargs):
+        """Build the coarse spatial index over *points*.
+
+        ``COARSE_SPATIAL_INDEX_SHAPE`` cells, one byte per point, unsorted: a
+        cheap first cut for picking and filtering. Takes the same keywords as
+        ``build`` apart from the sizing ones.
+        """
+        return cls.build(points, shape=COARSE_SPATIAL_INDEX_SHAPE, **kwargs)
+
+    @classmethod
     def build(cls, points, shape=None, cell_size=None, target_cells=None,
               sort=False, block=DEFAULT_BLOCK, backend=None, max_cells=None):
         """Build a grid over *points*.
@@ -148,8 +159,9 @@ class SpatialGrid:
         Args:
             points: (N, >=3) float32 array. Only xyz is read, so the viewer's
                 interleaved xyz+rgb render buffer can be passed unchanged.
-            shape: cells per axis. Give one of *shape*, *cell_size* or
-                *target_cells*; the default is the viewer's ``PICK_GRID_SHAPE``.
+            shape: cells per axis. Give exactly one of *shape*, *cell_size*
+                or *target_cells*; for the coarse spatial index, call
+                ``build_coarse_spatial_index`` instead.
             cell_size: target cell edge length in world units, as a scalar or
                 per axis. The shape is derived from the bounding box, so the
                 cells come out at most this big.
@@ -175,17 +187,17 @@ class SpatialGrid:
         Returns:
             SpatialGrid, or None when there is nothing to index.
         """
-        points = np.asarray(points)
-        n = len(points)
-        if n == 0:
-            return None
         given = [name for name, value in (("shape", shape),
                                           ("cell_size", cell_size),
                                           ("target_cells", target_cells))
                  if value is not None]
-        if len(given) > 1:
-            raise ValueError(f"give only one of shape, cell_size or "
-                             f"target_cells; got {', '.join(given)}")
+        if len(given) != 1:
+            raise ValueError(f"give exactly one of shape, cell_size or "
+                             f"target_cells; got {', '.join(given) or 'none'}")
+        points = np.asarray(points)
+        n = len(points)
+        if n == 0:
+            return None
 
         impl = resolve_backend("grid", backend)
         lo, hi = _bounds(points, block, impl)
@@ -200,8 +212,6 @@ class SpatialGrid:
             shape = _shape_for_cell_size(span, cell_size)
         elif target_cells is not None:
             shape = _shape_for_target_cells(span, target_cells)
-        elif shape is None:
-            shape = PICK_GRID_SHAPE
         shape = tuple(int(v) for v in shape)
         if any(v < 1 for v in shape):
             raise ValueError(f"grid {shape} has an axis with no cells")

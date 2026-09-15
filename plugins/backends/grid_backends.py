@@ -6,7 +6,7 @@ fall in. Both receive one block of points at a time from
 ``core.services.spatial_grid``; neither decides how the cloud is split up.
 
 This used to live on ``ScreenSelectionBackend`` in ``selection_backends.py``,
-because the viewer's pick grid was the first thing that needed it. It is not a
+because the viewer's click picking was the first thing that needed it. It is not a
 screen operation — it is a spatial index any service can build — so it now has
 its own backend kind and its own file, and the viewer is just one caller.
 
