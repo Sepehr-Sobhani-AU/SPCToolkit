@@ -3,7 +3,7 @@
 Plugin for displaying the mouse controls reference.
 
 The bindings listed here are the ones handled by
-`gui/widgets/pcd_viewer/_mouse_input.py` (MouseInputMixin), the viewer's zoom
+`gui/widgets/pcd_viewer/_mouse_input.py` (MouseInputEventHandler), the viewer's zoom
 window and polygon modes, and `gui/widgets/tree_structure_widget.py`.
 """
 

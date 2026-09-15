@@ -4,7 +4,7 @@ from PyQt5.QtCore import Qt
 logger = logging.getLogger(__name__)
 
 
-class MouseInputMixin:
+class MouseInputEventHandler:
     """Mouse event handling for PCDViewerWidget."""
 
     def _init_mouse_state(self):

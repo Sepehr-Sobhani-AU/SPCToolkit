@@ -4,7 +4,7 @@ from PyQt5.QtCore import Qt
 from ._properties import ViewerPropertiesMixin
 from ._gl_rendering import GLRenderingMixin
 from ._data_management import DataManagementMixin
-from ._mouse_input import MouseInputMixin
+from ._mouse_input import MouseInputEventHandler
 from ._key_input import KeyInputMixin
 from ._point_picking import PointPickingMixin
 from ._camera_control import CameraControlMixin
@@ -18,7 +18,7 @@ class PCDViewerWidget(
     ViewerPropertiesMixin,
     GLRenderingMixin,
     DataManagementMixin,
-    MouseInputMixin,
+    MouseInputEventHandler,
     KeyInputMixin,
     PointPickingMixin,
     CameraControlMixin,
