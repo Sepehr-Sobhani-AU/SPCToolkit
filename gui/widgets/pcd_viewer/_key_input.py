@@ -7,7 +7,7 @@ from config.config import global_variables
 logger = logging.getLogger(__name__)
 
 
-class KeyInputMixin:
+class KeyInputEventHandler:
     """Keyboard event handling for PCDViewerWidget."""
 
     def keyPressEvent(self, event):

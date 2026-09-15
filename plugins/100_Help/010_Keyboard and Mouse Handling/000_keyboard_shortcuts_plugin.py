@@ -3,7 +3,7 @@
 Plugin for displaying the keyboard shortcuts reference.
 
 The bindings listed here are the ones handled by
-`gui/widgets/pcd_viewer/_key_input.py` (KeyInputMixin). The application has no
+`gui/widgets/pcd_viewer/_key_input.py` (KeyInputEventHandler). The application has no
 menu accelerators, so the 3D viewer must have focus for any of them to fire.
 """
 
