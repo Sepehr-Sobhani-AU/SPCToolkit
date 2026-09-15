@@ -48,7 +48,8 @@ class PCDViewerWidget(
         - SHIFT + Right Click: Deselect a point in the point cloud.
         - P: Enter polygon selection mode (click vertices, right-click/double-click to close and select).
         - Shift + P: Enter polygon deselect mode (draw polygon to remove points from selection).
-        - CTRL + SHIFT + Right Click: Deselect all selected points from the clicked cluster (by color).
+        - CTRL + SHIFT + Left Click: Select all points of the clicked cluster (by cluster label).
+        - CTRL + SHIFT + Right Click: Deselect all selected points of the clicked cluster (by cluster label).
         - Z: Toggle zoom window mode (drag a rectangle to zoom into that region).
         - ESC: Cancel zoom window / polygon mode (if active), or deselect all selected points after confirmation.
         - + / =: Increase point size (geometric scaling x1.2).

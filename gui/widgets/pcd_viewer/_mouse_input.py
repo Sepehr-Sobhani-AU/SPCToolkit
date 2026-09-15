@@ -65,8 +65,11 @@ class MouseInputEventHandler:
         modifiers = event.modifiers()
 
         if (modifiers & Qt.ShiftModifier) and (modifiers & Qt.ControlModifier):
-            if event.button() == Qt.RightButton:
-                # Ctrl + Shift + Right Click: Deselect cluster by color
+            if event.button() == Qt.LeftButton:
+                # Ctrl + Shift + Left Click: Select cluster by label
+                self.select_cluster_at(event.pos())
+            elif event.button() == Qt.RightButton:
+                # Ctrl + Shift + Right Click: Deselect cluster by label
                 self.deselect_cluster_at(event.pos())
         elif modifiers & Qt.ShiftModifier:
             if event.button() == Qt.LeftButton:

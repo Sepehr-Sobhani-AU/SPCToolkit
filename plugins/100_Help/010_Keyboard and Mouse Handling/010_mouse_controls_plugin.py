@@ -25,8 +25,10 @@ MOUSE_SECTIONS = [
     ("Selection — 3D viewer", [
         ("Shift + Left click", "Select the point under the cursor."),
         ("Shift + Right click", "Deselect the point under the cursor."),
+        ("Ctrl + Shift + Left click", "Select the whole cluster under the cursor "
+                                      "(matched by cluster label)."),
         ("Ctrl + Shift + Right click", "Deselect the whole cluster under the cursor "
-                                       "(matched by colour)."),
+                                       "(matched by cluster label)."),
     ]),
     ("Zoom window mode (press Z)", [
         ("Left drag", "Draw the zoom rectangle; releasing zooms to it."),

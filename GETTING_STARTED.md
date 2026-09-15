@@ -58,6 +58,8 @@ SPCToolkit offers two selection modes:
 ### Point Selection
 - **Shift + Left Click** — Select a single point
 - **Shift + Right Click** — Deselect a single point
+- **Ctrl + Shift + Left Click** — Select the whole cluster under the cursor (by cluster label)
+- **Ctrl + Shift + Right Click** — Deselect the whole cluster under the cursor (by cluster label)
 
 ### Polygon Selection
 1. Press **P** to enter polygon selection mode

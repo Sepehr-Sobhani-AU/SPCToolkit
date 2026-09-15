@@ -102,8 +102,9 @@ class PointPickingMixin:
         *radius*.
 
         The one place every snap-to-point goes through — Shift+Left select,
-        Ctrl+Shift+Right cluster deselect, and double-click to re-centre the
-        view — so all three get the same speed from one implementation.
+        Ctrl+Shift+Left/Right cluster select/deselect, and double-click to
+        re-centre the view — so they all get the same speed from one
+        implementation.
 
         Uses the per-branch pick grid when it is ready, which measures the
         distance to the points in the cursor's cell instead of to every point in
@@ -310,26 +311,80 @@ class PointPickingMixin:
             # Invalidate stored polygons so plugins fall back to coordinate matching
             self._selection_polygons.clear()
 
+    def _cluster_at(self, mouse_pos):
+        """The cluster under the cursor, as ``(uid, start, end, label)``.
+
+        Clusters are identified by their label within their own branch, never by
+        colour: two clusters can be drawn in the same RGB, and label 3 of one
+        branch is unrelated to label 3 of another.
+
+        Args:
+            mouse_pos (QPoint): The position of the mouse click in widget coordinates.
+
+        Returns:
+            tuple or None: None when nothing is under the cursor, the point's
+            branch carries no cluster labels, or the point is noise (-1).
+        """
+        clicked_index, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
+        if clicked_index is None:
+            return None
+
+        for uid, (start, end) in self._branch_offsets.items():
+            if start <= clicked_index < end:
+                labels = self._get_cluster_labels(uid)
+                if labels is None:
+                    return None
+                label = self._label_of(uid, labels, clicked_index, start)
+                if label is None or label == -1:
+                    return None
+                return uid, start, end, label
+        return None
+
+    def select_cluster_at(self, mouse_pos):
+        """
+        Add every point of the cluster under the cursor to the selection.
+
+        The cluster is matched by the clicked point's cluster label within its
+        own branch (see ``_cluster_at``). Only rendered points are added, and they
+        pass the same filters as any other selection: branch membership, select
+        locks and noise. Does nothing if the clicked branch has no cluster labels.
+
+        Args:
+            mouse_pos (QPoint): The position of the mouse click in widget coordinates.
+        """
+        cluster = self._cluster_at(mouse_pos)
+        if cluster is None:
+            return
+        uid, start, end, label = cluster
+
+        candidates = np.arange(start, end, dtype=np.int64)
+        labels = self._get_cluster_labels(uid)
+        positions, values = self._branch_labels_of(uid, labels, candidates, start, end)
+        new_indices = self._filter_selection(candidates[positions[values == label]])
+
+        if new_indices.size > 0:
+            if self.picked_points_indices:
+                existing = np.fromiter(self.picked_points_indices, dtype=np.int64,
+                                       count=len(self.picked_points_indices))
+                new_indices = new_indices[~np.isin(new_indices, existing)]
+            self.picked_points_indices.extend(new_indices.tolist())
+
+        self.update()
+
     def deselect_cluster_at(self, mouse_pos):
         """
-        Deselect all selected points that share the same color as the clicked point.
+        Remove every selected point of the cluster under the cursor from the selection.
 
-        This removes an entire cluster from the selection by matching the clicked point's
-        RGB color against the colors of all currently selected points. Points with matching
-        colors are removed from picked_points_indices.
+        The cluster is matched by the clicked point's cluster label within its
+        own branch (see ``_cluster_at``), so another cluster that happens to share
+        its colour stays selected. Does nothing if the clicked branch has no
+        cluster labels.
 
         Args:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
         """
         if not self.picked_points_indices:
             return
-
-        clicked_index, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
-        if clicked_index is None:
-            return
-
-        # Get the color of the clicked point
-        target_color = self.points[clicked_index, 3:6]
 
         # Drop picks that no longer address a drawn point before indexing with
         # them. picked_points_indices outlives set_branches() on purpose, so
@@ -342,10 +397,19 @@ class PointPickingMixin:
         if selected.size == 0:
             self.clear_selection()
             return
+        if selected.size != len(self.picked_points_indices):
+            self.picked_points_indices[:] = selected.tolist()
 
-        # Vectorized removal of all selected points matching this color
-        colors = self.points[selected, 3:6]
-        matches = np.all(colors == target_color, axis=1)
+        cluster = self._cluster_at(mouse_pos)
+        if cluster is None:
+            return
+        uid, start, end, label = cluster
+
+        labels = self._get_cluster_labels(uid)
+        positions, values = self._branch_labels_of(uid, labels, selected, start, end)
+        matches = np.zeros(selected.size, dtype=bool)
+        matches[positions[values == label]] = True
+
         self.picked_points_indices[:] = selected[~matches].tolist()
         # Invalidate stored polygons so plugins fall back to coordinate matching
         self._selection_polygons.clear()

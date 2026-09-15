@@ -364,6 +364,74 @@ def test_full_resolution_mask_honours_the_viewer_filters():
           f"ungated would have given {ungated.sum()}")
 
 
+def _same_colour_clusters_viewer():
+    """Two clusters (labels 1 and 2) drawn in the same RGB, plus noise and a
+    select-locked cluster, with LOD dropping every other cloud row."""
+    from core.entities.clusters import Clusters
+
+    labels = np.array([1, 1, 2, 2, 1, 2, -1, -1, 7, 7, 1, 2])
+    clusters = Clusters(labels=labels)
+    clusters.locked_clusters = {7: {"select"}}
+
+    class _Node:
+        data_type = "cluster_labels"
+        uid = "A"
+        data = clusters
+
+    class _Controller:
+        selected_branches = ["A"]
+
+        def get_node(self, uid):
+            return _Node()
+
+    global_variables.global_application_controller = _Controller()
+    kept = np.arange(0, 12, 2)                           # cloud rows 0,2,4,6,8,10
+    xyz = np.column_stack([kept, np.zeros(6), np.zeros(6)]).astype(np.float32)
+    slc = np.hstack([xyz, np.ones((6, 3), dtype=np.float32)])   # all white
+
+    v = PCDViewerWidget()
+    v.resize(1280, 800)
+    v.model_view_matrix, v.projection_matrix = _MV, _PROJ
+    v.viewport = (0, 0, 1280, 800)
+    v.max_extent = 10.0
+    v.center = np.array([0.0, 0.0, 0.0])
+    v.set_branches({"A": slc}, ["A"], sample_indices_by_uid={"A": kept})
+    # Rendered rows -> labels: 0:1  1:2  2:1  3:-1  4:7  5:1
+    return v
+
+
+def test_cluster_select_and_deselect_match_by_label_not_colour():
+    """Ctrl+Shift+Left/Right must act on the clicked cluster's label.
+
+    Matching by RGB grabbed or dropped every cluster sharing the colour.
+    """
+    v = _same_colour_clusters_viewer()
+
+    # Click rendered row 2 (label 1): rows 0, 2, 5 — not label 2, noise or lock.
+    v._unproject_mouse_to_nearest_point = lambda _pos: (2, v.points[2, :3])
+    v.select_cluster_at(None)
+    assert sorted(v.picked_points_indices) == [0, 2, 5], v.picked_points_indices
+
+    v.select_cluster_at(None)
+    assert sorted(v.picked_points_indices) == [0, 2, 5], "re-select duplicated picks"
+
+    # Add label 2, then deselect label 1: label 2 must survive the shared colour.
+    v._unproject_mouse_to_nearest_point = lambda _pos: (1, v.points[1, :3])
+    v.select_cluster_at(None)
+    assert sorted(v.picked_points_indices) == [0, 1, 2, 5], v.picked_points_indices
+
+    v._unproject_mouse_to_nearest_point = lambda _pos: (5, v.points[5, :3])
+    v.deselect_cluster_at(None)
+    assert v.picked_points_indices == [1], v.picked_points_indices
+
+    # Clicking noise or a locked cluster selects nothing.
+    for row in (3, 4):
+        v._unproject_mouse_to_nearest_point = lambda _pos, r=row: (r, v.points[r, :3])
+        v.select_cluster_at(None)
+    assert v.picked_points_indices == [1], v.picked_points_indices
+    print("  cluster select/deselect follow the label, not the shared colour")
+
+
 def _nearest_by_brute_force(points, target):
     """Nearest row, with non-finite distances excluded — the scan's behaviour."""
     offset = np.asarray(points[:, :3], dtype=np.float32) - np.float32(target)
@@ -375,6 +443,7 @@ def _nearest_by_brute_force(points, target):
 if __name__ == "__main__":
     test_deselect_after_the_buffer_shrinks()
     test_deselect_cluster_after_the_buffer_shrinks()
+    test_cluster_select_and_deselect_match_by_label_not_colour()
     test_closing_a_lasso_with_nothing_visible()
     test_full_resolution_mask_honours_the_viewer_filters()
     test_a_stale_pick_grid_is_never_used()
