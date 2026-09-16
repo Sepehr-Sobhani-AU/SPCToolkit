@@ -675,6 +675,15 @@ def test_the_closing_click_is_not_part_of_the_shape():
 
     assert traced and traced[0] == box, \
         f"the closing click stayed in the shape: {traced[0]}"
+
+    # The close started a real background build. Wait for it: the masks are
+    # written to whichever tree is installed WHEN THE WORKER LANDS, so a build
+    # left running here finishes inside the next test and writes a mask for the
+    # wrong cloud into its branch.
+    for _ in range(400):
+        if v.selection_ready():
+            break
+        time.sleep(0.01)
     print("  the closing double-click ends the tracing without adding a corner")
 
 
