@@ -122,19 +122,14 @@ class SurfaceFitPlugin(ActionPlugin):
                                 "Please select a cluster_labels branch.")
             return
 
-        picked_indices = viewer_widget.picked_points_indices
-        if not picked_indices:
+        # The FIRST clicked point, as a row of this branch's own cloud. A
+        # lasso does not name a point, so it does not answer here.
+        picked_row = viewer_widget.first_pick(selected_uid)
+        if picked_row is None:
             QMessageBox.warning(main_window, "No Point Selected",
                                 "Shift+click a point on the target cluster, "
                                 "then run this plugin.")
             return
-
-        picked_idx = picked_indices[0]
-        if picked_idx >= len(viewer_widget.points):
-            QMessageBox.warning(main_window, "Invalid Pick",
-                                "Picked point index is out of range.")
-            return
-        picked_xyz = viewer_widget.points[picked_idx, :3].astype(np.float32)
 
         try:
             clusters_pc = controller.reconstruct(selected_uid)
@@ -151,9 +146,13 @@ class SurfaceFitPlugin(ActionPlugin):
             return
         cluster_labels = cluster_labels.astype(np.int32)
 
-        kd = cKDTree(clusters_pc.points)
-        _, local_idx = kd.query(picked_xyz)
-        seed_cluster_id = int(cluster_labels[local_idx])
+        # The pick already names a row of this cloud — the kd-tree round trip
+        # this replaced existed only to undo the viewer's render-space indexing.
+        if not (0 <= picked_row < len(cluster_labels)):
+            QMessageBox.warning(main_window, "Invalid Pick",
+                                "Picked point is outside the reconstructed cloud.")
+            return
+        seed_cluster_id = int(cluster_labels[picked_row])
         if seed_cluster_id == -1:
             QMessageBox.warning(main_window, "Noise Point Selected",
                                 "Picked point is noise (label -1). "

@@ -53,7 +53,7 @@ from core.services.linear_region_grower import (
     STOP_REASONS,
 )
 from plugins.dialogs.line_extension_window import LineExtensionWindow
-from application.selection_gate import picked_cloud_indices, selectable_cloud_indices
+from application.selection_gate import selected_cloud_indices
 
 
 _MODE_MAP = {
@@ -345,8 +345,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             return None
 
         # --- Validate: enough seed points selected ---
-        selected_indices = viewer_widget.picked_points_indices
-        if not selected_indices or len(selected_indices) < _MIN_SEEDS:
+        if not viewer_widget.has_selection():
             QMessageBox.warning(main_window, "Not Enough Points",
                                 f"Please select at least {_MIN_SEEDS} seed points along "
                                 "the linear feature using polygon selection (P key) "
@@ -399,9 +398,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         point at a time, thousands of times.
         """
         tree_kd = cKDTree(pc_points)
-        allowed = selectable_cloud_indices(node, len(pc_points))
-        seed_indices = picked_cloud_indices(viewer_widget, pc_points, tree_kd,
-                                            allowed=allowed)
+        seed_indices = selected_cloud_indices(
+            viewer_widget, node.uid, pc_points)
         if seed_indices is None:
             QMessageBox.warning(main_window, "No Points",
                                 "Could not retrieve coordinates for selected points.")

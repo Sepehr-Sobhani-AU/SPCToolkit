@@ -30,7 +30,7 @@ from models.pointnet.inference import (
     classify_clusters_batch
 )
 from plugins.dialogs.classification_progress_dialog import ClassificationProgressDialog
-from application.selection_gate import picked_cloud_indices, selectable_cloud_indices
+from application.selection_gate import selected_cloud_indices
 
 
 class ClassifyClustersMLPlugin(ActionPlugin):
@@ -223,26 +223,18 @@ class ClassifyClustersMLPlugin(ActionPlugin):
 
             # Determine which clusters to classify
             if process_mode == "Selected Clusters Only":
-                # Get selected point indices from viewer
-                selected_indices = viewer_widget.picked_points_indices
-
-                if not selected_indices:
+                if not viewer_widget.has_selection():
                     raise ValueError(
                         "No clusters are selected.\n\n"
                         "Please click on points in the clusters you want to classify.\n"
                         "Use Shift+Click to select points, or choose 'All Clusters' mode."
                     )
 
-                # Find which clusters contain the selected points. Goes through
-                # the shared mapping rather than indexing cluster_labels with
-                # picked_points_indices: those are rows of the viewer's
-                # LOD-subsampled render buffer while the labels are
-                # full-resolution, so under LOD the label read belongs to an
-                # unrelated point.
-                allowed = selectable_cloud_indices(
-                    controller.get_node(selected_uid), len(point_cloud.points))
-                picked_rows = picked_cloud_indices(
-                    viewer_widget, point_cloud.points, allowed=allowed)
+                # Find which clusters contain the selected points. The
+                # selection is held in the branch's own cloud order, which is
+                # the order cluster_labels is in.
+                picked_rows = selected_cloud_indices(
+                    viewer_widget, selected_uid, point_cloud.points)
                 if picked_rows is None or len(picked_rows) == 0:
                     raise ValueError(
                         "Could not retrieve coordinates for the selected points."

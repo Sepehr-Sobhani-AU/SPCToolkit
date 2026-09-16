@@ -17,8 +17,7 @@ from PyQt5.QtGui import QColor
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from application.selection_gate import (
-    picked_cloud_indices, selectable_cloud_indices)
+from application.selection_gate import selected_cloud_indices
 
 
 class ColorClustersPlugin(ActionPlugin):
@@ -54,8 +53,7 @@ class ColorClustersPlugin(ActionPlugin):
             return
 
         # Validate: points must be selected
-        selected_indices = viewer_widget.picked_points_indices
-        if not selected_indices:
+        if not viewer_widget.has_selection():
             QMessageBox.warning(main_window, "No Points Selected",
                                 "Please select points in clusters to color "
                                 "using Shift+Click or Polygon selection.")
@@ -82,9 +80,8 @@ class ColorClustersPlugin(ActionPlugin):
         # which the hand-rolled loop this replaces did not. `allowed` keeps that
         # widening inside what the viewer would have let the user pick, so a
         # lasso cannot reach into a cluster locked against selection.
-        allowed = selectable_cloud_indices(node, len(point_cloud.points))
-        picked_rows = picked_cloud_indices(viewer_widget, point_cloud.points,
-                                           allowed=allowed)
+        picked_rows = selected_cloud_indices(
+            viewer_widget, node.uid, point_cloud.points)
         if picked_rows is None or len(picked_rows) == 0:
             QMessageBox.warning(main_window, "No Points Selected",
                                 "Could not retrieve coordinates for selected points.")

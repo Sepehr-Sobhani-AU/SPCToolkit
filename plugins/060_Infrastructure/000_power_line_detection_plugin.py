@@ -15,8 +15,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from application.selection_gate import (
-    picked_cloud_indices, selectable_cloud_indices)
+from application.selection_gate import selected_cloud_indices
 from core.entities.clusters import Clusters
 from core.entities.masks import Masks
 from core.entities.point_cloud import PointCloud
@@ -144,8 +143,7 @@ class PowerLineDetectionPlugin(ActionPlugin):
             return
 
         # --- Validate: enough points selected ---
-        selected_indices = viewer_widget.picked_points_indices
-        if not selected_indices or len(selected_indices) < 10:
+        if not viewer_widget.has_selection():
             QMessageBox.warning(main_window, "Not Enough Points",
                                 "Please select at least 10 seed points on cable(s) "
                                 "using polygon selection (P key) or Shift+Click.")
@@ -169,9 +167,8 @@ class PowerLineDetectionPlugin(ActionPlugin):
         # keeps the widening inside what the viewer would have let the user
         # pick, so locked clusters and noise cannot become seeds.
         tree_kd = cKDTree(pc_points)
-        allowed = selectable_cloud_indices(node, len(pc_points))
-        seed_indices = picked_cloud_indices(viewer_widget, pc_points, tree_kd,
-                                            allowed=allowed)
+        seed_indices = selected_cloud_indices(
+            viewer_widget, node.uid, pc_points)
         if seed_indices is None:
             QMessageBox.warning(main_window, "No Points",
                                 "Could not retrieve coordinates for selected points.")

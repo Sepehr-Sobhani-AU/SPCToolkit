@@ -36,8 +36,16 @@ MOUSE_SECTIONS = [
     ]),
     ("Polygon mode (press P)", [
         ("Left click", "Add a polygon vertex."),
-        ("Double Left click", "Close the polygon and select the points inside."),
-        ("Double Right click", "Close the polygon and deselect the points inside."),
+        ("Double Left click <b>inside</b>",
+         "Close the polygon and select the points it encloses."),
+        ("Double Left click <b>outside</b>",
+         "Close the polygon and select everything it does NOT enclose."),
+        ("Double Right click <b>inside</b>",
+         "Close the polygon and deselect the points it encloses."),
+        ("Double Right click <b>outside</b>",
+         "Close the polygon and deselect everything it does NOT enclose."),
+        ("", "The closing double-click ends the tracing — it does not add a "
+             "corner, so you can finish anywhere."),
     ]),
     ("Tree panel", [
         ("Left click", "Select a single branch, clearing any other selection."),

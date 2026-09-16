@@ -132,12 +132,10 @@ class CreaseEdgePlugin(ActionPlugin):
         reconstruction); falls back to a static default when nothing is picked."""
         try:
             viewer = global_variables.global_pcd_viewer_widget
-            picked = list(viewer.picked_points_indices)
-            pts = np.asarray(viewer.points)[:, :3]
-            coords = pts[[i for i in picked if i < len(pts)]]
-            if len(coords) == 0:
+            seed = viewer.selection_centroid()
+            if seed is None:
                 return _FALLBACK_PERPENDICULAR
-            seed = coords.mean(axis=0)
+            pts = np.asarray(viewer.points)[:, :3]
             suggestion = suggest_perpendicular(pts, seed)
             if suggestion and suggestion > 0:
                 return round(float(suggestion), 3)
@@ -169,25 +167,17 @@ class CreaseEdgePlugin(ActionPlugin):
             return
 
         # --- Seed: one (or more) points Shift+clicked near the edge ---
-        picked = list(viewer_widget.picked_points_indices)
-        if not picked:
+        # A seed LOCATION, not an index: the mean of everything selected, taken
+        # at full resolution so it does not shift as LOD changes which points
+        # are drawn.
+        seed_point = viewer_widget.selection_centroid()
+        if seed_point is None:
             QMessageBox.warning(
                 main_window, "No Point Picked",
                 "Shift+click one point near the edge you want to trace, then run "
                 "the plugin. The pick only locates the edge — the code finds the "
                 "two surfaces itself.")
             return
-        viewer_points = np.asarray(viewer_widget.points)
-        rows = np.fromiter(picked, dtype=np.intp, count=len(picked))
-        rows = rows[(rows >= 0) & (rows < len(viewer_points))]
-        if rows.size == 0:
-            QMessageBox.warning(main_window, "No Point Picked",
-                                "Could not read the picked point coordinates.")
-            return
-        # Mean of the picked positions, in float32 — a seed location, not an
-        # index, so this stays in the viewer's own coordinate space rather than
-        # going through the cloud-index mapping the cluster plugins need.
-        seed_point = viewer_points[rows, :3].astype(np.float32).mean(axis=0)
 
         # --- Reconstruct the whole branch (the data the march searches) ---
         try:

@@ -19,7 +19,7 @@ from PyQt5.QtGui import QColor, QIcon, QPixmap
 
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
-from application.selection_gate import picked_cloud_indices
+from application.selection_gate import selected_cloud_indices
 
 
 class AnnotationWindow(QDialog):
@@ -59,6 +59,7 @@ class AnnotationWindow(QDialog):
         # Annotation state
         self.annotations = None  # Will be (N,) int array, -1 = unlabeled
         self.point_cloud = None
+        self.uid = None          # branch the annotations belong to
         self.class_list = []  # [(name, QColor), ...]
         self.current_class_idx = -1
         self.undo_stack = []  # List of (indices, old_labels) for undo
@@ -229,9 +230,14 @@ class AnnotationWindow(QDialog):
         """Handle class selection."""
         self.current_class_idx = row
 
-    def initialize_annotations(self, point_cloud):
-        """Initialize annotation array for a point cloud."""
+    def initialize_annotations(self, point_cloud, uid=None):
+        """Initialize annotation array for a point cloud.
+
+        *uid* names the branch the cloud was reconstructed from; the selection
+        is read per branch, so without it there is nothing to read.
+        """
         self.point_cloud = point_cloud
+        self.uid = uid
         n = len(point_cloud.points)
         self.annotations = np.full(n, -1, dtype=np.int32)
         self.undo_stack.clear()
@@ -245,7 +251,10 @@ class AnnotationWindow(QDialog):
         """Poll viewer for new point selections."""
         if self.viewer is None:
             return
-        count = len(self.viewer.picked_points_indices)
+        # The full-resolution count, which is what Apply Label will act on.
+        # This used to report the number of highlighted dots, so after a lasso
+        # on a subsampled cloud it read roughly a tenth of the truth.
+        count = self.viewer.selection_count()
         if count != self.last_selection_count:
             self.last_selection_count = count
             self.status_label.setText(
@@ -263,22 +272,19 @@ class AnnotationWindow(QDialog):
             QMessageBox.warning(self, "No Class", "Please select a class first.")
             return
 
-        if not self.viewer.picked_points_indices:
-            QMessageBox.warning(self, "No Selection",
-                              "No points selected. Press P in viewer to start polygon selection.")
-            return
-
         if self.annotations is None:
             QMessageBox.warning(self, "Not Initialized",
                               "No point cloud loaded for annotation.")
             return
 
-        indices = np.array(self.viewer.picked_points_indices, dtype=np.int64)
-        # Clamp to valid range
-        valid = indices < len(self.annotations)
-        indices = indices[valid]
-
-        if len(indices) == 0:
+        # Rows of the branch's own cloud, which is what `annotations` is
+        # indexed by. This used to take the viewer's rendered rows and use them
+        # as cloud rows directly, so on any cloud big enough to be subsampled
+        # it labelled unrelated points.
+        indices = selected_cloud_indices(self.viewer, self.uid, self.point_cloud.points)
+        if indices is None or len(indices) == 0:
+            QMessageBox.warning(self, "No Selection",
+                              "No points selected. Press P in viewer to start polygon selection.")
             return
 
         # Save undo state
@@ -301,7 +307,7 @@ class AnnotationWindow(QDialog):
             QMessageBox.warning(self, "No Class", "Please select a class first.")
             return
 
-        if not self.viewer.picked_points_indices:
+        if not self.viewer.has_selection():
             QMessageBox.warning(self, "No Selection",
                               "Select a point in a cluster first.")
             return
@@ -317,12 +323,11 @@ class AnnotationWindow(QDialog):
                               "Run DBSCAN clustering first.")
             return
 
-        # Find clusters containing selected points. picked_points_indices are
-        # rows of the viewer's LOD-subsampled render buffer, not of the
-        # full-resolution labels, so they have to be mapped rather than used
-        # directly — otherwise under LOD each one reads an unrelated point's
-        # label.
-        picked_rows = picked_cloud_indices(self.viewer, self.point_cloud.points)
+        # Find clusters containing selected points. The selection is held per
+        # branch in that branch's own cloud order, which is the order the
+        # labels are in, so these rows index the labels directly.
+        picked_rows = selected_cloud_indices(
+            self.viewer, self.uid, self.point_cloud.points)
         if picked_rows is None or len(picked_rows) == 0:
             return
 

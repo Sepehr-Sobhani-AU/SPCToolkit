@@ -6,7 +6,6 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.masks import Masks
-from application.selection_gate import selectable_cloud_indices
 
 
 class SeparateSelectedClustersPlugin(Plugin):
@@ -71,13 +70,15 @@ class SeparateSelectedClustersPlugin(Plugin):
         if cluster_labels is None:
             raise ValueError("Point cloud has no cluster labels. Clustering must be performed first.")
 
-        # Re-derive the selection against full-resolution points (picked indices
-        # reference the LOD-subsampled render buffer, not the full cloud order).
-        # `allowed` keeps that widening to what the viewer would have let the
-        # user pick — a lasso otherwise reaches into locked clusters and noise.
-        allowed = selectable_cloud_indices(data_node, len(point_cloud.points))
-        selection_mask = viewer_widget.get_selection_mask_for(
-            point_cloud.points, allowed=allowed)
+        # The selection is already a boolean mask over this branch's
+        # full-resolution cloud, in the same row order as the labels.
+        selection_mask = viewer_widget.selection_mask_for_cloud(
+            data_node.uid, point_cloud.points)
+        if selection_mask is None:
+            raise ValueError(
+                "Nothing is selected in this branch. Select points on the "
+                "clusters you want, then run this plugin."
+            )
 
         # Expand the selection to every point sharing a selected cluster id.
         # Vectorized — the old per-point Python loop was O(n) and very slow on

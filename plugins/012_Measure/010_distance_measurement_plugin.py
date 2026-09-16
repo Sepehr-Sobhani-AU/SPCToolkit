@@ -40,7 +40,7 @@ class DistanceMeasurementPlugin(ActionPlugin):
         viewer = global_variables.global_pcd_viewer_widget
         data_nodes = global_variables.global_data_nodes
 
-        if viewer is None or len(viewer.picked_points_indices) < 2:
+        if viewer is None or len(viewer.picked_points) < 2:
             QMessageBox.information(
                 main_window, "Distance Measurement",
                 "Select at least two points (Shift + Left Click), then run "
@@ -48,15 +48,17 @@ class DistanceMeasurementPlugin(ActionPlugin):
             )
             return
 
-        render_pts = viewer.points
-        if render_pts is None:
-            return
-
-        indices = [i for i in viewer.picked_points_indices if i < len(render_pts)]
+        # Click order is the measurement: the polyline runs through the points
+        # in the order they were clicked. Only individual clicks are recorded,
+        # so a lasso cannot make an arbitrary polyline out of a million points.
+        controller = global_variables.global_application_controller
         world = np.array(
-            [self._world_coord(viewer, data_nodes, i, render_pts) for i in indices],
+            [self._world_coord(controller, data_nodes, uid, row)
+             for uid, row in viewer.picked_points],
             dtype=np.float64,
         )
+        if len(world) < 2:
+            return
 
         if len(world) == 2:
             text = self._two_point_report(world[0], world[1])
@@ -65,24 +67,18 @@ class DistanceMeasurementPlugin(ActionPlugin):
 
         QMessageBox.information(main_window, "Distance Measurement", text)
 
-    def _world_coord(self, viewer, data_nodes, idx, render_pts) -> np.ndarray:
-        local = render_pts[idx, :3].astype(np.float64)
-        uid = self._branch_uid_for_index(viewer, idx)
-        if uid is not None:
-            translation = find_root_translation(data_nodes, str(uid))
-            return local + np.asarray(translation, dtype=np.float64)
-        return local
+    def _world_coord(self, controller, data_nodes, uid, row) -> np.ndarray:
+        """The picked point in world coordinates.
 
-    @staticmethod
-    def _branch_uid_for_index(viewer, idx):
-        import uuid as _uuid
-        for uid_str, (start, end) in viewer._branch_offsets.items():
-            if start <= idx < end:
-                try:
-                    return _uuid.UUID(uid_str)
-                except (ValueError, AttributeError):
-                    return uid_str
-        return None
+        The pick names its branch and its row in that branch's full-resolution
+        cloud, so the coordinate is read from the cloud rather than from the
+        rendered buffer — which under LOD held a subsample and could only ever
+        report a drawn point.
+        """
+        point_cloud = controller.reconstruct(uid)
+        local = np.asarray(point_cloud.points[row][:3], dtype=np.float64)
+        translation = find_root_translation(data_nodes, str(uid))
+        return local + np.asarray(translation, dtype=np.float64)
 
     @staticmethod
     def _fmt(vec):

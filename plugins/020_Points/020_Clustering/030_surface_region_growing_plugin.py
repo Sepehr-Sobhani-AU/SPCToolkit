@@ -143,28 +143,16 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
             return
 
         # --- Validate: a point must be picked ---
-        picked_indices = viewer_widget.picked_points_indices
-        if not picked_indices:
+        # The FIRST clicked point, as a row of this branch's own cloud. A lasso
+        # does not name a point, so it does not answer here.
+        picked_row = viewer_widget.first_pick(selected_uid)
+        if picked_row is None:
             logger.warning("No picked point in viewer")
             QMessageBox.warning(main_window, "No Point Selected",
                                 "Shift+click a point on the seed surface cluster "
                                 "in the viewer, then run this plugin.")
             return
-
-        # --- Determine seed cluster ID from picked point ---
-        picked_idx = picked_indices[0]
-        if picked_idx >= len(viewer_widget.points):
-            logger.warning(
-                f"Picked index {picked_idx} out of range "
-                f"(viewer has {len(viewer_widget.points)} points)"
-            )
-            QMessageBox.warning(main_window, "Invalid Pick",
-                                "Picked point index is out of range. "
-                                "Please Shift+click again.")
-            return
-
-        picked_xyz = viewer_widget.points[picked_idx, :3].astype(np.float32)
-        logger.debug(f"Picked point idx={picked_idx} xyz={picked_xyz.tolist()}")
+        logger.debug(f"Picked cloud row={picked_row}")
 
         try:
             clusters_pc = controller.reconstruct(selected_uid)
@@ -183,13 +171,22 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
 
         cluster_labels = cluster_labels_attr.astype(np.int32)
 
+        # The pick already names a row of this cloud, so the cluster it belongs
+        # to is a direct lookup — the kd-tree query this replaced existed only
+        # to undo the viewer's render-space indexing. A tree is still built
+        # below, for the K-nearest seed neighbours the reference normal averages.
+        if not (0 <= picked_row < len(cluster_labels)):
+            QMessageBox.warning(main_window, "Invalid Pick",
+                                "Picked point is outside the reconstructed cloud. "
+                                "Please Shift+click again.")
+            return
+        seed_cluster_id = int(cluster_labels[picked_row])
+        picked_xyz = clusters_pc.points[picked_row].astype(np.float32)
         kd = cKDTree(clusters_pc.points)
-        _, local_idx = kd.query(picked_xyz)
-        seed_cluster_id = int(cluster_labels[local_idx])
         seed_size = int((cluster_labels == seed_cluster_id).sum())
         logger.info(
             f"Seed cluster id={seed_cluster_id}, size={seed_size} points "
-            f"(local_idx={int(local_idx)})"
+            f"(cloud row={int(picked_row)})"
         )
 
         if seed_cluster_id == -1:
@@ -253,7 +250,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
                                 "run the normal_estimation plugin first.")
             return
 
-        anchor = np.asarray(parent_normals[local_idx], dtype=np.float32)
+        anchor = np.asarray(parent_normals[picked_row], dtype=np.float32)
         anchor_n = np.linalg.norm(anchor)
         if anchor_n < 1e-10:
             logger.warning(f"Picked point normal has zero length (norm={anchor_n})")
@@ -267,7 +264,7 @@ class SurfaceRegionGrowingPlugin(ActionPlugin):
         nearest = np.atleast_1d(nearest)
         seed_hits = nearest[cluster_labels[nearest] == seed_cluster_id][:_REF_NORMAL_K]
         if len(seed_hits) == 0:
-            seed_hits = np.array([local_idx])
+            seed_hits = np.array([picked_row])
 
         nbhd = np.asarray(parent_normals[seed_hits], dtype=np.float32)
         nbhd_norms = np.linalg.norm(nbhd, axis=1)

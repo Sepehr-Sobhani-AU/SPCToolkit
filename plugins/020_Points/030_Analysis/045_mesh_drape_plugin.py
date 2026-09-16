@@ -43,8 +43,7 @@ except Exception:  # pragma: no cover - CuPy is optional
     _HAS_CUPY = False
 
 from config.config import global_variables
-from application.selection_gate import (
-    picked_cloud_indices, selectable_cloud_indices)
+from application.selection_gate import selected_cloud_indices
 from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
 from plugins.interfaces import ActionPlugin
@@ -146,10 +145,10 @@ class MeshDrapePlugin(ActionPlugin):
             return
 
         # --- Resolve subset ---
-        picked_indices = list(viewer_widget.picked_points_indices)
+        has_selection = viewer_widget.has_selection()
 
         if node.data_type == "cluster_labels":
-            if not picked_indices:
+            if not has_selection:
                 QMessageBox.warning(
                     main_window, "No Cluster Picked",
                     "Shift+click one or more points on the target cluster(s), "
@@ -163,14 +162,11 @@ class MeshDrapePlugin(ActionPlugin):
                 return
             cluster_labels = cluster_labels.astype(np.int32)
 
-            # Map the picks onto rows of the reconstructed cloud to read their
-            # cluster ids. The shared helper coordinate-matches the clicks and
-            # re-tests any lasso at full resolution, replacing the Python loop
-            # that gathered coordinates one pick at a time; `allowed` keeps the
-            # widening to what the viewer would have let the user pick.
-            allowed = selectable_cloud_indices(node, len(all_points))
-            picked_rows = picked_cloud_indices(viewer_widget, all_points,
-                                               allowed=allowed)
+            # The selection is held in this branch's own cloud order, which is
+            # the order cluster_labels is in, so these rows read the ids
+            # directly.
+            picked_rows = selected_cloud_indices(
+                viewer_widget, node.uid, all_points)
             if picked_rows is None or len(picked_rows) == 0:
                 QMessageBox.warning(main_window, "Invalid Pick",
                                     "Picked point indices are out of range.")
@@ -186,12 +182,10 @@ class MeshDrapePlugin(ActionPlugin):
             subset_mask = np.isin(cluster_labels, np.array(sorted(picked_cluster_ids),
                                                            dtype=np.int32))
             scope_tag = f"clusters_{'_'.join(str(c) for c in sorted(picked_cluster_ids))}"
-        elif picked_indices:
-            # Same mapping as the cluster_labels branch above. Treating picked
-            # indices as rows of all_points is only right when nothing is
-            # subsampled; under LOD they address the render buffer and would
-            # drape a different part of the cloud.
-            picked_rows = picked_cloud_indices(viewer_widget, all_points)
+        elif has_selection:
+            # Same read as the cluster_labels branch above.
+            picked_rows = selected_cloud_indices(
+                viewer_widget, node.uid, all_points)
             if picked_rows is None or len(picked_rows) == 0:
                 QMessageBox.warning(main_window, "Invalid Pick",
                                     "Picked point indices are out of range.")

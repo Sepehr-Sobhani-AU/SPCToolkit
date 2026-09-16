@@ -50,7 +50,7 @@ class AnnotatePointsPlugin(ActionPlugin):
             from plugins.dialogs.annotation_window import AnnotationWindow
 
             annotation_window = AnnotationWindow(parent=main_window)
-            annotation_window.initialize_annotations(point_cloud)
+            annotation_window.initialize_annotations(point_cloud, selected_uid)
             annotation_window.show()
 
             print(f"Annotation mode opened for {len(point_cloud.points):,} points")

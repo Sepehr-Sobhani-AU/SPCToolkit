@@ -44,35 +44,27 @@ class IdentifyPointPlugin(ActionPlugin):
         controller = global_variables.global_application_controller
         data_nodes = global_variables.global_data_nodes
 
-        if viewer is None or not viewer.picked_points_indices:
+        if viewer is None or not viewer.picked_points:
             QMessageBox.information(
                 main_window, "Identify Point",
                 "Select a point first (Shift + Left Click), then run Identify."
             )
             return
 
-        render_pts = viewer.points
-        if render_pts is None:
-            return
+        # A pick names its branch and its row in that branch's own cloud, so
+        # both come straight out of it. This used to take a rendered row, scan
+        # the branch offsets to work out which branch it fell in, then find the
+        # matching cloud point by nearest coordinate over the whole cloud.
+        uid_str, i = viewer.picked_points[0]
+        uid = self._as_uuid(uid_str)
 
-        idx = viewer.picked_points_indices[0]
-        if idx >= len(render_pts):
-            return
-        world_render = render_pts[idx, :3].astype(np.float64)
-
-        # Which visible branch does this picked index belong to?
-        uid = self._branch_uid_for_index(viewer, idx)
-        if uid is None:
+        point_cloud = controller.reconstruct(uid)
+        if not (0 <= i < len(point_cloud.points)):
             QMessageBox.information(
                 main_window, "Identify Point",
-                "Could not resolve the source branch for the selected point."
+                "The selected point is no longer in this branch."
             )
             return
-
-        # Reconstruct the branch at full resolution and find the exact point.
-        point_cloud = controller.reconstruct(uid)
-        pts = np.asarray(point_cloud.points, dtype=np.float64)
-        i = int(np.argmin(np.linalg.norm(pts[:, :3] - world_render, axis=1)))
 
         translation = find_root_translation(data_nodes, str(uid))
         node = data_nodes.get_node(uid) if hasattr(uid, "int") else None
@@ -82,16 +74,13 @@ class IdentifyPointPlugin(ActionPlugin):
         self._show_report(main_window, report)
 
     @staticmethod
-    def _branch_uid_for_index(viewer, idx):
-        """Map a combined-buffer index back to the branch uid it came from."""
+    def _as_uuid(uid_str):
+        """The branch uid as a UUID, or the raw string if it is not one."""
         import uuid as _uuid
-        for uid_str, (start, end) in viewer._branch_offsets.items():
-            if start <= idx < end:
-                try:
-                    return _uuid.UUID(uid_str)
-                except (ValueError, AttributeError):
-                    return uid_str
-        return None
+        try:
+            return _uuid.UUID(uid_str)
+        except (ValueError, AttributeError, TypeError):
+            return uid_str
 
     @staticmethod
     def _fmt_vec(vec, decimals=4):

@@ -5,7 +5,6 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.masks import Masks
-from application.selection_gate import selectable_cloud_indices
 
 
 class SeparateSelectedPointsPlugin(Plugin):
@@ -65,18 +64,20 @@ class SeparateSelectedPointsPlugin(Plugin):
         from config.config import global_variables
         viewer_widget = global_variables.global_pcd_viewer_widget
 
-        # Re-derive the selection against this cloud's *full-resolution* points.
-        # picked_points_indices index into the viewer's LOD-subsampled render
-        # buffer, so using them directly would select the wrong points; the
-        # viewer maps them back exactly (polygon re-test or coordinate match).
-        #
-        # `allowed` gates that widening. Without it a lasso comes back holding
-        # every point it enclosed — including noise and clusters locked against
-        # selection, which the viewer had refused and never highlighted — and
-        # this plugin would separate them out anyway.
-        allowed = selectable_cloud_indices(data_node, len(point_cloud.points))
-        selection_mask = viewer_widget.get_selection_mask_for(
-            point_cloud.points, allowed=allowed)
+        # The selection is already a boolean mask over this branch's
+        # full-resolution cloud, in the same row order, which is exactly what a
+        # "masks" result is. So this plugin is now a hand-off rather than a
+        # derivation: no re-test, no coordinate matching, no gate to remember —
+        # noise and select-locked clusters were excluded when the selection was
+        # made.
+        selection_mask = viewer_widget.selection_mask_for_cloud(
+            data_node.uid, point_cloud.points)
+        if selection_mask is None:
+            raise ValueError(
+                "Nothing is selected in this branch. Select points in the "
+                "viewer (Shift+Click, or P for polygon select), then run this "
+                "plugin."
+            )
 
         # Create a Masks object with the result
         mask = Masks(selection_mask)

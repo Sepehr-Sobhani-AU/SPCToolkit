@@ -21,7 +21,7 @@ from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
-from application.selection_gate import picked_cloud_indices, selectable_cloud_indices
+from application.selection_gate import selected_cloud_indices
 
 logger = logging.getLogger(__name__)
 
@@ -210,8 +210,7 @@ class ClusterBoundaryPlugin(ActionPlugin):
             return
 
         # Determine which clusters to process from picked points
-        picked_indices = viewer_widget.picked_points_indices
-        if not picked_indices:
+        if not viewer_widget.has_selection():
             QMessageBox.warning(
                 main_window, "No Clusters Selected",
                 "No clusters are selected.\n\n"
@@ -226,10 +225,8 @@ class ClusterBoundaryPlugin(ActionPlugin):
         # row 50 and the label read would belong to an unrelated point.
         # `allowed` keeps a lasso's widening to what the viewer let the user
         # pick.
-        allowed = selectable_cloud_indices(
-            controller.get_node(selected_uid), len(point_cloud.points))
-        picked_rows = picked_cloud_indices(viewer_widget, point_cloud.points,
-                                           allowed=allowed)
+        picked_rows = selected_cloud_indices(
+            viewer_widget, selected_uid, point_cloud.points)
         if picked_rows is None or len(picked_rows) == 0:
             QMessageBox.warning(main_window, "No Clusters Selected",
                                 "Could not retrieve coordinates for the "

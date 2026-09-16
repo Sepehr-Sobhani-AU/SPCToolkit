@@ -46,7 +46,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 
 from config.config import global_variables
-from application.selection_gate import picked_cloud_indices
+from application.selection_gate import selected_cloud_indices
 from core.services.linear_region_grower import (
     STOP_REASONS,
     cylinders_to_vector_feature,
@@ -557,7 +557,11 @@ class LineExtensionWindow(QDialog):
         self.viewer.focus_on(stop.tip, extent)
 
     def _refresh_pick_count(self):
-        count = 0 if self.viewer is None else len(self.viewer.picked_points_indices)
+        # The full-resolution count. It used to be the number of highlighted
+        # dots, which after a lasso was the LOD subset and so disagreed with
+        # what the buttons would actually act on; the two are the same number
+        # now that the highlight is derived from the selection mask.
+        count = 0 if self.viewer is None else self.viewer.selection_count()
         text = f"{count} point(s) picked"
         self._refresh_edit_target()
 
@@ -745,27 +749,28 @@ class LineExtensionWindow(QDialog):
         """Viewer picks mapped onto reconstructed-cloud indices, kept to the
         points actually on offer.
 
-        The mapping is the one the growth plugin uses for its seeds, so a pick
-        here means what a seed pick means there — but it cannot be trusted on its
-        own. ``picked_cloud_indices`` re-tests a polygon selection against the
-        FULL cloud (so a polygon covers everything it encloses, not only the
-        points LOD happened to draw), and that re-test does not go through the
-        viewer's selection filters. A polygon drawn over the corridor therefore
-        comes back holding every point inside it — measured on real data: the
-        viewer honestly reported 32 points picked while this handed back
-        thousands, and since picks are always adopted, a whole bush joined the
-        line.
+        The selection is the one the growth plugin uses for its seeds, so a pick
+        here means what a seed pick means there — but it cannot be trusted on
+        its own. A lasso covers everything it encloses, not only the points LOD
+        happened to draw, so one drawn over the corridor comes back holding
+        every point inside it: measured on real data, the viewer reported 32
+        points picked while this handed back thousands, and since picks are
+        always adopted, a whole bush joined the line.
 
-        Handing the offer to the mapping as *allowed* settles it. The candidate
-        cluster is the statement of what may be picked at this stop; anything
-        else in the polygon was never on offer, whichever code path found it.
+        Intersecting with the offer settles it. The candidate cluster is the
+        statement of what may be picked at this stop; anything else in the
+        polygon was never on offer, whichever code path found it. This is the
+        window's own rule, not the viewer's — the viewer's locked/noise gate is
+        already applied when the selection is made, but it knows nothing about
+        which candidates this stop is offering.
         """
         if self.viewer is None or self.marked_indices is None:
             return np.empty(0, dtype=np.intp)
-        picked = picked_cloud_indices(self.viewer, self.pc_points,
-                                      self._pick_index(),
-                                      allowed=self.marked_indices)
-        return np.empty(0, dtype=np.intp) if picked is None else picked
+        picked = selected_cloud_indices(
+            self.viewer, self.result_uid, self.pc_points)
+        if picked is None:
+            return np.empty(0, dtype=np.intp)
+        return np.intersect1d(picked, np.asarray(self.marked_indices, dtype=np.intp))
 
     def _pick_index(self):
         """KD-tree for mapping picked coordinates onto cloud rows, built once.
@@ -929,9 +934,9 @@ class LineExtensionWindow(QDialog):
         order they clicked them, stopping once *stop_after* distinct lines are
         named.
 
-        Click order is the whole reason this does not go through
-        ``picked_cloud_indices``: that returns a sorted set, and Join has to know
-        which line was clicked FIRST.
+        Click order is the whole reason this reads ``picked_points`` rather than
+        the selection mask: a mask is a set and has no order, and Join has to
+        know which line was clicked FIRST.
 
         Each pick names a line two ways, in order of certainty. If the picked
         point IS on a traced line, that line wins outright — nothing is more
@@ -944,23 +949,23 @@ class LineExtensionWindow(QDialog):
         Bounded at ``_EDIT_PICK_SCAN`` picks: a polygon selection leaves
         millions, and this is called from the 5 Hz poll to keep the readout live.
         """
-        if self.viewer is None or self.viewer.points is None:
+        if self.viewer is None:
             return []
 
-        rows = np.fromiter(self.viewer.picked_points_indices, dtype=np.int64,
-                           count=len(self.viewer.picked_points_indices))
-        rows = rows[(rows >= 0) & (rows < len(self.viewer.points))]
-        if rows.size == 0:
+        # Picks already name rows of THIS branch's cloud, so there is no
+        # coordinate round trip left to make — the kd-tree query this used to
+        # run existed only to undo the viewer's render-space indexing.
+        rows = [row for uid, row in self.viewer.picked_points
+                if uid == self.result_uid and 0 <= row < len(self.pc_points)]
+        if not rows:
             return []
         rows = rows[:_EDIT_PICK_SCAN]
 
-        # One batch query rather than one per pick.
-        coords = np.asarray(self.viewer.points[rows, :3], dtype=np.float32)
-        _dist, cloud_rows = self._pick_index().query(coords)
+        coords = np.asarray(self.pc_points[rows, :3], dtype=float)
         labels = self._line_labels()
 
         picked, seen = [], set()
-        for xyz, row in zip(coords.astype(float), np.atleast_1d(cloud_rows)):
+        for xyz, row in zip(coords, rows):
             row = int(row)
             label = int(labels[row]) if 0 <= row < len(labels) else -1
             if label < 0:
@@ -977,8 +982,8 @@ class LineExtensionWindow(QDialog):
         """``_picked_lines_in_order`` for the readout, recomputed only when the
         picks change. The poll asks five times a second; the answer does not."""
         picks = () if self.viewer is None else tuple(
-            self.viewer.picked_points_indices[:_EDIT_PICK_SCAN])
-        fingerprint = (len(getattr(self.viewer, "picked_points_indices", ())),
+            self.viewer.picked_points[:_EDIT_PICK_SCAN])
+        fingerprint = (len(getattr(self.viewer, "picked_points", ())),
                        picks, len(self.lines))
         if self._picked_lines_cache[0] != fingerprint:
             self._picked_lines_cache = (fingerprint, self._picked_lines_in_order())
@@ -986,7 +991,7 @@ class LineExtensionWindow(QDialog):
 
     def _no_line_picked(self, what):
         reach = self.grower.cylinder_length * self.grower.reach_factor
-        many = len(self.viewer.picked_points_indices) > _EDIT_PICK_SCAN \
+        many = len(self.viewer.picked_points) > _EDIT_PICK_SCAN \
             if self.viewer is not None else False
         extra = (f"\n\nThere are a lot of points picked at the moment, and only "
                  f"the first {_EDIT_PICK_SCAN} are looked through. Clear the "

@@ -149,14 +149,14 @@ class ContourGrowingPlugin(ActionPlugin):
 
     @staticmethod
     def _picked_seed():
-        """Mean of the Shift+clicked viewer points, or None when nothing is picked."""
+        """Mean of the selected points, or None when nothing is selected.
+
+        Full resolution, so the seed does not move as LOD changes which points
+        are drawn.
+        """
         try:
             viewer = global_variables.global_pcd_viewer_widget
-            points = np.asarray(viewer.points)
-            picked = [i for i in viewer.picked_points_indices if i < len(points)]
-            if not picked:
-                return None
-            return points[picked, :3].mean(axis=0)
+            return viewer.selection_centroid()
         except Exception:
             return None
 

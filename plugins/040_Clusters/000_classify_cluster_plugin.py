@@ -16,8 +16,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from application.selection_gate import (
-    picked_cloud_indices, selectable_cloud_indices)
+from application.selection_gate import selected_cloud_indices
 from core.entities.clusters import Clusters
 
 
@@ -128,10 +127,7 @@ class ClassifyClusterPlugin(ActionPlugin):
             )
             return
 
-        # Get selected point indices from viewer
-        selected_indices = viewer_widget.picked_points_indices
-
-        if not selected_indices:
+        if not viewer_widget.has_selection():
             QMessageBox.warning(
                 main_window,
                 "No Points Selected",
@@ -141,18 +137,11 @@ class ClassifyClusterPlugin(ActionPlugin):
             )
             return
 
-        # Find which clusters contain the selected points.
-        #
-        # This used to index cluster_labels with picked_points_indices directly.
-        # Those are rows of the viewer's rendered buffer, and cluster_labels is
-        # full-resolution source data — under LOD the viewer draws a subsample,
-        # so rendered row 5 may be cloud row 50 and the label read belonged to
-        # an unrelated point. picked_cloud_indices does the translation (and
-        # re-tests any lasso at full resolution); `allowed` keeps that widening
-        # to what the viewer would have let the user pick.
-        allowed = selectable_cloud_indices(selected_node, len(point_cloud.points))
-        picked_rows = picked_cloud_indices(viewer_widget, point_cloud.points,
-                                           allowed=allowed)
+        # Find which clusters contain the selected points. The selection is
+        # held per branch in that branch's own cloud order, which is the order
+        # cluster_labels is in, so these rows index the labels directly.
+        picked_rows = selected_cloud_indices(
+            viewer_widget, selected_node.uid, point_cloud.points)
         if picked_rows is None or len(picked_rows) == 0:
             QMessageBox.warning(
                 main_window,
