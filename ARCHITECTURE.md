@@ -669,7 +669,7 @@ class ActionPlugin(ABC):
 | Access any global manager | `from config.config import global_variables` |
 | Reconstruct a branch | `ApplicationController.reconstruct(uid)` |
 | Get selected tree items | `ApplicationController.selected_branches` |
-| Get picked points | `application/selection_gate.picked_cloud_indices()` |
+| Get the selected points | `application/selection_gate.selected_cloud_mask()` |
 | Re-render visible data | `MainWindow.render_visible_data(zoom_extent=False)` |
 | Report progress from a thread | `global_variables.global_progress = (percent, "msg")` |
 | Support cancellation | poll `global_variables.global_cancel_event` |

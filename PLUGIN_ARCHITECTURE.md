@@ -191,16 +191,28 @@ it does not re-compute it:
 
 | Call | Returns |
 |---|---|
+| `selection_gate.selected_cloud_mask(viewer, uid, pc_points)` | **the boolean mask, or `None` — prefer this** |
 | `selection_gate.selected_cloud_indices(viewer, uid, pc_points)` | sorted cloud rows, or `None` |
-| `viewer.selection_mask_for_cloud(uid, pc_points)` | the boolean mask, or `None` |
+| `viewer.selection_mask_for_cloud(uid, pc_points)` | the mask, without going through the gate |
 | `viewer.selected_rows(uid)` / `viewer.selection_mask_for(uid)` | same, without the length check |
 | `viewer.picked_points` | ordered `(uid, cloud_row)` click picks, across branches — for "which was clicked first" |
 | `viewer.first_pick(uid)` | the first clicked cloud row — for "start here" gestures |
 | `viewer.selection_count()` / `viewer.has_selection()` | how many points, and whether any |
 | `viewer.selection_centroid()` | mean position of the selection — for "near here" gestures |
 
+**Take the mask unless you need positions.** What a plugin almost always does
+with a selection is gather — `labels[sel]`, `points[sel]`, `annotations[sel] = x`
+— and a mask does that directly. Indices gather identically but cost four bytes
+per selected point to materialise (100 MB on a 25M-point selection) and can point
+past the end of the array they index; a mask of the wrong length is a loud
+`IndexError` instead. Reach for `selected_cloud_indices` only when you need the
+row numbers themselves — to intersect the selection with another index list, or
+to carry a subset of it forward as rows.
+
 `None` means *nothing is selected in that branch*, which is deliberately distinct
-from an empty array: report it to the user rather than running on nothing.
+from an empty array: report it to the user rather than running on nothing. The
+viewer never stores an all-False mask, so `None` is the only way "nothing"
+arrives.
 
 Noise and clusters locked against selection are already excluded when the
 selection is made, so there is no gate for a plugin to pass — the `allowed=`
