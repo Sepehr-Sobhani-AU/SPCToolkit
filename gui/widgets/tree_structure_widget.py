@@ -33,9 +33,10 @@ class TreeStructureWidget(QTreeWidget):
         self._ctrl_held = False
 
         # Configure tree widget properties
-        # Col 0: Branch name/visibility, Col 1: data type, Col 2: point count, Col 3: Cache
+        # Col 0: Branch name/visibility, Col 1: data type,
+        # Col 2: selected / total points, Col 3: Cache
         self.setColumnCount(4)
-        self.setHeaderLabels(["Branch", "Type", "Points", "Cache"])
+        self.setHeaderLabels(["Branch", "Type", "Selected Points", "Cache"])
         # Column 0 (Branch) stretches to fill available space;
         # Columns 1 (Type), 2 (Points) and 3 (Cache) size to fit their content.
         self.header().setStretchLastSection(False)
@@ -243,6 +244,124 @@ class TreeStructureWidget(QTreeWidget):
     #             self.visibility_status[uid] = new_status
     #             self.branches_dict[uid].setCheckState(0, Qt.Checked if new_status else Qt.Unchecked)
 
+    # ------------------------------------------------------------------
+    # Selection masks
+    # ------------------------------------------------------------------
+    #
+    # Each branch carries its own point selection: a boolean mask over that
+    # branch's full-resolution reconstructed cloud, same format as
+    # core.entities.masks. It is held on the branch's tree item, so it lives and
+    # dies with the branch — remove_branch() takes it with the item, and nothing
+    # else has to remember to clean it up.
+    #
+    # It is NOT on the DataNode, because DataNode is pickled whole into the
+    # project file and a selection is a thing about the current session, not
+    # about the data. It is not on the viewer either: the viewer redraws, caches
+    # and discards branches constantly, and the selection has to outlive all of
+    # that. In particular, toggling a branch's cache re-reconstructs the same
+    # cloud in the same order, so the mask stays valid across it.
+
+    def selection_mask(self, uid: str):
+        """Branch *uid*'s selection mask, or None when nothing is selected in it."""
+        item = self.branches_dict.get(str(uid))
+        return None if item is None else getattr(item, "selection_mask", None)
+
+    def set_selection_mask(self, uid: str, mask) -> None:
+        """Set branch *uid*'s selection mask. ``None`` clears it.
+
+        Silently does nothing for a uid the tree does not know — a branch that
+        has been removed has no selection to hold.
+        """
+        item = self.branches_dict.get(str(uid))
+        if item is None:
+            return
+        if mask is None:
+            if hasattr(item, "selection_mask"):
+                del item.selection_mask
+        else:
+            item.selection_mask = mask
+
+    def selection_masks(self) -> dict:
+        """``{uid: mask}`` for every branch that has one."""
+        out = {}
+        for uid, item in self.branches_dict.items():
+            mask = getattr(item, "selection_mask", None)
+            if mask is not None:
+                out[uid] = mask
+        return out
+
+    def clear_selection_masks(self) -> None:
+        """Drop every branch's selection mask."""
+        for item in self.branches_dict.values():
+            if hasattr(item, "selection_mask"):
+                del item.selection_mask
+
+    # ------------------------------------------------------------------
+    # Click picks
+    # ------------------------------------------------------------------
+    #
+    # The mask says WHAT is selected; this says WHICH POINT WAS CLICKED FIRST,
+    # which a mask cannot express — distance measurement draws its polyline in
+    # click order, and the line-extension window keeps the line clicked first
+    # when joining two.
+    #
+    # Each branch's item holds its own picks as (sequence, cloud row), so they
+    # live and die with the branch exactly as the mask does. The sequence is
+    # what makes the order global: clicks in different branches interleave, and
+    # a measurement across two branches has to come back in the order the user
+    # made it, not grouped by branch.
+
+    def _next_pick_sequence(self) -> int:
+        seq = 0
+        for item in self.branches_dict.values():
+            for existing, _row in getattr(item, "picks", ()):
+                seq = max(seq, existing + 1)
+        return seq
+
+    def add_pick(self, uid: str, row: int) -> bool:
+        """Record a click on row *row* of branch *uid*. False if already picked."""
+        item = self.branches_dict.get(str(uid))
+        if item is None:
+            return False
+        picks = list(getattr(item, "picks", ()))
+        if any(existing == row for _seq, existing in picks):
+            return False
+        picks.append((self._next_pick_sequence(), int(row)))
+        item.picks = picks
+        return True
+
+    def remove_pick(self, uid: str, row: int) -> None:
+        """Forget one click, if it was recorded."""
+        item = self.branches_dict.get(str(uid))
+        if item is None:
+            return
+        item.picks = [(s, r) for s, r in getattr(item, "picks", ())
+                      if r != row]
+
+    def remove_picks(self, uid: str, rows) -> None:
+        """Forget every click on *rows* of branch *uid*."""
+        item = self.branches_dict.get(str(uid))
+        if item is None:
+            return
+        drop = set(int(r) for r in rows)
+        item.picks = [(s, r) for s, r in getattr(item, "picks", ())
+                      if r not in drop]
+
+    def picks(self) -> list:
+        """``[(uid, cloud_row), ...]`` across all branches, in click order."""
+        ordered = []
+        for uid, item in self.branches_dict.items():
+            for seq, row in getattr(item, "picks", ()):
+                ordered.append((seq, uid, row))
+        ordered.sort()
+        return [(uid, row) for _seq, uid, row in ordered]
+
+    def clear_picks(self) -> None:
+        """Forget every click on every branch."""
+        for item in self.branches_dict.values():
+            if hasattr(item, "picks"):
+                del item.picks
+
     @staticmethod
     def _resolve_branch_type(uid: str) -> str:
         """
@@ -298,10 +417,43 @@ class TreeStructureWidget(QTreeWidget):
 
             count = controller.get_node_reconstructed_count(node)
             if count is not None:
-                item.setText(2, f"{count:,}")
-                item.setToolTip(2, f"{count:,} points (reconstructed)")
+                # Kept on the item so the selected/total readout can be redrawn
+                # on every selection change without asking the controller again.
+                item.point_count = int(count)
+                self._refresh_selected_count(item)
         except Exception as e:
             logger.debug(f"_apply_point_count failed for {uid}: {e}")
+
+    def refresh_selected_counts(self) -> None:
+        """Redraw every branch's ``selected / total`` readout.
+
+        Call from the GUI thread only. ``set_selection_mask`` deliberately does
+        NOT do this itself: the lasso builds its masks on a worker thread, and
+        setting item text there would emit ``itemChanged`` from outside the GUI
+        thread. The viewer calls this from the click handlers and from the timer
+        that polls for the lasso's build, both of which are on the right thread.
+        """
+        for item in self.branches_dict.values():
+            self._refresh_selected_count(item)
+
+    def _refresh_selected_count(self, item) -> None:
+        """Redraw one branch's ``selected / total`` readout.
+
+        The selected half is the honest full-resolution number — how many points
+        a plugin would actually receive. It used to be impossible to see: the
+        viewer highlighted the LOD subset and the plugin got the whole region,
+        and the two figures were never reconciled anywhere the user could look.
+        """
+        total = getattr(item, "point_count", None)
+        if total is None:
+            return
+
+        mask = getattr(item, "selection_mask", None)
+        selected = 0 if mask is None else int(mask.sum())
+        item.setText(2, f"{selected:,}/{total:,}")
+        item.setToolTip(
+            2, f"{selected:,} of {total:,} points selected"
+            if selected else f"{total:,} points (reconstructed), none selected")
 
     def on_item_checked(self, item, column):
         """

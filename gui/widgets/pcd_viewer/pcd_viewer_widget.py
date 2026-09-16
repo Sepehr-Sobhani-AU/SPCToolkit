@@ -84,7 +84,10 @@ class PCDViewerWidget(
         - is_panning (bool): Flag to indicate if the widget is in panning mode.
         - is_panning_z (bool): Flag to indicate if the widget is panning along the Z-axis.
         - show_axis (bool): Flag to indicate whether the axis symbol should be displayed.
-        - picked_points_indices (list of int): List of indices of picked points from the point cloud.
+        - picked_points (list of (str, int)): Individual click picks in click
+          order, as (branch uid, row of that branch's full-resolution cloud).
+          Derived from the branches; the selection itself is a per-branch mask.
+          See selection_mask_for() and TreeStructureWidget.selection_mask.
         - model_view_matrix (numpy.ndarray): Model-view matrix for the current OpenGL context.
         - projection_matrix (numpy.ndarray): Projection matrix for the current OpenGL context.
         - viewport (numpy.ndarray): Viewport settings for the OpenGL context.

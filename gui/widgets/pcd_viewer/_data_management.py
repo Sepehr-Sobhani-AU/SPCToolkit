@@ -9,6 +9,56 @@ from core.services.spatial_grid import SpatialGrid
 logger = logging.getLogger(__name__)
 
 
+class _NoMaskStore:
+    """Stand-in for the tree when there is none — before MainWindow has built
+    it, or after it has torn it down.
+
+    Deliberately stores nothing. Selection masks belong to branches, branches
+    live in the tree, so no tree means there is nothing to select in and nothing
+    to keep. Mirroring the tree's four methods keeps the viewer to one code path
+    instead of a None check at every call site.
+    """
+
+    @staticmethod
+    def selection_mask(uid):
+        return None
+
+    @staticmethod
+    def set_selection_mask(uid, mask):
+        pass
+
+    @staticmethod
+    def selection_masks():
+        return {}
+
+    @staticmethod
+    def clear_selection_masks():
+        pass
+
+    @staticmethod
+    def add_pick(uid, row):
+        return False
+
+    @staticmethod
+    def remove_pick(uid, row):
+        pass
+
+    @staticmethod
+    def remove_picks(uid, rows):
+        pass
+
+    @staticmethod
+    def picks():
+        return []
+
+    @staticmethod
+    def clear_picks():
+        pass
+
+
+_NO_TREE = _NoMaskStore()
+
+
 class DataManagementMixin:
     """Point cloud data loading and management for PCDViewerWidget.
 
@@ -56,9 +106,17 @@ class DataManagementMixin:
         # Lazy derived state, invalidated by set_branches().
         self._combined_points_cache: Optional[np.ndarray] = None
         self._branch_offsets_cache: Optional[Dict[str, Tuple[int, int]]] = None
-        # (fingerprint, positions) for the picked-point highlight draw. Keyed
-        # rather than invalidated — see _picked_positions().
-        self._picked_positions_cache: Optional[Tuple[Tuple, np.ndarray]] = None
+
+        # No selection masks here. They live on the TREE, one per branch — see
+        # TreeStructureWidget.selection_mask — because they are about the
+        # branch, not about the view of it, and the viewer discards and rebuilds
+        # branches constantly (LOD, visibility, cache toggles) while the
+        # selection has to survive all of it. The viewer reads them through
+        # _mask_store() and keeps only the rendered rows it derives from them:
+        #
+        # uid -> rendered rows to highlight, derived from the mask at paint
+        # time. Dropped by set_branches(); the mask itself survives.
+        self._selection_rows_cache: Dict[str, np.ndarray] = {}
 
         # uid -> (drawn slice, SpatialGrid over it), so a click measures one cell
         # instead of the whole cloud. Built in the background on first pick and
@@ -80,8 +138,8 @@ class DataManagementMixin:
         self.line_indices = None   # (2*M,) uint32 — flattened edge endpoint indices
         self.line_colors = None    # Nx3 float32 per-vertex colors, or None for uniform gray
 
-        # Initialize list to store indices of picked points
-        self.picked_points_indices = []
+        # Click picks are not here either — they are on the branches too, for
+        # the same reason. See the picked_points property below.
 
     # ------------------------------------------------------------------
     # Lazy combined view
@@ -218,9 +276,9 @@ class DataManagementMixin:
         # The emphasis itself survives — it is held in source rows, which a
         # re-render does not change. Only the rendered rows it maps onto do.
         self._emphasis_rows_cache.clear()
-
-        # Picked-point indices reference the OLD combined order. Clamp by
-        # eventual size when rendered; preserved here for back-compat.
+        # Same for the selection: the mask is cloud space and a re-render does
+        # not touch it, but the rendered rows it highlights have just moved.
+        self._selection_rows_cache.clear()
 
         self.update()
 
@@ -378,6 +436,176 @@ class DataManagementMixin:
         return np.flatnonzero(np.isin(np.asarray(sample), cloud_indices))
 
     # ------------------------------------------------------------------
+    # Selection: per-branch masks over the full-resolution cloud
+    # ------------------------------------------------------------------
+
+    def refresh_selection_readout(self) -> None:
+        """Redraw the tree's selected/total column. GUI thread only."""
+        store = self._mask_store()
+        refresh = getattr(store, "refresh_selected_counts", None)
+        if callable(refresh):
+            refresh()
+
+    def _mask_store(self):
+        """Wherever this viewer's selection masks live.
+
+        Always the tree: a selection belongs to the branch, and has to outlive
+        every redraw, LOD change and cache toggle of it. The viewer holds no
+        masks of its own — only the rendered rows it derives from them.
+
+        Falls back to a store that keeps nothing when there is no tree, which is
+        the honest answer rather than a second place for masks to live: no tree
+        means no branches, so there is nothing to select.
+        """
+        from config.config import global_variables
+
+        tree = global_variables.global_tree_structure_widget
+        if tree is not None and hasattr(tree, "set_selection_mask"):
+            return tree
+        return _NO_TREE
+
+    def selection_mask_for(self, uid) -> Optional[np.ndarray]:
+        """Branch *uid*'s selection as a boolean mask over its full cloud.
+
+        Returns None when nothing is selected in that branch — which callers
+        read as "no selection here", not as "an empty one". A plugin handed
+        None should say so rather than run on nothing.
+        """
+        return self._mask_store().selection_mask(uid)
+
+    def selected_rows(self, uid) -> Optional[np.ndarray]:
+        """Branch *uid*'s selected rows, as indices into its full cloud.
+
+        The array form of ``selection_mask_for``; None means the same thing.
+        """
+        mask = self._mask_store().selection_mask(uid)
+        if mask is None:
+            return None
+        return np.flatnonzero(mask)
+
+    @property
+    def picked_points(self) -> List[Tuple[str, int]]:
+        """Individual click picks, in click order, as ``(branch uid, cloud row)``.
+
+        The mask says WHAT is selected; this says WHICH ONE WAS CLICKED FIRST,
+        which a mask cannot express. Only single-point picks appear — a lasso or
+        a cluster click writes the mask alone. Every pick here also has its bit
+        set in its branch's mask, so the highlight and the plugins never
+        disagree.
+
+        Derived from the branches, not stored here. Held on the viewer it
+        outlived the branches it named: removing one branch took its mask with
+        it but left picks pointing into a cloud that no longer existed.
+
+        Consumers: distance measurement (polyline in click order), the
+        line-extension window (Join keeps the line clicked first), identify
+        point, surface fit and surface region growing (all "the first one").
+        """
+        return self._mask_store().picks()
+
+    def first_pick(self, uid=None) -> Optional[int]:
+        """The cloud row of the first point clicked, or None if none was.
+
+        For the gestures that name ONE point — "fit a surface to the cluster I
+        clicked", "start growing here". Those want the click, not the selection:
+        a lasso can leave a million points selected without naming any of them.
+
+        Pass *uid* to ask about one branch. Only individual clicks count; a
+        lasso and a cluster click set the mask without recording a pick.
+        """
+        for pick_uid, row in self.picked_points:
+            if uid is None or pick_uid == str(uid):
+                return row
+        return None
+
+    def set_branch_selection(self, uid, mask: Optional[np.ndarray]) -> None:
+        """Replace branch *uid*'s selection mask. None drops it.
+
+        The mask is taken in cloud space and kept as-is; the rendered rows it
+        highlights are re-derived on the next paint.
+        """
+        uid = str(uid)
+        if mask is not None:
+            mask = np.asarray(mask, dtype=bool)
+            if not mask.any():
+                # An all-False mask is "nothing selected", which is what an
+                # absent entry already means. Storing it would make
+                # selection_mask_for answer "there is a selection, of nothing".
+                mask = None
+        self._mask_store().set_selection_mask(uid, mask)
+        self._selection_rows_cache.pop(uid, None)
+
+    def selection_centroid(self) -> Optional[np.ndarray]:
+        """Mean position of everything selected, or None if nothing is.
+
+        For the plugins whose pick is a *place* rather than a set — "start
+        tracing near here". Averaged over the full-resolution selection, so the
+        answer does not drift as LOD changes which points are drawn.
+        """
+        from config.config import global_variables
+
+        controller = global_variables.global_application_controller
+        masks = self._mask_store().selection_masks()
+        if controller is None or not masks:
+            return None
+
+        total = np.zeros(3, dtype=np.float64)
+        count = 0
+        for uid, mask in masks.items():
+            try:
+                pts = controller.reconstruct(uid).points
+            except Exception:
+                continue
+            if len(pts) != len(mask):
+                continue
+            rows = np.flatnonzero(mask)
+            if rows.size == 0:
+                continue
+            total += np.asarray(pts[rows, :3], dtype=np.float64).sum(axis=0)
+            count += rows.size
+
+        if count == 0:
+            return None
+        return (total / count).astype(np.float32)
+
+    def selection_count(self) -> int:
+        """How many full-resolution points are selected, across all branches.
+
+        This is the honest number — the one plugins will operate on. The old
+        viewer reported the count of highlighted dots instead, which after a
+        lasso was the LOD subset and so could be ten times smaller.
+        """
+        return int(sum(int(m.sum())
+                       for m in self._mask_store().selection_masks().values()))
+
+    def has_selection(self) -> bool:
+        """Whether anything at all is selected."""
+        return bool(self._mask_store().selection_masks()) or bool(self.picked_points)
+
+    def _selection_draw_rows(self, uid: str) -> Optional[np.ndarray]:
+        """Rendered rows of branch *uid* to highlight, or None if none are.
+
+        Cached per branch for the same reason the emphasis rows are: the
+        translation out of cloud space costs O(n) and only changes when the
+        selection or the rendered slice does, both of which drop the entry.
+
+        Lossy in the LOD direction, deliberately: a selected point the viewer
+        did not draw has no rendered row and simply is not highlighted. It is
+        still selected, and plugins still get it — the mask is the truth, this
+        is only what can be shown.
+        """
+        mask = self._mask_store().selection_mask(uid)
+        if mask is None:
+            return None
+        cached = self._selection_rows_cache.get(uid)
+        if cached is not None:
+            return cached
+
+        rows = self.rendered_rows(uid, np.flatnonzero(mask)).astype(np.uint32)
+        self._selection_rows_cache[uid] = rows
+        return rows
+
+    # ------------------------------------------------------------------
     # Emphasis: drawing some points bigger and others see-through
     # ------------------------------------------------------------------
 
@@ -476,6 +704,11 @@ class DataManagementMixin:
         self._branch_vertices.clear()
         self._coarse_indexes.clear()
         self._coarse_index_failed.clear()
+        # Every branch is gone, so every selection into one is meaningless.
+        store = self._mask_store()
+        store.clear_selection_masks()
+        store.clear_picks()
+        self._selection_rows_cache.clear()
         self._visible_branches = []
         self._combined_points_cache = None
         self._branch_offsets_cache = None

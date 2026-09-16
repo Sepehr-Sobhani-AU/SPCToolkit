@@ -112,9 +112,6 @@ class GLRenderingMixin:
         # Render line geometry (e.g. mesh wireframes)
         self.render_lines()
 
-        # Render picked points
-        self.render_picked_points()
-
         # Store matrices for picking
         self.model_view_matrix = glGetDoublev(GL_MODELVIEW_MATRIX).copy()
         self.projection_matrix = glGetDoublev(GL_PROJECTION_MATRIX).copy()
@@ -182,6 +179,11 @@ class GLRenderingMixin:
                 else:
                     self._draw_emphasised(groups, len(slc))
                     glPointSize(self.point_size)
+
+                # Highlight this branch's selection straight out of the same
+                # VBO, while it is still bound. Positions come from the GPU, so
+                # nothing is gathered or re-uploaded per frame.
+                self._draw_selection(uid)
                 v.unbind()
 
             glDisableClientState(GL_VERTEX_ARRAY)
@@ -260,82 +262,38 @@ class GLRenderingMixin:
             glDisableClientState(GL_COLOR_ARRAY)
         glDisableClientState(GL_VERTEX_ARRAY)
 
-    def render_picked_points(self):
+    def _draw_selection(self, uid):
+        """Highlight branch *uid*'s selected points, drawn from its bound VBO.
+
+        Called from inside ``render_point_cloud``'s per-branch loop, where the
+        branch's VBO is already bound and the vertex pointer already set — so
+        this is one index draw and nothing else. The rows come from the
+        branch's cloud-space selection mask, translated to rendered rows and
+        cached by ``_selection_draw_rows``.
+
+        This replaced a client-side array of gathered positions. That version
+        had to re-gather a (K, 3) buffer whenever the fingerprint of the picked
+        list changed and push it from client memory every frame; at a few
+        million picked points, orbiting the selection was unusable. It also had
+        to prune stale indices mid-paint, because it indexed the combined
+        buffer — a problem that cannot arise here, since a mask is stored
+        against the cloud rather than against whatever happens to be drawn.
         """
-        Render the picked points in the point cloud.
-
-        This method highlights the picked points by drawing spheres at their positions. The colour and size of the
-        spheres are determined by the `picked_point_highlight_color` and `picked_point_highlight_size` attributes.
-        The purpose of this method is to visually distinguish the picked points from the rest of the point cloud.
-
-        If no points have been picked, the method returns without rendering anything.
-        """
-
-        # Highlight picked points by drawing larger points.
-        # Accessing self.points materialises the combined array; we only
-        # pay that on frames where picked points actually exist.
-        if not self.picked_points_indices:
-            self._picked_positions_cache = None
-            return
-        pts = self.points
-        if pts is None:
+        rows = self._selection_draw_rows(uid)
+        if rows is None or rows.size == 0:
             return
 
-        positions = self._picked_positions(pts)
-        if positions is None or len(positions) == 0:
-            return
-
-        highlight_size = self.point_size * self.picked_point_highlight_size * self._PICKED_POINT_SIZE_MULTIPLIER
-        glPointSize(highlight_size)
+        # The per-branch loop leaves GL_COLOR_ARRAY enabled so each point takes
+        # its own colour from the VBO. The highlight is one flat colour, so the
+        # array has to come off for this pass and go back on for the next
+        # branch.
+        glDisableClientState(GL_COLOR_ARRAY)
+        glPointSize(self.point_size * self.picked_point_highlight_size
+                    * self._PICKED_POINT_SIZE_MULTIPLIER)
         glColor3f(*self.picked_point_highlight_color)
-
-        glEnableClientState(GL_VERTEX_ARRAY)
-        glVertexPointer(3, GL_FLOAT, 0, positions)
-        glDrawArrays(GL_POINTS, 0, len(positions))
-        glDisableClientState(GL_VERTEX_ARRAY)
-
-    def _picked_positions(self, pts):
-        """Contiguous (K, 3) float32 buffer of the picked points' coordinates.
-
-        Cached, because this runs every frame: a polygon selection can leave
-        millions of picked points, and gathering them again on each repaint
-        would make orbiting a large selection unusable.
-
-        The cache key fingerprints the selection cheaply instead of comparing
-        it. ``picked_points_indices`` is a plain list that plugins mutate
-        directly, so there is no mutation hook to hang invalidation on — but
-        every mutation in the codebase (append, remove, clear, extend, slice
-        assignment, or replacing the list outright) changes at least one of the
-        list's identity, its length, or its end values.
-
-        Args:
-            pts: The combined (N, >=3) point buffer.
-
-        Returns:
-            (K, 3) float32 array, or None when nothing is left to draw.
-        """
-        picked = self.picked_points_indices
-        key = (id(picked), len(picked), picked[0], picked[-1], id(pts))
-
-        cached = self._picked_positions_cache
-        if cached is not None and cached[0] == key:
-            return cached[1]
-
-        # Picked indices outlive the branches they came from, so the selection
-        # can still name rows a smaller combined buffer no longer has.
-        selected = np.fromiter(picked, dtype=np.int64, count=len(picked))
-        in_range = selected <= len(pts) - 1
-        if not in_range.all():
-            selected = selected[in_range]
-            picked[:] = selected.tolist()
-            if not picked:
-                self._picked_positions_cache = None
-                return None
-            key = (id(picked), len(picked), picked[0], picked[-1], id(pts))
-
-        positions = np.ascontiguousarray(pts[selected, :3], dtype=np.float32)
-        self._picked_positions_cache = (key, positions)
-        return positions
+        glDrawElements(GL_POINTS, rows.size, GL_UNSIGNED_INT, rows)
+        glPointSize(self.point_size)
+        glEnableClientState(GL_COLOR_ARRAY)
 
     def resizeGL(self, w, h):
         """

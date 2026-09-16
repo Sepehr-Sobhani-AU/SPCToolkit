@@ -112,13 +112,25 @@ class MouseInputEventHandler:
         if self._zoom_window_mode:
             return
 
-        # Polygon mode: left double-click closes and selects, right double-click
-        # closes and deselects
+        # Polygon mode: the double-click ends the tracing. Left selects, right
+        # deselects, and WHERE it lands decides which side of the polygon is
+        # acted on — inside for the points it encloses, outside for everything
+        # else (see _close_polygon).
+        #
+        # The click that ends the tracing is not part of the shape. A
+        # double-click arrives as a press and then this event, and that press
+        # already added a vertex in mousePressEvent, so it is taken back here —
+        # otherwise every lasso gained a stray vertex wherever the user happened
+        # to finish, which for a click outside the shape dragged the outline out
+        # to meet it.
         if self._polygon_mode:
             if event.button() == Qt.LeftButton:
-                self._close_polygon_and_select()
+                if self._polygon_vertices:
+                    self._polygon_vertices.pop()
+                self._close_polygon_and_select(event.pos())
             elif event.button() == Qt.RightButton:
-                self._close_polygon_and_deselect()
+                # A right press adds no vertex, so there is nothing to take back.
+                self._close_polygon_and_deselect(event.pos())
             return
 
         if event.button() == Qt.LeftButton:

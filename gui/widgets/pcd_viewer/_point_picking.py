@@ -222,97 +222,108 @@ class PointPickingMixin:
 
 
     def select_point_at(self, mouse_pos):
-        """
-        Select a point in the point cloud at the given mouse position.
+        """Select the point under the cursor.
 
-        This method is used to select a point in the point cloud based on the mouse click position in widget coordinates.
-        It reads the depth buffer to get the depth value at the mouse position and then unprojects the screen coordinates
-        to world coordinates. The closest point to the unprojected coordinates is selected if it lies within a specified
-        threshold.
-
-        The distance threshold used for selecting points is defined by the `picking_point_threshold_factor` attribute.
-        You can adjust this attribute to control how close a point must be to be considered selectable.
-
-        If a point is successfully selected, its index is added to the `picked_points_indices` attribute, which stores the
-        indices of all currently selected points.
+        The pick is resolved to a ``(branch uid, cloud row)`` pair and recorded
+        two ways on the branch itself: recorded as a click, which keeps the
+        order, and set in that branch's selection mask, which is what plugins
+        read. Both, so the highlight and the plugins can never disagree.
 
         Args:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
         """
-
         idx, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
         if idx is None:
             return
 
-        if not self._is_point_selectable(idx):
+        uid, row = self._locate_render_index(idx)
+        if uid is None:
             return
-        if idx not in self.picked_points_indices:
-            self.picked_points_indices.append(idx)
+        if not self._is_cloud_point_selectable(uid, row):
+            return
+
+        n = self._cloud_point_count(uid)
+        if n is None or not (0 <= row < n):
+            return
+
+        mask = self._mask_store().selection_mask(uid)
+        if mask is None or len(mask) != n:
+            mask = np.zeros(n, dtype=bool)
+        else:
+            mask = mask.copy()
+        mask[row] = True
+
+        if not self._mask_store().add_pick(uid, row):
+            return                       # already picked
+        self.set_branch_selection(uid, mask)
+        self.refresh_selection_readout()
 
     def deselect_point_at(self, mouse_pos):
-        """
-        Deselect a point in the point cloud at the given mouse position.
+        """Deselect the selected point nearest the cursor.
 
-        This method is used to deselect a previously selected point in the point cloud based on the mouse click position
-        in widget coordinates. It projects the picked points to screen space and determines the closest point to the
-        mouse click position. If the closest point lies within a specified pixel threshold, it is deselected.
-
-        The pixel threshold used for deselecting points is defined by the `pixel_threshold` attribute. You can adjust
-        this attribute to control how close a point must be to be considered for deselection.
-
-        If a point is successfully deselected, its index is removed from the `picked_points_indices` attribute, which
-        stores the indices of all currently selected points.
+        Only DRAWN points are candidates — you can only aim at what you can
+        see — so this projects the rendered rows the highlight is showing rather
+        than the whole selection. After a lasso those differ by the LOD factor,
+        and projecting the full cloud-space selection would make one right-click
+        take seconds on a large cloud.
 
         Args:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
         """
-
-        # Picked indices outlive the branches they came from, so the cloud may
-        # be gone while the selection list is still populated.
-        if self.points is None or not self.picked_points_indices:
+        if not self._mask_store().selection_masks() or self.points is None:
             return
 
-        # Ensure OpenGL context is current
         self.makeCurrent()
-
-        # Project all picked points in one pass rather than a gluProject call
-        # each: a polygon selection leaves millions of picked points, and a GL
-        # round trip per point makes a single right-click take seconds.
-        selected = np.fromiter(
-            self.picked_points_indices, dtype=np.int64,
-            count=len(self.picked_points_indices)
-        )
-        selected = selected[(selected >= 0) & (selected < len(self.points))]
-        if selected.size == 0:
-            return
 
         mv = np.array(self.model_view_matrix, dtype=np.float64)
         proj = np.array(self.projection_matrix, dtype=np.float64)
-        screen_x, screen_y, valid_mask = self._project_points_to_screen(
-            self.points[selected, :3].astype(np.float64), mv, proj, self.viewport
-        )
 
-        # _project_points_to_screen reports Qt widget coordinates (top-left
-        # origin, Y down), which is what mouse_pos already is — no Y flip.
-        dx = screen_x - mouse_pos.x()
-        dy = screen_y - mouse_pos.y()
-        dist_sq = dx * dx + dy * dy
-        dist_sq[~valid_mask] = np.inf
+        best = None                      # (dist_sq, uid, cloud_row)
+        for uid in self._visible_branches:
+            rows = self._selection_draw_rows(uid)
+            if rows is None or rows.size == 0:
+                continue
+            slc = self._branch_vertices.get(uid)
+            if slc is None:
+                continue
 
-        nearest = int(np.argmin(dist_sq))
+            screen_x, screen_y, valid = self._project_points_to_screen(
+                slc[rows, :3].astype(np.float64), mv, proj, self.viewport)
 
-        # Define a threshold in pixels (e.g., radius of the sphere in screen space)
-        # TODO: Not sure if the pixel threshold is appropriate for all cases
-        pixel_threshold = self.pixel_threshold
+            # _project_points_to_screen reports Qt widget coordinates (top-left
+            # origin, Y down), which is what mouse_pos already is — no Y flip.
+            dx = screen_x - mouse_pos.x()
+            dy = screen_y - mouse_pos.y()
+            dist_sq = dx * dx + dy * dy
+            dist_sq[~valid] = np.inf
 
-        if dist_sq[nearest] <= pixel_threshold ** 2:
-            # Remove the point from picked points
-            self.picked_points_indices.remove(int(selected[nearest]))
-            # Invalidate stored polygons so plugins fall back to coordinate matching
-            self._selection_polygons.clear()
+            nearest = int(np.argmin(dist_sq))
+            if best is None or dist_sq[nearest] < best[0]:
+                cloud_row = self.cloud_index(uid, int(rows[nearest]))
+                if cloud_row >= 0:
+                    best = (float(dist_sq[nearest]), uid, cloud_row)
+
+        if best is None or best[0] > self.pixel_threshold ** 2:
+            return
+
+        _dist, uid, row = best
+        mask = self._mask_store().selection_mask(uid)
+        if mask is None or not (0 <= row < len(mask)):
+            return
+
+        mask = mask.copy()
+        mask[row] = False
+        self.set_branch_selection(uid, mask)
+
+        # A point selected by a lasso or a cluster click has no recorded pick;
+        # clearing its bit is then the whole job.
+        self._mask_store().remove_pick(uid, row)
+
+        self.refresh_selection_readout()
+        self.update()
 
     def _cluster_at(self, mouse_pos):
-        """The cluster under the cursor, as ``(uid, start, end, label)``.
+        """The cluster under the cursor, as ``(uid, cloud_row, label)``.
 
         Clusters are identified by their label within their own branch, never by
         colour: two clusters can be drawn in the same RGB, and label 3 of one
@@ -329,89 +340,62 @@ class PointPickingMixin:
         if clicked_index is None:
             return None
 
-        for uid, (start, end) in self._branch_offsets.items():
-            if start <= clicked_index < end:
-                labels = self._get_cluster_labels(uid)
-                if labels is None:
-                    return None
-                label = self._label_of(uid, labels, clicked_index, start)
-                if label is None or label == -1:
-                    return None
-                return uid, start, end, label
-        return None
+        uid, row = self._locate_render_index(clicked_index)
+        if uid is None:
+            return None
+
+        labels = self._get_cluster_labels(uid)
+        if labels is None or not (0 <= row < len(labels)):
+            return None
+
+        label = int(labels[row])
+        if label == -1:
+            return None
+        return uid, row, label
+
+    def _apply_cluster(self, mouse_pos, select):
+        """Add or remove the whole cluster under the cursor.
+
+        The widening to every point carrying the label happens HERE, in cloud
+        space, rather than in each plugin. It used to add only the rendered rows
+        and leave every plugin to re-widen by label on its own — correct by
+        convention, but nothing enforced it, so a plugin that read the geometric
+        selection instead silently received just the LOD subset of the cluster
+        and looked like it had worked.
+        """
+        cluster = self._cluster_at(mouse_pos)
+        if cluster is None:
+            return
+        uid, _row, label = cluster
+
+        labels = np.asarray(self._get_cluster_labels(uid))
+        n = len(labels)
+        in_cluster = (labels == label)
+
+        if select:
+            gate = self.selectable_cloud_mask(uid, n)
+            if gate is not None:
+                in_cluster &= gate
+
+        existing = self._mask_store().selection_mask(uid)
+        if existing is None or len(existing) != n:
+            existing = np.zeros(n, dtype=bool)
+
+        combined = (existing | in_cluster) if select else (existing & ~in_cluster)
+        self.set_branch_selection(uid, combined)
+
+        if not select:
+            # Click picks inside the cluster go with it; the ordered list must
+            # not keep naming points that are no longer selected.
+            self._mask_store().remove_picks(uid, np.flatnonzero(in_cluster))
+
+        self.refresh_selection_readout()
+        self.update()
 
     def select_cluster_at(self, mouse_pos):
-        """
-        Add every point of the cluster under the cursor to the selection.
-
-        The cluster is matched by the clicked point's cluster label within its
-        own branch (see ``_cluster_at``). Only rendered points are added, and they
-        pass the same filters as any other selection: branch membership, select
-        locks and noise. Does nothing if the clicked branch has no cluster labels.
-
-        Args:
-            mouse_pos (QPoint): The position of the mouse click in widget coordinates.
-        """
-        cluster = self._cluster_at(mouse_pos)
-        if cluster is None:
-            return
-        uid, start, end, label = cluster
-
-        candidates = np.arange(start, end, dtype=np.int64)
-        labels = self._get_cluster_labels(uid)
-        positions, values = self._branch_labels_of(uid, labels, candidates, start, end)
-        new_indices = self._filter_selection(candidates[positions[values == label]])
-
-        if new_indices.size > 0:
-            if self.picked_points_indices:
-                existing = np.fromiter(self.picked_points_indices, dtype=np.int64,
-                                       count=len(self.picked_points_indices))
-                new_indices = new_indices[~np.isin(new_indices, existing)]
-            self.picked_points_indices.extend(new_indices.tolist())
-
-        self.update()
+        """Add every point of the cluster under the cursor to the selection."""
+        self._apply_cluster(mouse_pos, select=True)
 
     def deselect_cluster_at(self, mouse_pos):
-        """
-        Remove every selected point of the cluster under the cursor from the selection.
-
-        The cluster is matched by the clicked point's cluster label within its
-        own branch (see ``_cluster_at``), so another cluster that happens to share
-        its colour stays selected. Does nothing if the clicked branch has no
-        cluster labels.
-
-        Args:
-            mouse_pos (QPoint): The position of the mouse click in widget coordinates.
-        """
-        if not self.picked_points_indices:
-            return
-
-        # Drop picks that no longer address a drawn point before indexing with
-        # them. picked_points_indices outlives set_branches() on purpose, so
-        # after LOD drops a level it still holds rows past the end of the
-        # shorter buffer — and negative entries would wrap to the far end of it
-        # rather than being ignored.
-        selected = np.fromiter(self.picked_points_indices, dtype=np.int64,
-                               count=len(self.picked_points_indices))
-        selected = selected[(selected >= 0) & (selected < len(self.points))]
-        if selected.size == 0:
-            self.clear_selection()
-            return
-        if selected.size != len(self.picked_points_indices):
-            self.picked_points_indices[:] = selected.tolist()
-
-        cluster = self._cluster_at(mouse_pos)
-        if cluster is None:
-            return
-        uid, start, end, label = cluster
-
-        labels = self._get_cluster_labels(uid)
-        positions, values = self._branch_labels_of(uid, labels, selected, start, end)
-        matches = np.zeros(selected.size, dtype=bool)
-        matches[positions[values == label]] = True
-
-        self.picked_points_indices[:] = selected[~matches].tolist()
-        # Invalidate stored polygons so plugins fall back to coordinate matching
-        self._selection_polygons.clear()
-
-        self.update()
+        """Remove every point of the cluster under the cursor from the selection."""
+        self._apply_cluster(mouse_pos, select=False)

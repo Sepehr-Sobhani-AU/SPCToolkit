@@ -120,6 +120,36 @@ def polygon_bounds(polygon):
             float(poly[:, 1].min()), float(poly[:, 1].max()))
 
 
+def point_in_polygon(x, y, polygon) -> bool:
+    """Whether the screen point (*x*, *y*) lies inside *polygon*.
+
+    One point against one polygon, in screen space — for asking where the user
+    clicked relative to the lasso they just drew, which decides whether the
+    gesture means "inside this" or "everything but this".
+
+    Plain even-odd ray crossing, same rule the per-point backends use, so a
+    click and the points agree about which side of an edge they are on.
+
+    Args:
+        x, y: the point, in Qt widget coordinates.
+        polygon: (M, 2) screen-space vertices, same coordinates.
+    """
+    poly = np.asarray(polygon, dtype=np.float64)
+    if len(poly) < 3:
+        return False
+
+    px, py = poly[:, 0], poly[:, 1]
+    qx, qy = np.roll(px, -1), np.roll(py, -1)
+
+    # Edges the horizontal ray from (x, y) crosses, counted on one side only so
+    # a vertex touching the ray is not counted twice.
+    straddles = (py > y) != (qy > y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cross_x = px + (y - py) * (qx - px) / (qy - py)
+    crossings = np.count_nonzero(straddles & (x < cross_x))
+    return bool(crossings % 2)
+
+
 def select_in_polygon(points, polygon, mv, proj, viewport,
                       block=DEFAULT_BLOCK, backend=None):
     """Boolean mask over *points* marking those inside *polygon* on screen.

@@ -90,6 +90,22 @@ class ApplicationController:
                 rc.invalidate_branch(uid)
         cache_service.add_invalidate_listener(_on_cache_invalidated)
 
+        # Note what is deliberately NOT registered here: a listener dropping the
+        # branch's selection mask.
+        #
+        # Cache invalidation says the cached *reconstruction* is stale, not that
+        # the branch's points changed. Unchecking Cache on a branch goes through
+        # the same path, and re-reconstructing replays the same transformers over
+        # the same data and yields the same points in the same order — so a mask
+        # built against it is still exactly right, and losing the user's
+        # selection because they toggled a checkbox would be a bug.
+        #
+        # What guards the case where the cloud really did change length is the
+        # length check in ``PCDViewerWidget.selection_mask_for_cloud``, which
+        # refuses a mask that does not describe the cloud the caller is holding.
+        # The mask is dropped for good when the branch is removed, because it
+        # lives on the branch's tree item and goes with it.
+
         return controller
 
     # === Data Operations ===

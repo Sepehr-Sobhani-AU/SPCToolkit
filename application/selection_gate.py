@@ -23,7 +23,6 @@ import logging
 from typing import Optional
 
 import numpy as np
-from scipy.spatial import cKDTree
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
@@ -104,9 +103,9 @@ def selection_kind(plugin_class) -> Optional[str]:
 def selection_present(kind: Optional[str]) -> bool:
     """Whether a selection of ``kind`` is currently available.
 
-    Points come from the viewer (picked points or stored selection polygons);
-    branches come from the controller's selected-branch list. ``None`` means no
-    selection is required, so it is trivially satisfied.
+    Points come from the viewer's per-branch selection masks; branches come from
+    the controller's selected-branch list. ``None`` means no selection is
+    required, so it is trivially satisfied.
     """
     if not kind:
         return True
@@ -114,8 +113,8 @@ def selection_present(kind: Optional[str]) -> bool:
     viewer = global_variables.global_pcd_viewer_widget
     controller = global_variables.global_application_controller
 
-    has_points = bool(getattr(viewer, "picked_points_indices", None)) or \
-        bool(getattr(viewer, "_selection_polygons", None))
+    has_selection = getattr(viewer, "has_selection", None)
+    has_points = bool(has_selection()) if callable(has_selection) else False
     has_branches = bool(getattr(controller, "selected_branches", None))
 
     if kind == POINTS:
@@ -130,12 +129,14 @@ def selection_present(kind: Optional[str]) -> bool:
 def selectable_cloud_indices(node, n_points=None):
     """Which rows of *node*'s cloud the viewer would let the user select.
 
-    ``picked_cloud_indices`` widens a polygon selection to full resolution, and
-    that widening bypasses the viewer's own filters because they work in
-    rendered-index space (see that function's note). This answers the same
-    question in *cloud*-index space, so callers have something to pass as
-    ``allowed``: a point is admissible unless its cluster is locked against
-    selection, or it is noise.
+    A point is admissible unless its cluster is locked against selection, or it
+    is noise. The viewer applies this once, in cloud space, as each selection
+    gesture completes — see ``PCDViewerWidget.selectable_cloud_mask``, which
+    wraps this so there is one definition of "selectable" rather than two.
+
+    It used to be something each plugin passed back in as ``allowed=``, because
+    the viewer's own filters ran in rendered-index space and the full-resolution
+    widening could not reach them. Nothing has to remember to pass it now.
 
     Args:
         node: The DataNode the plugin is about to operate on.
@@ -145,8 +146,7 @@ def selectable_cloud_indices(node, n_points=None):
 
     Returns:
         Sorted ``np.intp`` array of admissible rows, or ``None`` when the node
-        carries no usable cluster labels — meaning nothing is excluded, which is
-        exactly what ``allowed=None`` means to ``picked_cloud_indices``.
+        carries no usable cluster labels — meaning nothing is excluded.
     """
     if node is None or getattr(node, "data_type", None) != "cluster_labels":
         return None
@@ -173,72 +173,35 @@ def selectable_cloud_indices(node, n_points=None):
     return np.flatnonzero(admissible).astype(np.intp)
 
 
-def picked_cloud_indices(viewer, pc_points, index=None, allowed=None):
-    """Map the viewer's current point picks onto indices into *pc_points*.
+def selected_cloud_indices(viewer, uid, pc_points=None):
+    """Branch *uid*'s selected rows, as indices into its full-resolution cloud.
 
-    The viewer renders a possibly sub-sampled copy of the branch, so a picked
-    index is not an index into the reconstructed cloud. Picks are matched back by
-    coordinate, then the stored selection polygons are re-tested against the full
-    cloud so a polygon selection covers every point it encloses rather than only
-    the sub-sampled ones the user could see.
+    The plugin-facing read of the selection. The viewer holds one boolean mask
+    per branch, in that branch's own cloud order, so this is a lookup and a
+    ``flatnonzero`` — no coordinate matching, no polygon re-test, no kd-tree.
 
-    **That re-test does not go through the viewer's selection filters.** The
-    viewer applies them when the polygon is closed (``_filter_selection``:
-    branch membership, cluster locks, noise) — but they work in rendered-index
-    space, and re-testing works in cloud-index space, so the widened result comes
-    back ungated. A polygon drawn over a few permitted points therefore returns
-    every point it encloses, permitted or not. Measured in the line-extension
-    window: the viewer honestly reported 32 points picked while this handed back
-    thousands, and a whole bush joined the traced line.
+    Returns None when nothing is selected in that branch. That is deliberately
+    distinct from an empty array: a plugin handed None should tell the user it
+    has no selection to work with, rather than run on nothing and appear to
+    succeed.
 
-    A caller that knows which cloud indices are admissible passes them as
-    *allowed*; the result is intersected with them. Anything that cares what it
-    is picking should pass it — only the caller knows the answer in cloud-index
-    space.
+    Pass *pc_points* when the caller has the cloud to hand and wants the mask
+    checked against its length before use; a mask that describes a different
+    cloud is refused rather than returned misaligned.
 
-    Pass *index* when the caller already has one — a ``cKDTree`` over
-    *pc_points*, or anything with the same ``query``, such as a
-    ``core.services.neighbor_index.NeighborIndex``. Returns a sorted index
-    array, or ``None`` when the picks could not be resolved to any coordinate at
-    all — which callers report as "no points".
-
-    A tree is what gets built when nothing is passed, and deliberately so. This
-    is one batched nearest-neighbour lookup over every picked point, and a lasso
-    can leave hundreds of thousands of them: at 12M points a batch of 100,000
-    took 0.17 s through a ``cKDTree`` and 38 s through the spatial grid, which
-    answers one point at a time. The grid is the better index for the *other*
-    shape of question — a radius around a single position, asked over and over —
-    which is what the growing algorithms ask and why they use it instead.
-
-    Everything here is done with numpy rather than Python loops and sets. A
-    lasso leaves millions of picked points, and at that size building a list of
-    per-point slices and then a ``set`` of boxed integers costs seconds and
-    hundreds of MB on its own — more than the polygon re-test it feeds.
+    This replaced a function that took the viewer's rendered picks, matched them
+    back to the cloud through a ``cKDTree``, and unioned the result with a
+    re-test of the stored selection polygons. All of that was the cost of
+    deriving the answer lazily, per plugin, per call — the selection is now
+    built once in cloud space when the gesture completes.
     """
-    viewer_points = viewer.points
-    if viewer_points is None or not viewer.picked_points_indices:
+    if viewer is None:
+        return None
+    reader = getattr(viewer, "selection_mask_for_cloud", None)
+    if not callable(reader):
         return None
 
-    picked_rows = np.fromiter(viewer.picked_points_indices, dtype=np.intp,
-                              count=len(viewer.picked_points_indices))
-    picked_rows = picked_rows[(picked_rows >= 0) & (picked_rows < len(viewer_points))]
-    if picked_rows.size == 0:
+    mask = reader(uid, pc_points)
+    if mask is None:
         return None
-
-    if index is None:
-        index = cKDTree(pc_points)
-    _dist, local = index.query(
-        np.ascontiguousarray(viewer_points[picked_rows, :3], dtype=np.float32))
-    indices = np.atleast_1d(np.asarray(local, dtype=np.intp))
-
-    polygon_mask = viewer.retest_polygon_selection(pc_points)
-    if polygon_mask is not None:
-        # union with the re-tested polygon, still sorted and unique afterwards
-        indices = np.union1d(indices, np.flatnonzero(polygon_mask))
-    else:
-        indices = np.unique(indices)
-
-    indices = indices.astype(np.intp, copy=False)
-    if allowed is None:
-        return indices
-    return np.intersect1d(indices, np.asarray(allowed, dtype=np.intp))
+    return np.flatnonzero(mask).astype(np.intp)

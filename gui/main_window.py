@@ -485,10 +485,54 @@ class MainWindow(QtWidgets.QMainWindow):
 
         plugin_class = self.plugin_manager.get_plugin(plugin_name)
         kind = selection_kind(plugin_class)
-        if selection_present(kind):
-            proceed()
-        else:
-            self._show_selection_gate_prompt(plugin_name, kind, proceed)
+
+        def gated():
+            if selection_present(kind):
+                proceed()
+            else:
+                self._show_selection_gate_prompt(plugin_name, kind, proceed)
+
+        self._when_selection_ready(gated)
+
+    def _when_selection_ready(self, then):
+        """Run ``then`` once the viewer has finished building selection masks.
+
+        Closing a lasso applies it to every visible branch's full-resolution
+        cloud on a worker thread. That takes a moment on a large cloud, and a
+        plugin launched in the gap would read a selection that is only partly
+        built — some branches done, some not — which is worse than either
+        answer, because it looks like a complete result.
+
+        Polls on the same 100 ms timer the analysis path uses. The viewer stays
+        live throughout, so this is invisible unless the build is slow enough to
+        be worth a progress message.
+        """
+        viewer = self.pcd_viewer_widget
+        ready = getattr(viewer, "selection_ready", None)
+        if not callable(ready) or ready():
+            then()
+            return
+
+        self.show_progress("Preparing selection...")
+
+        if not hasattr(self, "_selection_ready_timer"):
+            self._selection_ready_timer = QtCore.QTimer()
+
+        timer = self._selection_ready_timer
+
+        def check():
+            if not ready():
+                return
+            timer.stop()
+            try:
+                timer.timeout.disconnect(check)
+            except TypeError:
+                pass
+            self.clear_progress()
+            then()
+
+        timer.timeout.connect(check)
+        timer.start(100)
 
     def _show_selection_gate_prompt(self, plugin_name, kind, proceed):
         """Show the non-modal “make a selection” prompt for a gated run."""
