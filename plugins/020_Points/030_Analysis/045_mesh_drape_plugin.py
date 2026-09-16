@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - CuPy is optional
     _HAS_CUPY = False
 
 from config.config import global_variables
-from application.selection_gate import selected_cloud_indices
+from application.selection_gate import selected_cloud_mask
 from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
 from plugins.interfaces import ActionPlugin
@@ -162,17 +162,15 @@ class MeshDrapePlugin(ActionPlugin):
                 return
             cluster_labels = cluster_labels.astype(np.int32)
 
-            # The selection is held in this branch's own cloud order, which is
-            # the order cluster_labels is in, so these rows read the ids
+            # The selection is a boolean mask in this branch's own cloud order,
+            # which is the order cluster_labels is in, so it gathers the ids
             # directly.
-            picked_rows = selected_cloud_indices(
-                viewer_widget, node.uid, all_points)
-            if picked_rows is None or len(picked_rows) == 0:
-                QMessageBox.warning(main_window, "Invalid Pick",
-                                    "Picked point indices are out of range.")
+            selection = selected_cloud_mask(viewer_widget, node.uid, all_points)
+            if selection is None:
+                QMessageBox.warning(main_window, "No Selection",
+                                    "Nothing is selected in this branch.")
                 return
-            picked_rows = picked_rows[picked_rows < len(cluster_labels)]
-            picked_cluster_ids = {int(c) for c in np.unique(cluster_labels[picked_rows])}
+            picked_cluster_ids = {int(c) for c in np.unique(cluster_labels[selection])}
             picked_cluster_ids.discard(-1)
             if not picked_cluster_ids:
                 QMessageBox.warning(main_window, "Noise Pick",
@@ -183,15 +181,13 @@ class MeshDrapePlugin(ActionPlugin):
                                                            dtype=np.int32))
             scope_tag = f"clusters_{'_'.join(str(c) for c in sorted(picked_cluster_ids))}"
         elif has_selection:
-            # Same read as the cluster_labels branch above.
-            picked_rows = selected_cloud_indices(
-                viewer_widget, node.uid, all_points)
-            if picked_rows is None or len(picked_rows) == 0:
-                QMessageBox.warning(main_window, "Invalid Pick",
-                                    "Picked point indices are out of range.")
+            # Same read as the cluster_labels branch above. The selection is
+            # already the mask this needs, so it is used as-is.
+            subset_mask = selected_cloud_mask(viewer_widget, node.uid, all_points)
+            if subset_mask is None:
+                QMessageBox.warning(main_window, "No Selection",
+                                    "Nothing is selected in this branch.")
                 return
-            subset_mask = np.zeros(len(all_points), dtype=bool)
-            subset_mask[picked_rows] = True
             scope_tag = "selection"
         else:
             subset_mask = np.ones(len(all_points), dtype=bool)

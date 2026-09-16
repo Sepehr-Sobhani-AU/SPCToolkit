@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QCheckBox, QDialo
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from application.selection_gate import selected_cloud_indices
+from application.selection_gate import selected_cloud_mask
 
 
 class LockUnlockDialog(QDialog):
@@ -123,24 +123,24 @@ class LockUnlockClustersPlugin(ActionPlugin):
 
         labels = cluster_labels
 
-        # Map the picks onto rows of the reconstructed cloud. The shared helper
-        # coordinate-matches them *and* re-tests any lasso at full resolution,
-        # which the hand-rolled loop this replaces did not.
+        # Which clusters do the selected points belong to? The selection is a
+        # boolean mask in this branch's own cloud order, so it gathers the
+        # labels directly.
         #
-        # Deliberately no `allowed=` here: unlocking a cluster means naming one
-        # that is locked, so filtering locked clusters out would stop this
-        # plugin doing its job. Every other selection-driven plugin passes it.
-        picked_rows = selected_cloud_indices(
+        # Note this plugin is reached even for clusters locked against
+        # selection: the viewer's gate keeps a lasso from ADDING them, but a
+        # cluster already selected when it was locked still reads back here,
+        # which is what makes unlocking possible at all.
+        selection = selected_cloud_mask(
             viewer_widget, node.uid, point_cloud.points)
-        if picked_rows is None or len(picked_rows) == 0:
+        if selection is None:
             QMessageBox.warning(main_window, "No Points Selected",
                                 "Could not retrieve coordinates for selected points.")
             return
 
         # Affected cluster IDs, noise excluded
-        picked_rows = picked_rows[picked_rows < len(labels)]
         affected_cluster_ids = set(
-            int(cid) for cid in np.unique(labels[picked_rows]) if cid != -1
+            int(cid) for cid in np.unique(labels[selection]) if cid != -1
         )
 
         if not affected_cluster_ids:

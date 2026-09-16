@@ -19,7 +19,7 @@ from PyQt5.QtGui import QColor, QIcon, QPixmap
 
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
-from application.selection_gate import selected_cloud_indices
+from application.selection_gate import selected_cloud_mask
 
 
 class AnnotationWindow(QDialog):
@@ -277,26 +277,28 @@ class AnnotationWindow(QDialog):
                               "No point cloud loaded for annotation.")
             return
 
-        # Rows of the branch's own cloud, which is what `annotations` is
-        # indexed by. This used to take the viewer's rendered rows and use them
-        # as cloud rows directly, so on any cloud big enough to be subsampled
-        # it labelled unrelated points.
-        indices = selected_cloud_indices(self.viewer, self.uid, self.point_cloud.points)
-        if indices is None or len(indices) == 0:
+        # A boolean mask over the branch's own cloud, which is what
+        # `annotations` is indexed by. This used to take the viewer's rendered
+        # rows and use them as cloud rows directly, so on any cloud big enough
+        # to be subsampled it labelled unrelated points.
+        selection = selected_cloud_mask(self.viewer, self.uid,
+                                        self.point_cloud.points)
+        if selection is None:
             QMessageBox.warning(self, "No Selection",
                               "No points selected. Press P in viewer to start polygon selection.")
             return
 
-        # Save undo state
-        old_labels = self.annotations[indices].copy()
-        self.undo_stack.append((indices.copy(), old_labels))
+        # Save undo state. The mask is copied because the viewer owns the one it
+        # handed over and will rewrite it on the next gesture.
+        old_labels = self.annotations[selection].copy()
+        self.undo_stack.append((selection.copy(), old_labels))
         self.undo_btn.setEnabled(True)
 
         # Apply label
-        self.annotations[indices] = self.current_class_idx
+        self.annotations[selection] = self.current_class_idx
 
         class_name = self.class_list[self.current_class_idx][0]
-        print(f"Annotation: Labeled {len(indices)} points as '{class_name}'")
+        print(f"Annotation: Labeled {len(old_labels)} points as '{class_name}'")
 
         self._update_visualization()
         self._clear_selection()
@@ -323,16 +325,15 @@ class AnnotationWindow(QDialog):
                               "Run DBSCAN clustering first.")
             return
 
-        # Find clusters containing selected points. The selection is held per
-        # branch in that branch's own cloud order, which is the order the
-        # labels are in, so these rows index the labels directly.
-        picked_rows = selected_cloud_indices(
+        # Find clusters containing selected points. The selection is a boolean
+        # mask in this branch's own cloud order, which is the order the labels
+        # are in, so it gathers them directly.
+        selection = selected_cloud_mask(
             self.viewer, self.uid, self.point_cloud.points)
-        if picked_rows is None or len(picked_rows) == 0:
+        if selection is None:
             return
 
-        picked_rows = picked_rows[picked_rows < len(cluster_labels)]
-        target_clusters = {cid for cid in np.unique(cluster_labels[picked_rows])
+        target_clusters = {cid for cid in np.unique(cluster_labels[selection])
                            if cid >= 0}
 
         if not target_clusters:
@@ -364,13 +365,16 @@ class AnnotationWindow(QDialog):
         if not self.undo_stack:
             return
 
-        indices, old_labels = self.undo_stack.pop()
-        self.annotations[indices] = old_labels
+        # `where` is a boolean mask from the selection path or an index array
+        # from the cluster-fill path; both index `annotations` the same way, but
+        # only old_labels counts the points either way.
+        where, old_labels = self.undo_stack.pop()
+        self.annotations[where] = old_labels
 
         if not self.undo_stack:
             self.undo_btn.setEnabled(False)
 
-        print(f"Annotation: Undone (restored {len(indices)} points)")
+        print(f"Annotation: Undone (restored {len(old_labels)} points)")
         self._update_visualization()
 
     def _clear_selection(self):

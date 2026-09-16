@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from application.selection_gate import selected_cloud_indices
+from application.selection_gate import selected_cloud_mask
 from core.entities.clusters import Clusters
 
 
@@ -72,21 +72,18 @@ class MergeClustersPlugin(ActionPlugin):
 
         labels = cluster_labels.copy()
 
-        # Map the picks onto rows of the reconstructed cloud. The shared helper
-        # coordinate-matches them *and* re-tests any lasso at full resolution,
-        # which the hand-rolled loop this replaces did not. `allowed` keeps that
-        # widening inside what the viewer would have let the user pick, so a
-        # lasso cannot reach into a cluster locked against selection.
-        picked_rows = selected_cloud_indices(
+        # Which clusters do the selected points belong to? The selection is a
+        # boolean mask in this branch's own cloud order, which is the order the
+        # labels are in, so it gathers them directly.
+        selection = selected_cloud_mask(
             viewer_widget, node.uid, point_cloud.points)
-        if picked_rows is None or len(picked_rows) == 0:
+        if selection is None:
             QMessageBox.warning(main_window, "No Points Selected",
                                 "Could not retrieve coordinates for selected points.")
             return
 
         # Affected cluster IDs, noise excluded
-        picked_rows = picked_rows[picked_rows < len(labels)]
-        affected_cluster_ids = {cid for cid in np.unique(labels[picked_rows]) if cid != -1}
+        affected_cluster_ids = {cid for cid in np.unique(labels[selection]) if cid != -1}
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",

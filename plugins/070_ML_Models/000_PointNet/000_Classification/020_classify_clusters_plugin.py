@@ -30,7 +30,7 @@ from models.pointnet.inference import (
     classify_clusters_batch
 )
 from plugins.dialogs.classification_progress_dialog import ClassificationProgressDialog
-from application.selection_gate import selected_cloud_indices
+from application.selection_gate import selected_cloud_mask
 
 
 class ClassifyClustersMLPlugin(ActionPlugin):
@@ -233,15 +233,14 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                 # Find which clusters contain the selected points. The
                 # selection is held in the branch's own cloud order, which is
                 # the order cluster_labels is in.
-                picked_rows = selected_cloud_indices(
+                selection = selected_cloud_mask(
                     viewer_widget, selected_uid, point_cloud.points)
-                if picked_rows is None or len(picked_rows) == 0:
+                if selection is None:
                     raise ValueError(
                         "Could not retrieve coordinates for the selected points."
                     )
-                picked_rows = picked_rows[picked_rows < len(cluster_labels)]
                 selected_cluster_ids = {
-                    cid for cid in np.unique(cluster_labels[picked_rows]) if cid != -1
+                    cid for cid in np.unique(cluster_labels[selection]) if cid != -1
                 }
 
                 if not selected_cluster_ids:

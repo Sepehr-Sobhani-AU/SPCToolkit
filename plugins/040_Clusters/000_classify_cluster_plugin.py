@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from application.selection_gate import selected_cloud_indices
+from application.selection_gate import selected_cloud_mask
 from core.entities.clusters import Clusters
 
 
@@ -137,12 +137,12 @@ class ClassifyClusterPlugin(ActionPlugin):
             )
             return
 
-        # Find which clusters contain the selected points. The selection is
-        # held per branch in that branch's own cloud order, which is the order
-        # cluster_labels is in, so these rows index the labels directly.
-        picked_rows = selected_cloud_indices(
+        # Find which clusters contain the selected points. The selection is a
+        # boolean mask in this branch's own cloud order, which is the order
+        # cluster_labels is in, so it gathers the labels directly.
+        selection = selected_cloud_mask(
             viewer_widget, selected_node.uid, point_cloud.points)
-        if picked_rows is None or len(picked_rows) == 0:
+        if selection is None:
             QMessageBox.warning(
                 main_window,
                 "No Points Selected",
@@ -150,9 +150,8 @@ class ClassifyClusterPlugin(ActionPlugin):
             )
             return
 
-        picked_rows = picked_rows[picked_rows < len(cluster_labels)]
         selected_cluster_ids = {
-            cid for cid in np.unique(cluster_labels[picked_rows]) if cid != -1
+            cid for cid in np.unique(cluster_labels[selection]) if cid != -1
         }
 
         if not selected_cluster_ids:

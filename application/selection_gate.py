@@ -173,21 +173,51 @@ def selectable_cloud_indices(node, n_points=None):
     return np.flatnonzero(admissible).astype(np.intp)
 
 
-def selected_cloud_indices(viewer, uid, pc_points=None):
-    """Branch *uid*'s selected rows, as indices into its full-resolution cloud.
+def selected_cloud_mask(viewer, uid, pc_points=None):
+    """Branch *uid*'s selection as a boolean mask over its full-resolution cloud.
 
-    The plugin-facing read of the selection. The viewer holds one boolean mask
-    per branch, in that branch's own cloud order, so this is a lookup and a
-    ``flatnonzero`` — no coordinate matching, no polygon re-test, no kd-tree.
+    THE plugin-facing read of the selection — prefer it over
+    ``selected_cloud_indices``. The viewer already holds the selection in this
+    exact form, in the branch's own cloud order, so this is a lookup and
+    nothing else.
+
+    A mask is what nearly every consumer wants, because what they do with the
+    answer is gather: ``labels[mask]``, ``points[mask]``, ``annotations[mask]``.
+    Indices gather identically, cost eight bytes per selected point to
+    materialise, and can point past the end of an array — which is why the
+    plugins that took them all carried a ``rows[rows < len(labels)]`` clamp. A
+    mask either matches the cloud's length or is refused below, so there is
+    nothing to clamp.
 
     Returns None when nothing is selected in that branch. That is deliberately
-    distinct from an empty array: a plugin handed None should tell the user it
-    has no selection to work with, rather than run on nothing and appear to
-    succeed.
+    distinct from an all-False mask: a plugin handed None should tell the user
+    it has no selection to work with, rather than run on nothing and appear to
+    succeed. (The viewer never stores an all-False mask — see
+    ``set_branch_selection`` — so None is the only way "nothing" arrives.)
 
     Pass *pc_points* when the caller has the cloud to hand and wants the mask
     checked against its length before use; a mask that describes a different
     cloud is refused rather than returned misaligned.
+    """
+    if viewer is None:
+        return None
+    reader = getattr(viewer, "selection_mask_for_cloud", None)
+    if not callable(reader):
+        return None
+    return reader(uid, pc_points)
+
+
+def selected_cloud_indices(viewer, uid, pc_points=None):
+    """Branch *uid*'s selected rows, as indices into its full-resolution cloud.
+
+    ``selected_cloud_mask`` is the better read for almost every caller; this one
+    is for the two that genuinely need positions rather than a per-point
+    yes/no — intersecting the selection with another index list
+    (``line_extension_window``), and carrying a subset of it forward as rows
+    (``split_clusters``). Everything else gathers, and a mask gathers just as
+    well without paying for the index array.
+
+    Returns None when nothing is selected, as ``selected_cloud_mask`` does.
 
     This replaced a function that took the viewer's rendered picks, matched them
     back to the cloud through a ``cKDTree``, and unioned the result with a
@@ -195,13 +225,9 @@ def selected_cloud_indices(viewer, uid, pc_points=None):
     deriving the answer lazily, per plugin, per call — the selection is now
     built once in cloud space when the gesture completes.
     """
-    if viewer is None:
-        return None
-    reader = getattr(viewer, "selection_mask_for_cloud", None)
-    if not callable(reader):
-        return None
-
-    mask = reader(uid, pc_points)
+    mask = selected_cloud_mask(viewer, uid, pc_points)
     if mask is None:
         return None
-    return np.flatnonzero(mask).astype(np.intp)
+    # int32 is enough: a branch would need 2.1 billion points to overflow it,
+    # and these are rows within ONE branch.
+    return np.flatnonzero(mask).astype(np.int32)

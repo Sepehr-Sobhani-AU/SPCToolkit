@@ -21,7 +21,7 @@ from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.vector_feature import VectorFeature
 from core.entities.data_node import DataNode
-from application.selection_gate import selected_cloud_indices
+from application.selection_gate import selected_cloud_mask
 
 logger = logging.getLogger(__name__)
 
@@ -218,23 +218,18 @@ class ClusterBoundaryPlugin(ActionPlugin):
                 "to extract boundaries for.")
             return
 
-        # Find cluster IDs from the picks. This has to go through the shared
-        # mapping rather than indexing cluster_labels with picked_indices
-        # directly: those are rows of the viewer's LOD-subsampled render buffer
-        # while the labels are full-resolution, so rendered row 5 may be cloud
-        # row 50 and the label read would belong to an unrelated point.
-        # `allowed` keeps a lasso's widening to what the viewer let the user
-        # pick.
-        picked_rows = selected_cloud_indices(
+        # Which clusters do the selected points belong to? The selection is a
+        # boolean mask in this branch's own cloud order, which is the order the
+        # labels are in, so it gathers them directly.
+        selection = selected_cloud_mask(
             viewer_widget, selected_uid, point_cloud.points)
-        if picked_rows is None or len(picked_rows) == 0:
+        if selection is None:
             QMessageBox.warning(main_window, "No Clusters Selected",
                                 "Could not retrieve coordinates for the "
                                 "selected points.")
             return
 
-        picked_rows = picked_rows[picked_rows < len(cluster_labels)]
-        target_cids = {cid for cid in np.unique(cluster_labels[picked_rows]) if cid >= 0}
+        target_cids = {cid for cid in np.unique(cluster_labels[selection]) if cid >= 0}
 
         if not target_cids:
             QMessageBox.warning(main_window, "No Valid Clusters",
