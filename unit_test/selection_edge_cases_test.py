@@ -469,12 +469,32 @@ def test_the_selection_honours_the_viewer_filters():
     assert highlighted == selected, \
         f"viewer shows {highlighted}, plugins would get {selected}"
 
-    from application.selection_gate import selected_cloud_indices
+    from application.selection_gate import (
+        selected_cloud_indices, selected_cloud_mask)
     plugin_sees = selected_cloud_indices(v, "A", xyz)
     assert sorted(plugin_sees.tolist()) == selected, \
         f"plugin got {plugin_sees.tolist()}, viewer showed {selected}"
+
+    # The mask read is what most plugins take. It has to agree with the index
+    # read point for point, and cover the whole cloud: a plugin does
+    # `labels[mask]`, which numpy refuses outright unless the lengths match.
+    # That refusal is the point — an index array of the wrong provenance would
+    # have gathered the wrong rows and looked like it worked.
+    mask_read = selected_cloud_mask(v, "A", xyz)
+    assert len(mask_read) == len(xyz), \
+        f"mask covers {len(mask_read)} of {len(xyz)} points"
+    assert sorted(np.flatnonzero(mask_read).tolist()) == selected
+    assert np.array_equal(xyz[mask_read], xyz[plugin_sees]), \
+        "the mask and the indices gather different points"
+
+    # Both say "nothing selected" the same way, so a plugin's None-check holds
+    # whichever read it uses.
+    v.clear_selection()
+    assert selected_cloud_mask(v, "A", xyz) is None
+    assert selected_cloud_indices(v, "A", xyz) is None
+
     print(f"  selection {selected} — noise and the locked cluster refused, and "
-          f"the viewer, the mask and the plugin all agree")
+          f"the viewer, the mask, the indices and the plugin all agree")
 
 
 def _same_colour_clusters_viewer():
