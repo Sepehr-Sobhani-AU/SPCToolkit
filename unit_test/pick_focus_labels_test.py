@@ -104,13 +104,13 @@ def test_labelling_candidates_makes_them_selectable():
     _install_branch(labels)
     viewer = _StubViewer(len(labels))
 
-    before = [viewer._is_point_selectable(i) for i in range(len(labels))]
+    before = [viewer._is_cloud_point_selectable(_UID, i) for i in range(len(labels))]
     assert before == [True, True, False, False, False], \
         f"unclaimed points were expected to be unselectable, got {before}"
 
     labels[3] = 7                       # promoted to the candidate cluster
-    after = [viewer._is_point_selectable(i) for i in range(len(labels))]
-    kept = viewer._filter_selection(np.arange(len(labels)))
+    after = [viewer._is_cloud_point_selectable(_UID, i) for i in range(len(labels))]
+    kept = np.flatnonzero(viewer.selectable_cloud_mask(_UID, len(labels)))
     print(f"selectable before: {before}\n"
           f"selectable after:  {after}\npolygon select keeps: {kept}")
 
@@ -128,33 +128,44 @@ def test_a_cluster_lock_still_wins():
     _install_branch(labels, locked={7: {"select"}})
     viewer = _StubViewer(len(labels))
 
-    print(f"locked candidate selectable: {viewer._is_point_selectable(2)}, "
-          f"polygon keeps {viewer._filter_selection(np.arange(4))}")
-    assert not viewer._is_point_selectable(2), \
+    kept = np.flatnonzero(viewer.selectable_cloud_mask(_UID, 4))
+    print(f"locked candidate selectable: "
+          f"{viewer._is_cloud_point_selectable(_UID, 2)}, polygon keeps {kept}")
+    assert not viewer._is_cloud_point_selectable(_UID, 2), \
         "a cluster locked against selection was selectable as a candidate"
-    assert 2 not in viewer._filter_selection(np.arange(4)).tolist(), \
-        "polygon select ignored the lock"
+    assert 2 not in kept.tolist(), "polygon select ignored the lock"
 
 
-def test_labels_are_read_through_the_lod_subsample():
-    """Under LOD the viewer holds points[indices], so rendered row k is cloud row
-    indices[k]. Reading labels[k] instead consults an unrelated point, and the
-    viewer ends up deciding what may be picked from the wrong data."""
-    # 10 cloud points; only the candidate at cloud row 6 should be pickable.
+def test_selectability_does_not_depend_on_lod():
+    """What may be selected is asked in CLOUD space, so the answer is the same
+    whatever LOD happened to draw.
+
+    This used to be asked in rendered-index space, where rendered row k is cloud
+    row indices[k] — so the question could only be answered correctly by
+    translating first, and forgetting to consulted an unrelated point's label.
+    The translation is gone, and with it that whole class of mistake: the test
+    now asserts the two answers are identical rather than that the translation
+    was done."""
+    # 10 cloud points; only the candidate at cloud row 6 is pickable.
     labels = np.full(10, -1, dtype=np.int64)
     labels[6] = 7
     _install_branch(labels)
 
     sample = np.array([0, 2, 4, 6, 8])          # every second point rendered
-    viewer = _StubViewer(len(sample), sample_indices=sample)
+    drawn_whole = _StubViewer(len(labels))
+    subsampled = _StubViewer(len(sample), sample_indices=sample)
 
-    selectable = [i for i in range(len(sample)) if viewer._is_point_selectable(i)]
-    print(f"rendered rows {list(range(len(sample)))} -> cloud rows "
-          f"{sample.tolist()}; selectable rendered rows: {selectable}")
-    assert selectable == [3], \
-        f"expected only rendered row 3 (cloud row 6) to be pickable, got {selectable}"
-    assert viewer.cloud_index(_UID, 3) == 6
-    assert viewer.cloud_indices(_UID, np.arange(5)).tolist() == sample.tolist()
+    whole = np.flatnonzero(drawn_whole.selectable_cloud_mask(_UID, len(labels)))
+    lod = np.flatnonzero(subsampled.selectable_cloud_mask(_UID, len(labels)))
+    print(f"selectable cloud rows — drawn whole: {whole.tolist()}, "
+          f"under LOD: {lod.tolist()}")
+
+    assert whole.tolist() == [6], f"expected only cloud row 6, got {whole.tolist()}"
+    assert lod.tolist() == whole.tolist(), \
+        "LOD changed which points may be selected"
+    # The rendered-row mapping still exists; it is just no longer what decides.
+    assert subsampled.cloud_index(_UID, 3) == 6
+    assert subsampled.cloud_indices(_UID, np.arange(5)).tolist() == sample.tolist()
 
 
 def test_emphasis_is_resolved_through_the_lod_subsample():
@@ -239,7 +250,8 @@ def test_full_resolution_still_maps_one_to_one():
     viewer = _StubViewer(len(labels))          # sample_indices None
 
     assert viewer.cloud_index(_UID, 2) == 2
-    assert [viewer._is_point_selectable(i) for i in range(3)] == [False, True, False]
+    assert [viewer._is_cloud_point_selectable(_UID, i) for i in range(3)] \
+        == [False, True, False]
     print("no LOD: rendered rows map to themselves")
 
 
@@ -247,7 +259,7 @@ if __name__ == "__main__":
     test_candidate_label_leaves_other_clusters_alone()
     test_labelling_candidates_makes_them_selectable()
     test_a_cluster_lock_still_wins()
-    test_labels_are_read_through_the_lod_subsample()
+    test_selectability_does_not_depend_on_lod()
     test_emphasis_is_resolved_through_the_lod_subsample()
     test_offering_and_withdrawing_leaves_the_branch_as_it_was()
     test_full_resolution_still_maps_one_to_one()

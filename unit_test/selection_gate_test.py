@@ -17,6 +17,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 import types
+
+import numpy as np
 import unittest
 
 from config.config import global_variables
@@ -82,10 +84,19 @@ class SelectionPresentTest(unittest.TestCase):
         global_variables.global_pcd_viewer_widget = self._viewer
         global_variables.global_application_controller = self._controller
 
-    def _set(self, picked=None, polygons=None, branches=None):
+    def _set(self, picked=None, masks=None, branches=None):
+        """Stand in for the viewer.
+
+        ``picked`` are ordered click picks as (uid, cloud row); ``masks`` is
+        uid -> boolean mask. The gate only asks "is anything selected", so the
+        fake only has to answer that.
+        """
+        selection = dict(masks or {})
+        picks = list(picked or [])
         global_variables.global_pcd_viewer_widget = types.SimpleNamespace(
-            picked_points_indices=picked or [],
-            _selection_polygons=polygons or [],
+            picked_points=picks,
+            _branch_selection=selection,
+            has_selection=lambda: bool(selection) or bool(picks),
         )
         global_variables.global_application_controller = types.SimpleNamespace(
             selected_branches=branches or [],
@@ -96,12 +107,13 @@ class SelectionPresentTest(unittest.TestCase):
         self.assertTrue(selection_present(None))
 
     def test_points_present(self):
-        self._set(picked=[3, 7])
+        self._set(picked=[("uid-1", 3), ("uid-1", 7)])
         self.assertTrue(selection_present(POINTS))
         self.assertFalse(selection_present(BRANCHES))
 
-    def test_points_via_polygon(self):
-        self._set(polygons=[("poly",)])
+    def test_points_via_mask(self):
+        """A lasso records no click picks — only a mask. It still counts."""
+        self._set(masks={"uid-1": np.array([True, False, True])})
         self.assertTrue(selection_present(POINTS))
 
     def test_branches_present(self):
@@ -114,7 +126,7 @@ class SelectionPresentTest(unittest.TestCase):
         self.assertFalse(selection_present(EITHER))
         self._set(branches=["uid-1"])
         self.assertTrue(selection_present(EITHER))
-        self._set(picked=[1])
+        self._set(picked=[("uid-1", 1)])
         self.assertTrue(selection_present(EITHER))
 
     def test_nothing_selected(self):

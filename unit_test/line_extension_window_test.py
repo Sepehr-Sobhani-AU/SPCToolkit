@@ -24,7 +24,7 @@ from core.entities.point_cloud import PointCloud
 from core.entities.clusters import Clusters
 from plugins.plugin_manager import PluginManager
 from application.application_controller import ApplicationController
-from application.selection_gate import picked_cloud_indices
+from application.selection_gate import selected_cloud_indices
 from core.services.linear_region_grower import LinearRegionGrower, AXIS_TRACE
 
 _app = QApplication.instance() or QApplication([])
@@ -70,23 +70,40 @@ class _FakeViewer:
 
     def __init__(self, offsets, points=None):
         self._branch_offsets = offsets
-        self.picked_points_indices = []
-        self._selection_polygons = []
+        # Ordered click picks as (uid, cloud row), and the per-branch selection
+        # masks — the same two things the real viewer holds.
+        self.picked_points = []
+        self._branch_selection = {}
         self.focused_on = None
         self.points = points
-        self.polygon_mask = None       # what retest_polygon_selection returns
         self.emphasis = {}             # uid -> (emphasised, faded)
         self.line_width = 1.0          # the viewer's real default
 
-    def clear_selection(self):
-        """Mirrors the real viewer: picks and stored polygons go together.
+    def select(self, uid, rows, n):
+        """Set a branch's selection mask from cloud rows."""
+        mask = np.zeros(n, dtype=bool)
+        mask[np.asarray(rows, dtype=np.intp)] = True
+        self._branch_selection[str(uid)] = mask
 
-        Callers use this rather than emptying picked_points_indices by hand,
-        precisely so a stale polygon cannot outlive the picks it produced.
-        """
-        self.picked_points_indices.clear()
-        self._selection_polygons.clear()
-        self.polygon_mask = None
+    def selection_mask_for(self, uid):
+        return self._branch_selection.get(str(uid))
+
+    def selection_mask_for_cloud(self, uid, points_3d=None):
+        mask = self._branch_selection.get(str(uid))
+        if mask is None or (points_3d is not None and len(mask) != len(points_3d)):
+            return None
+        return mask
+
+    def selection_count(self):
+        return int(sum(int(m.sum()) for m in self._branch_selection.values()))
+
+    def has_selection(self):
+        return bool(self._branch_selection) or bool(self.picked_points)
+
+    def clear_selection(self):
+        """Mirrors the real viewer: masks and click picks go together."""
+        self._branch_selection.clear()
+        self.picked_points.clear()
 
     def set_point_emphasis(self, uid, emphasised=None, faded=None):
         if emphasised is None and faded is None:
@@ -96,9 +113,6 @@ class _FakeViewer:
 
     def focus_on(self, point, extent, preserve_rotation=True):
         self.focused_on = np.asarray(point)
-
-    def retest_polygon_selection(self, points_3d):
-        return self.polygon_mask
 
     def update(self):
         pass
@@ -259,15 +273,14 @@ def test_the_offer_is_exactly_what_the_panel_counts():
 
 
 def test_a_polygon_cannot_drag_in_what_was_never_offered():
-    """A polygon selection is re-tested against the FULL cloud
-    (``picked_cloud_indices``) so it covers everything it encloses rather than
-    only the points LOD drew — and that re-test does not go through the viewer's
-    selection filters. Drawn over the corridor it therefore comes back holding
-    every point inside it: measured on real data the viewer honestly reported 32
-    points picked while the extension consumed thousands, and since picks are
-    always adopted, a whole bush joined the line.
+    """A lasso covers everything it encloses, not only the points LOD drew.
+    Drawn over the corridor it therefore comes back holding every point inside
+    it: measured on real data the viewer reported 32 points picked while the
+    extension consumed thousands, and since picks are always adopted, a whole
+    bush joined the line.
 
-    Only what is on offer may be picked, whichever code path found it."""
+    The window's own rule is that only what is on offer at this stop may be
+    picked — the viewer's noise and lock filters know nothing about that."""
     points, lines, grower, clusters = _scene()
     window, _controller, _tree, _cloud_uid, _result_uid = _open_window(
         points, lines, grower, clusters)
@@ -276,12 +289,12 @@ def test_a_polygon_cannot_drag_in_what_was_never_offered():
     offered = set(window.marked_indices.tolist())
     # One honest click on an offered point, plus a polygon over a big region
     # that happens to enclose a great deal more.
-    viewer.picked_points_indices = [int(window.marked_indices[0])]
-    sprawl = np.zeros(len(points), dtype=bool)
-    sprawl[::3] = True                       # a third of the whole cloud
-    viewer.polygon_mask = sprawl
+    sprawl = np.arange(0, len(points), 3)    # a third of the whole cloud
+    sprawl = np.union1d(sprawl, [int(window.marked_indices[0])])
+    viewer.select(_result_uid, sprawl, len(points))
+    viewer.picked_points = [(str(_result_uid), int(window.marked_indices[0]))]
 
-    raw = picked_cloud_indices(viewer, points, grower.index)
+    raw = selected_cloud_indices(viewer, _result_uid, points)
     used = window._picked_indices()
     print(f"polygon returned {len(raw):,} points; {len(used)} of them were on "
           f"offer and used")
@@ -327,9 +340,13 @@ class _SilencedDialogs:
 
 
 def _click(window, points, target):
-    """Put one viewer pick on the cloud point nearest *target*."""
+    """Put one viewer pick on the cloud point nearest *target*.
+
+    A pick names its branch and its row in that branch's own cloud, which is
+    what makes click order usable: the row does not move when LOD does.
+    """
     row = int(np.argmin(np.linalg.norm(points - np.asarray(target), axis=1)))
-    window.viewer.picked_points_indices.append(row)
+    window.viewer.picked_points.append((str(window.result_uid), row))
     return row
 
 
@@ -486,7 +503,7 @@ def test_a_click_beside_a_line_still_names_it():
     assert released, "setup wrong: the trim released nothing to click on"
 
     row = int(released[len(released) // 2])
-    window.viewer.picked_points_indices = [row]
+    window.viewer.picked_points = [(str(window.result_uid), row)]
     picked = window._picked_lines_in_order()
     reach = grower.cylinder_length * grower.reach_factor
     print(f"a click on a released (unclaimed) point beside the line names "
@@ -568,7 +585,8 @@ def test_editing_needs_a_line_under_the_click():
         points, lines, grower, clusters)
 
     before = list(window.lines)
-    window.viewer.picked_points_indices = [int(window.marked_indices[0])]
+    window.viewer.picked_points = [
+        (str(window.result_uid), int(window.marked_indices[0]))]
     picked = window._picked_lines_in_order()
     print(f"a click on an offered (unclaimed) point resolves to {picked} line(s)")
 

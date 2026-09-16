@@ -5,9 +5,10 @@
 # re-render, a hidden branch, a thread interleaving, or one bad coordinate —
 # never in a straightforward click-and-lasso run.
 #
-#   1. picked_points_indices outlive set_branches() on purpose, so after LOD
-#      drops a level they address rows past the end of the shorter buffer.
-#      Deselecting with a lasso indexed straight into it.
+#   1. The selection is held in CLOUD space, one boolean mask per branch, so an
+#      LOD change or a branch toggle cannot alter it — it used to be a list of
+#      rendered rows that outlived the buffer they indexed, and a deselect lasso
+#      indexed straight into the shorter one.
 #   2. A lasso already in progress survives its branches being hidden, so
 #      self.points is None by the time the polygon closes.
 #   3. A coarse spatial index is built on a background thread. Publishing it after
@@ -49,6 +50,17 @@ _PROJ[3, 2] = -1.0001
 _FULL_SCREEN = [(0, 0), (1280, 0), (1280, 800), (0, 800)]
 
 
+# uid -> the branch's full-resolution points, for the stub controller to
+# reconstruct. The selection lives in cloud space now, so the viewer needs a
+# controller that can hand it a cloud.
+_CLOUDS = {}
+
+
+class _Cloud:
+    def __init__(self, points):
+        self.points = points
+
+
 class _NoController:
     """The viewer asks the controller about branch selection and cluster locks.
 
@@ -62,6 +74,9 @@ class _NoController:
     def get_node(self, uid):
         return None
 
+    def reconstruct(self, uid):
+        return _Cloud(_CLOUDS[uid])
+
 
 def _cloud(n, seed=0):
     """An (n, 6) render slice: xyz spread over the view, rgb all white."""
@@ -72,7 +87,48 @@ def _cloud(n, seed=0):
     return slc
 
 
+def _tree():
+    """A real TreeStructureWidget, installed as the global.
+
+    The viewer keeps no selection masks of its own — they live on the branch's
+    tree item — so every test that selects anything needs a tree with the branch
+    in it, exactly as the running app has.
+    """
+    from gui.widgets.tree_structure_widget import TreeStructureWidget
+
+    tree = global_variables.global_tree_structure_widget
+    if tree is None:
+        tree = TreeStructureWidget()
+        global_variables.global_tree_structure_widget = tree
+    return tree
+
+
+def _show(viewer, uid, full, rendered_rows=None):
+    """Draw branch *uid*, whose full cloud is *full*.
+
+    Pass *rendered_rows* to simulate LOD drawing only a subset — which is what
+    a step-down really is: the cloud is unchanged, only the slice handed to the
+    viewer shrinks.
+    """
+    tree = _tree()
+    if uid not in tree.branches_dict:
+        tree.blockSignals(True)          # add_branch emits; nothing is listening
+        tree.add_branch(uid, None, "branch", is_root=True)
+        tree.blockSignals(False)
+    # _apply_point_count would set this from the controller; the stub controller
+    # here has no node table, so stand in for it.
+    tree.branches_dict[uid].point_count = len(full)
+    _CLOUDS[uid] = full[:, :3]
+    if rendered_rows is None:
+        viewer.set_branches({uid: full}, [uid])
+    else:
+        viewer.set_branches({uid: full[rendered_rows]}, [uid],
+                            sample_indices_by_uid={uid: rendered_rows})
+
+
 def _viewer():
+    _CLOUDS.clear()
+    global_variables.global_tree_structure_widget = None
     global_variables.global_application_controller = _NoController()
     v = PCDViewerWidget()
     v.resize(1280, 800)
@@ -83,39 +139,86 @@ def _viewer():
     return v
 
 
-def _close_lasso(viewer, vertices, deselect=False):
+def _centre_of(vertices):
+    """A point comfortably inside the given polygon."""
+    xs = [x for x, _y in vertices]
+    ys = [y for _x, y in vertices]
+    return _Pos(sum(xs) / len(xs), sum(ys) / len(ys))
+
+
+class _Pos:
+    """Stands in for a QPoint: _close_polygon only asks for x() and y()."""
+
+    def __init__(self, x, y):
+        self._x, self._y = x, y
+
+    def x(self):
+        return self._x
+
+    def y(self):
+        return self._y
+
+
+def _close_lasso(viewer, vertices, deselect=False, at=None):
+    """Close a lasso and wait for the masks it kicks off to be built.
+
+    *at* is where the closing double-click lands; the centre of the shape by
+    default, which is the "act on what it encloses" gesture.
+
+    The build runs on a worker thread so the window never freezes on a large
+    cloud; the app waits for it in ``MainWindow._when_selection_ready`` before
+    launching a plugin, and the tests wait here for the same reason.
+    """
     viewer._polygon_mode = True
     viewer._polygon_vertices = list(vertices)
+    if at is None:
+        at = _centre_of(vertices)
     if deselect:
-        viewer._close_polygon_and_deselect()
+        viewer._close_polygon_and_deselect(at)
     else:
-        viewer._close_polygon_and_select()
+        viewer._close_polygon_and_select(at)
+
+    for _ in range(400):
+        if viewer.selection_ready():
+            return
+        time.sleep(0.01)
+    raise AssertionError("selection masks were never finished")
 
 
-def test_deselect_after_the_buffer_shrinks():
-    """A deselect lasso must survive picks that outlived their rows.
+def test_a_selection_survives_an_lod_step_down():
+    """An LOD change must not alter what is selected.
 
-    Zooming out far enough makes AUTO-LOD hand the viewer a smaller slice while
-    picked_points_indices still holds rows from the larger one. This used to
-    raise IndexError the moment the deselect polygon closed.
+    Zooming out makes AUTO-LOD hand the viewer a smaller slice. The selection is
+    held against the CLOUD, not the slice, so it is untouched — only the subset
+    that can be *highlighted* shrinks. This used to be the other way round: the
+    selection was a list of rendered rows, so a step-down left it naming rows
+    past the end of the shorter buffer, and every path that indexed with it had
+    to clamp. One did not, and raised IndexError the moment a deselect polygon
+    closed.
     """
     v = _viewer()
-    big, small = _cloud(50_000, seed=1), _cloud(10_000, seed=2)
+    big = _cloud(50_000, seed=1)
 
-    v.set_branches({"A": big}, ["A"])
+    _show(v, "A", big)
     _close_lasso(v, _FULL_SCREEN)
-    assert len(v.picked_points_indices) == 50_000, len(v.picked_points_indices)
+    assert v.selection_count() == 50_000, v.selection_count()
 
-    v.set_branches({"A": small}, ["A"])          # AUTO-LOD step-down
-    assert max(v.picked_points_indices) >= len(v.points)
+    drawn = np.arange(0, 50_000, 5)              # AUTO-LOD step-down to 1 in 5
+    _show(v, "A", big, rendered_rows=drawn)
+    assert v.selection_count() == 50_000, \
+        "the LOD step-down changed the selection"
+    assert len(v._selection_draw_rows("A")) == len(drawn), \
+        "the highlight should cover every drawn point of a fully selected cloud"
 
     _close_lasso(v, [(300, 200), (900, 200), (900, 600), (300, 600)], deselect=True)
 
-    survivors = np.asarray(v.picked_points_indices, dtype=np.int64)
-    assert survivors.size == 0 or survivors.max() < len(v.points), \
-        "stale picks were kept after a deselect"
+    mask = v.selection_mask_for("A")
+    assert mask is None or len(mask) == 50_000, \
+        "the mask stopped describing the cloud"
+    assert v.selection_count() < 50_000, "the deselect lasso removed nothing"
     assert not v._polygon_mode, "polygon mode was left on"
-    print(f"  deselect after shrink: {survivors.size:,} picks kept, all in range")
+    print(f"  LOD step-down kept the selection; deselect left "
+          f"{v.selection_count():,} of 50,000")
 
 
 def test_closing_a_lasso_with_nothing_visible():
@@ -126,7 +229,7 @@ def test_closing_a_lasso_with_nothing_visible():
     """
     for deselect in (False, True):
         v = _viewer()
-        v.set_branches({"A": _cloud(20_000, seed=3)}, ["A"])
+        _show(v, "A", _cloud(20_000, seed=3))
         if deselect:
             _close_lasso(v, _FULL_SCREEN)        # something to deselect
         v.set_branches({}, [])                   # user hides everything
@@ -148,11 +251,11 @@ def test_a_stale_coarse_index_is_never_used():
     v = _viewer()
     big, small = _cloud(50_000, seed=4), _cloud(10_000, seed=5)
 
-    v.set_branches({"A": big}, ["A"])
+    _show(v, "A", big)
     v._build_coarse_index("A", big)                 # grid for the 50,000 rows
     assert v._coarse_index_for("A") is not None
 
-    v.set_branches({"A": small}, ["A"])          # rows replaced under it
+    _show(v, "A", small)                         # rows replaced under it
     assert v._coarse_index_for("A") is None, "a grid for the old rows was handed out"
 
     # Worse case: the build finishes *after* the swap and tries to publish. It
@@ -189,7 +292,7 @@ def test_a_failed_build_is_not_retried_every_click():
     """
     v = _viewer()
     slc = _cloud(5_000, seed=8)
-    v.set_branches({"A": slc}, ["A"])
+    _show(v, "A", slc)
 
     from core.services import spatial_grid
     original = spatial_grid.SpatialGrid.build
@@ -287,38 +390,40 @@ def test_one_bad_coordinate_does_not_degrade_the_grid():
         print(f"  one NaN + one inf, {backend.name}: {cells}/242 cells, picks correct")
 
 
-def test_deselect_cluster_after_the_buffer_shrinks():
-    """Ctrl+Shift+Right must survive picks that outlived their rows.
+def test_deselect_cluster_after_an_lod_step_down():
+    """Ctrl+Shift+Right must be unaffected by an LOD step-down.
 
-    Sibling of test_deselect_after_the_buffer_shrinks. deselect_point_at and the
-    deselect lasso both clamp; this path did not, so it raised IndexError on the
-    same state.
+    Sibling of test_a_selection_survives_an_lod_step_down. This path used to
+    index the render buffer with picks that outlived it and raised IndexError;
+    it now works in cloud rows, where the question does not arise. The branch
+    here carries no cluster labels, so the click finds no cluster and the
+    selection must simply be left alone.
     """
     v = _viewer()
-    big, small = _cloud(50_000, seed=10), _cloud(10_000, seed=11)
-    v.set_branches({"A": big}, ["A"])
+    big = _cloud(50_000, seed=10)
+    _show(v, "A", big)
     _close_lasso(v, _FULL_SCREEN)
-    v.set_branches({"A": small}, ["A"])
-    assert max(v.picked_points_indices) >= len(v.points)
+
+    drawn = np.arange(0, 50_000, 5)
+    _show(v, "A", big, rendered_rows=drawn)
 
     # Stand in for the depth-buffer unprojection, which needs a live GL context.
-    v._unproject_mouse_to_nearest_point = lambda _pos: (0, small[0, :3])
+    v._unproject_mouse_to_nearest_point = lambda _pos: (0, v.points[0, :3])
     v.deselect_cluster_at(None)
 
-    survivors = np.asarray(v.picked_points_indices, dtype=np.int64)
-    assert survivors.size == 0 or survivors.max() < len(v.points), \
-        "stale picks were kept after a cluster deselect"
-    print(f"  cluster deselect after shrink: {survivors.size:,} picks kept, all in range")
+    assert v.selection_count() == 50_000, \
+        "a click on a branch with no clusters changed the selection"
+    print("  cluster deselect after an LOD step-down: no crash, nothing changed")
 
 
-def test_full_resolution_mask_honours_the_viewer_filters():
+def test_the_selection_honours_the_viewer_filters():
     """What a plugin receives must match what the viewer highlighted.
 
-    The polygon re-test widens a selection in cloud-index space, where the
-    viewer's own filters no longer apply, so without a gate a lasso hands back
-    noise and select-locked clusters the user was never allowed to pick.
+    The filters are applied once, in cloud space, as the lasso closes. There is
+    no second, ungated path left for a plugin to reach by accident — which is
+    what the ``allowed=`` argument every caller had to remember to pass was
+    patching over.
     """
-    from application.selection_gate import selectable_cloud_indices
     from core.entities.clusters import Clusters
 
     labels = np.array([0, 0, 0, -1, -1, 5])
@@ -336,31 +441,40 @@ def test_full_resolution_mask_honours_the_viewer_filters():
         def get_node(self, uid):
             return _Node()
 
+        def reconstruct(self, uid):
+            return _Cloud(_CLOUDS[uid])
+
     global_variables.global_application_controller = _Controller()
     xyz = np.column_stack([np.arange(6), np.zeros(6), np.zeros(6)]).astype(np.float32)
     slc = np.hstack([xyz, np.ones((6, 3), dtype=np.float32)])
 
+    _CLOUDS.clear()
+    global_variables.global_tree_structure_widget = None
     v = PCDViewerWidget()
     v.resize(1280, 800)
     v.model_view_matrix, v.projection_matrix = _MV, _PROJ
     v.viewport = (0, 0, 1280, 800)
     v.max_extent = 10.0
     v.center = np.array([0.0, 0.0, 0.0])
+    _show(v, "A", np.hstack([xyz, np.ones((6, 3), dtype=np.float32)]))
+    _CLOUDS["A"] = xyz
     v.set_branches({"A": slc}, ["A"], sample_indices_by_uid={"A": np.arange(6)})
 
     _close_lasso(v, _FULL_SCREEN)
-    highlighted = sorted(v.picked_points_indices)
-    assert highlighted == [0, 1, 2], highlighted        # noise and locked refused
 
-    allowed = selectable_cloud_indices(_Node(), len(xyz))
-    gated = v.get_selection_mask_for(xyz, allowed=allowed)
-    assert sorted(np.flatnonzero(gated)) == highlighted, \
-        f"plugin got {np.flatnonzero(gated).tolist()}, viewer showed {highlighted}"
+    selected = sorted(np.flatnonzero(v.selection_mask_for("A")).tolist())
+    assert selected == [0, 1, 2], selected        # noise and locked refused
 
-    ungated = v.get_selection_mask_for(xyz)
-    assert ungated.sum() == 6, "the ungated path should still widen — that is the point of the gate"
-    print(f"  gated mask {np.flatnonzero(gated).tolist()} matches the viewer; "
-          f"ungated would have given {ungated.sum()}")
+    highlighted = sorted(v._selection_draw_rows("A").tolist())
+    assert highlighted == selected, \
+        f"viewer shows {highlighted}, plugins would get {selected}"
+
+    from application.selection_gate import selected_cloud_indices
+    plugin_sees = selected_cloud_indices(v, "A", xyz)
+    assert sorted(plugin_sees.tolist()) == selected, \
+        f"plugin got {plugin_sees.tolist()}, viewer showed {selected}"
+    print(f"  selection {selected} — noise and the locked cluster refused, and "
+          f"the viewer, the mask and the plugin all agree")
 
 
 def _same_colour_clusters_viewer():
@@ -383,10 +497,17 @@ def _same_colour_clusters_viewer():
         def get_node(self, uid):
             return _Node()
 
+        def reconstruct(self, uid):
+            return _Cloud(_CLOUDS[uid])
+
     global_variables.global_application_controller = _Controller()
     kept = np.arange(0, 12, 2)                           # cloud rows 0,2,4,6,8,10
-    xyz = np.column_stack([kept, np.zeros(6), np.zeros(6)]).astype(np.float32)
+    full = np.column_stack([np.arange(12), np.zeros(12),
+                            np.zeros(12)]).astype(np.float32)
+    xyz = full[kept]
     slc = np.hstack([xyz, np.ones((6, 3), dtype=np.float32)])   # all white
+    _CLOUDS.clear()
+    global_variables.global_tree_structure_widget = None
 
     v = PCDViewerWidget()
     v.resize(1280, 800)
@@ -394,41 +515,55 @@ def _same_colour_clusters_viewer():
     v.viewport = (0, 0, 1280, 800)
     v.max_extent = 10.0
     v.center = np.array([0.0, 0.0, 0.0])
+    _show(v, "A", np.hstack([full, np.ones((12, 3), dtype=np.float32)]))
     v.set_branches({"A": slc}, ["A"], sample_indices_by_uid={"A": kept})
     # Rendered rows -> labels: 0:1  1:2  2:1  3:-1  4:7  5:1
     return v
+
+
+def _selected(v):
+    mask = v.selection_mask_for("A")
+    return [] if mask is None else sorted(np.flatnonzero(mask).tolist())
 
 
 def test_cluster_select_and_deselect_match_by_label_not_colour():
     """Ctrl+Shift+Left/Right must act on the clicked cluster's label.
 
     Matching by RGB grabbed or dropped every cluster sharing the colour.
+
+    It must also take the WHOLE cluster, not just the drawn part. Labels are
+    [1,1,2,2,1,2,-1,-1,7,7,1,2] and LOD draws every second row, so cluster 1 is
+    cloud rows 0, 1, 4, 10 while only 0, 4 and 10 are on screen. The widening
+    used to happen separately inside each plugin, by convention; a plugin that
+    read the geometric selection instead got just the drawn subset.
     """
     v = _same_colour_clusters_viewer()
 
-    # Click rendered row 2 (label 1): rows 0, 2, 5 — not label 2, noise or lock.
+    # Click rendered row 2 = cloud row 4, label 1 -> cloud rows 0, 1, 4, 10.
     v._unproject_mouse_to_nearest_point = lambda _pos: (2, v.points[2, :3])
     v.select_cluster_at(None)
-    assert sorted(v.picked_points_indices) == [0, 2, 5], v.picked_points_indices
+    assert _selected(v) == [0, 1, 4, 10], _selected(v)
+    assert 1 in _selected(v), "the undrawn point of the cluster was left out"
 
     v.select_cluster_at(None)
-    assert sorted(v.picked_points_indices) == [0, 2, 5], "re-select duplicated picks"
+    assert _selected(v) == [0, 1, 4, 10], "re-select changed the selection"
 
     # Add label 2, then deselect label 1: label 2 must survive the shared colour.
     v._unproject_mouse_to_nearest_point = lambda _pos: (1, v.points[1, :3])
     v.select_cluster_at(None)
-    assert sorted(v.picked_points_indices) == [0, 1, 2, 5], v.picked_points_indices
+    assert _selected(v) == [0, 1, 2, 3, 4, 5, 10, 11], _selected(v)
 
     v._unproject_mouse_to_nearest_point = lambda _pos: (5, v.points[5, :3])
     v.deselect_cluster_at(None)
-    assert v.picked_points_indices == [1], v.picked_points_indices
+    assert _selected(v) == [2, 3, 5, 11], _selected(v)
 
     # Clicking noise or a locked cluster selects nothing.
     for row in (3, 4):
         v._unproject_mouse_to_nearest_point = lambda _pos, r=row: (r, v.points[r, :3])
         v.select_cluster_at(None)
-    assert v.picked_points_indices == [1], v.picked_points_indices
-    print("  cluster select/deselect follow the label, not the shared colour")
+    assert _selected(v) == [2, 3, 5, 11], _selected(v)
+    print("  cluster select/deselect follow the label, cover undrawn points, "
+          "and respect noise and locks")
 
 
 def test_polygon_double_click_decides_select_or_deselect():
@@ -447,28 +582,336 @@ def test_polygon_double_click_decides_select_or_deselect():
         else:
             v.mousePressEvent(event)
 
-    def draw(v, close_button):
+    # A box over the left half of the view, so there is an inside and an
+    # outside and the two can be told apart by the numbers.
+    box = [(100, 100), (600, 100), (600, 700), (100, 700)]
+    inside_pt, outside_pt = (350, 400), (1100, 400)
+
+    def draw(v, close_button, close_at, vertices=box):
         v.enter_polygon_mode()
-        for x, y in _FULL_SCREEN:
+        for x, y in vertices:
             mouse(v, QEvent.MouseButtonPress, Qt.LeftButton, x, y)
         # A double-click arrives as a press, then the double-click event.
-        mouse(v, QEvent.MouseButtonPress, close_button, *_FULL_SCREEN[3])
+        mouse(v, QEvent.MouseButtonPress, close_button, *close_at)
         assert v._polygon_mode, "a single click closed the polygon"
-        mouse(v, QEvent.MouseButtonDblClick, close_button, *_FULL_SCREEN[3])
+        assert len(v._polygon_vertices) == len(vertices) + (
+            1 if close_button == Qt.LeftButton else 0), \
+            "the closing press did not behave as an ordinary click"
+        mouse(v, QEvent.MouseButtonDblClick, close_button, *close_at)
         assert not v._polygon_mode, "double-click did not close the polygon"
+        for _ in range(400):
+            if v.selection_ready():
+                break
+            time.sleep(0.01)
 
     v = _viewer()
-    v.set_branches({"A": _cloud(5_000, seed=20)}, ["A"])
+    _show(v, "A", _cloud(5_000, seed=20))
 
-    draw(v, Qt.LeftButton)
-    assert len(v.picked_points_indices) == 5_000, len(v.picked_points_indices)
+    # Closing INSIDE acts on what the shape encloses.
+    draw(v, Qt.LeftButton, inside_pt)
+    enclosed = v.selection_count()
+    assert 0 < enclosed < 5_000, f"setup wrong: the box caught {enclosed:,}"
 
-    draw(v, Qt.RightButton)
-    assert len(v.picked_points_indices) == 0, len(v.picked_points_indices)
+    draw(v, Qt.RightButton, inside_pt)
+    assert v.selection_count() == 0, v.selection_count()
+
+    # Closing OUTSIDE acts on everything the shape does not enclose.
+    draw(v, Qt.LeftButton, outside_pt)
+    assert v.selection_count() == 5_000 - enclosed, (
+        f"closing outside selected {v.selection_count():,}, expected "
+        f"{5_000 - enclosed:,}")
+
+    draw(v, Qt.RightButton, outside_pt)
+    assert v.selection_count() == 0, v.selection_count()
 
     v.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_P, Qt.ShiftModifier))
     assert not v._polygon_mode, "Shift+P still enters polygon mode"
-    print("  polygon: left double-click selects, right double-click deselects")
+    print(f"  closing inside took {enclosed:,}, closing outside took the other "
+          f"{5_000 - enclosed:,}; right button removes either way")
+
+
+def test_the_closing_click_is_not_part_of_the_shape():
+    """The double-click ends the tracing; it does not add a corner.
+
+    A double-click arrives as a press and then the double-click event, and that
+    press goes through the ordinary add-a-vertex path. Left as it was, every
+    lasso gained a stray vertex wherever the user happened to finish — and when
+    they finished OUTSIDE the shape, which is now how you ask for the points
+    around it, that vertex dragged the outline out to meet the cursor.
+    """
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+    from PyQt5.QtGui import QMouseEvent
+
+    def mouse(v, kind, x, y):
+        event = QMouseEvent(kind, QPointF(x, y), Qt.LeftButton, Qt.LeftButton,
+                            Qt.NoModifier)
+        if kind == QEvent.MouseButtonDblClick:
+            v.mouseDoubleClickEvent(event)
+        else:
+            v.mousePressEvent(event)
+
+    box = [(100, 100), (600, 100), (600, 700), (100, 700)]
+
+    v = _viewer()
+    _show(v, "A", _cloud(5_000, seed=21))
+
+    # Trace the box, then finish far outside it.
+    v.enter_polygon_mode()
+    for x, y in box:
+        mouse(v, QEvent.MouseButtonPress, x, y)
+    mouse(v, QEvent.MouseButtonPress, 1200, 400)
+    assert len(v._polygon_vertices) == 5, \
+        "the closing press should add a vertex like any other click"
+
+    traced = []
+    real_close = v._close_polygon
+
+    def capture(op, at=None):
+        traced.append(list(v._polygon_vertices))
+        return real_close(op, at)
+
+    v._close_polygon = capture
+    mouse(v, QEvent.MouseButtonDblClick, 1200, 400)
+
+    assert traced and traced[0] == box, \
+        f"the closing click stayed in the shape: {traced[0]}"
+    print("  the closing double-click ends the tracing without adding a corner")
+
+
+
+
+def test_the_same_lasso_selects_the_same_points_at_any_lod():
+    """The point of holding the selection in cloud space.
+
+    The same screen-space lasso, drawn once with the branch fully drawn and once
+    with LOD showing a tenth of it, must select exactly the same cloud rows. It
+    used to select only what was drawn, so the answer changed with the zoom
+    level — and ``Separate Selected Points`` produced a subsample full of holes.
+    """
+    full = _cloud(20_000, seed=31)
+    lasso = [(300, 150), (1000, 150), (1000, 650), (300, 650)]
+
+    v = _viewer()
+    _show(v, "A", full)
+    _close_lasso(v, lasso)
+    whole = np.flatnonzero(v.selection_mask_for("A"))
+
+    v = _viewer()
+    _show(v, "A", full, rendered_rows=np.arange(0, 20_000, 10))
+    _close_lasso(v, lasso)
+    lod = np.flatnonzero(v.selection_mask_for("A"))
+
+    assert whole.size > 0, "setup wrong: the lasso caught nothing"
+    assert np.array_equal(whole, lod), (
+        f"LOD changed the selection: {whole.size:,} points drawn whole, "
+        f"{lod.size:,} at 1-in-10")
+    print(f"  same lasso, same {whole.size:,} points at full resolution and at "
+          f"1-in-10 LOD")
+
+
+def test_deselecting_does_not_collapse_the_selection():
+    """Deselecting one thing must not silently shrink everything else.
+
+    Every deselect path used to drop the stored polygons, which is what the
+    full-resolution widening depended on. After one stray right-click a lasso
+    that had handed a plugin a million points handed it the LOD subset instead —
+    and nothing on screen changed, because the highlight only ever drew the
+    rendered picks. The mask makes deselect an ordinary boolean subtraction.
+    """
+    full = _cloud(20_000, seed=32)
+    v = _viewer()
+    _show(v, "A", full, rendered_rows=np.arange(0, 20_000, 10))
+
+    _close_lasso(v, _FULL_SCREEN)
+    before = v.selection_count()
+    assert before == 20_000, before          # the whole cloud, not the 2,000 drawn
+
+    _close_lasso(v, [(0, 0), (640, 0), (640, 400), (0, 400)], deselect=True)
+    after = v.selection_count()
+
+    assert after < before, "the deselect lasso removed nothing"
+    assert after > 0, "the deselect lasso removed everything"
+    # The collapse this guards against replaced the full-resolution selection
+    # with the rendered subset — 2,000 points, a tenth of the cloud.
+    assert after > 2_000, (
+        f"the selection collapsed to about the LOD subset: {before:,} -> {after:,}")
+    print(f"  deselect removed {before - after:,} of {before:,} — no collapse")
+
+
+def test_the_selection_lives_on_the_branch_in_the_tree():
+    """A selection belongs to the branch, so it is held on the branch's tree item.
+
+    Not on the DataNode, which is pickled whole into the project file — a
+    selection is about this session, not about the data. Not on the viewer
+    either, which discards and rebuilds branches on every LOD change, visibility
+    toggle and cache toggle while the selection has to survive all of them.
+
+    Living on the tree item also settles the lifetime question for free: remove
+    the branch and its selection goes with it, with nothing else to remember.
+    """
+    v = _viewer()
+    try:
+        full = _cloud(5_000, seed=33)
+        _show(v, "A", full)
+        tree = global_variables.global_tree_structure_widget
+        _close_lasso(v, _FULL_SCREEN)
+
+        stored = tree.selection_mask("A")
+        assert stored is not None, "the mask was not stored on the branch"
+        assert int(stored.sum()) == 5_000, int(stored.sum())
+        assert v.selection_count() == 5_000
+
+        # An LOD change re-renders the branch. The selection is about the
+        # branch, not the render, so it must not notice.
+        _show(v, "A", full, rendered_rows=np.arange(0, 5_000, 10))
+        assert v.selection_count() == 5_000, "a re-render lost the selection"
+
+        tree.remove_branch("A")
+        assert tree.selection_mask("A") is None, \
+            "the selection outlived the branch it belonged to"
+        assert v.selection_count() == 0
+        print("  the mask lives on the tree item, survives a re-render, and is "
+              "removed with the branch")
+    finally:
+        global_variables.global_tree_structure_widget = None
+
+
+def test_a_cache_toggle_keeps_the_selection():
+    """Unchecking Cache must not lose the user's selection.
+
+    Cache invalidation says the cached *reconstruction* is stale, not that the
+    branch's points changed: replaying the transformers yields the same points
+    in the same order, so a mask built against them is still exactly right.
+    Dropping it would mean a checkbox silently threw away the selection.
+
+    This drives the real CacheService notification, so a listener added later
+    that clears the selection fails here.
+    """
+    import uuid as _uuid
+
+    from core.services.cache_service import CacheService
+
+    uid = str(_uuid.uuid4())             # CacheService resolves uids as UUIDs
+    v = _viewer()
+    try:
+        _show(v, uid, _cloud(5_000, seed=34))
+        _close_lasso(v, _FULL_SCREEN)
+        before = v.selection_count()
+        assert before == 5_000
+
+        class _Node:
+            is_cached = True
+            cached_point_cloud = object()
+            cache_timestamp = 0.0
+            parent_uid = None
+
+        node = _Node()
+        node.uid = _uuid.UUID(uid)
+
+        class _Nodes:
+            data_nodes = {_uuid.UUID(uid): node}
+
+            def get_node(self, wanted):
+                return self.data_nodes.get(wanted)
+
+        cache = CacheService(_Nodes())
+        global_variables.global_pcd_viewer_widget = v
+        try:
+            cache.invalidate(uid)            # exactly what unchecking Cache does
+        finally:
+            global_variables.global_pcd_viewer_widget = None
+
+        assert v.selection_count() == before, (
+            f"a cache toggle lost the selection: {before:,} -> "
+            f"{v.selection_count():,}")
+        print(f"  cache toggle kept all {before:,} selected points")
+    finally:
+        global_variables.global_tree_structure_widget = None
+
+
+def test_click_picks_belong_to_the_branch_too():
+    """Click order lives on the branches, not on the viewer.
+
+    The mask says what is selected; the picks say which point was clicked first,
+    which a mask cannot express — so they are separate, but they are the same
+    kind of fact and belong in the same place. Held on the viewer instead, they
+    outlived the branches they named: removing one branch took its mask with it
+    and left picks addressing a cloud that no longer existed.
+
+    The order is global, not per branch: clicks in two branches interleave, and
+    a measurement across both has to come back in the order the user made it.
+    """
+    v = _viewer()
+    try:
+        _show(v, "A", _cloud(50, seed=40))
+        _show(v, "B", _cloud(50, seed=41))
+        tree = global_variables.global_tree_structure_widget
+
+        # Interleave clicks between the two branches.
+        for uid, row in (("A", 5), ("B", 9), ("A", 2), ("B", 1)):
+            tree.add_pick(uid, row)
+
+        assert v.picked_points == [("A", 5), ("B", 9), ("A", 2), ("B", 1)], \
+            f"click order was not preserved across branches: {v.picked_points}"
+        assert v.first_pick() == 5
+        assert v.first_pick("B") == 9, "first_pick ignored the branch asked for"
+
+        tree.remove_branch("A")
+        assert v.picked_points == [("B", 9), ("B", 1)], \
+            f"picks outlived the branch they named: {v.picked_points}"
+        print("  picks keep global click order and are removed with their branch")
+    finally:
+        global_variables.global_tree_structure_widget = None
+
+
+def test_the_tree_shows_selected_over_total():
+    """The Selected Points column reads ``selected/total``.
+
+    The selected half is the full-resolution number — what a plugin would
+    actually receive. That figure used to be invisible: the viewer highlighted
+    the LOD subset while the plugin got the whole region, and the two were never
+    reconciled anywhere the user could look.
+    """
+    v = _viewer()
+    try:
+        _show(v, "A", _cloud(5_000, seed=42))
+        tree = global_variables.global_tree_structure_widget
+        item = tree.branches_dict["A"]
+
+        tree.refresh_selected_counts()
+        assert item.text(2) == "0/5,000", item.text(2)
+
+        box = [(100, 100), (600, 100), (600, 700), (100, 700)]
+        _close_lasso(v, box)
+        v.refresh_selection_readout()
+
+        selected = v.selection_count()
+        assert 0 < selected < 5_000, selected
+        assert item.text(2) == f"{selected:,}/5,000", item.text(2)
+
+        v.clear_selection()
+        assert item.text(2) == "0/5,000", item.text(2)
+        print(f"  tree column read 0/5,000 -> {selected:,}/5,000 -> 0/5,000")
+    finally:
+        global_variables.global_tree_structure_widget = None
+
+
+def test_a_mask_for_a_different_cloud_is_refused():
+    """The safety net for a branch whose cloud really did change length.
+
+    Nothing drops the mask eagerly any more, so the read has to notice. A mask
+    that does not describe the cloud the caller is holding is refused rather
+    than returned misaligned.
+    """
+    v = _viewer()
+    _show(v, "A", _cloud(1_000, seed=35))
+    _close_lasso(v, _FULL_SCREEN)
+    assert v.selection_mask_for_cloud("A", np.zeros((1_000, 3))) is not None
+
+    shorter = np.zeros((400, 3), dtype=np.float32)
+    assert v.selection_mask_for_cloud("A", shorter) is None, \
+        "a mask describing a different cloud was handed out"
+    print("  a mask that does not fit the caller's cloud is refused")
 
 
 def _nearest_by_brute_force(points, target):
@@ -480,12 +923,20 @@ def _nearest_by_brute_force(points, target):
 
 
 if __name__ == "__main__":
-    test_deselect_after_the_buffer_shrinks()
-    test_deselect_cluster_after_the_buffer_shrinks()
+    test_a_selection_survives_an_lod_step_down()
+    test_deselect_cluster_after_an_lod_step_down()
     test_cluster_select_and_deselect_match_by_label_not_colour()
     test_closing_a_lasso_with_nothing_visible()
     test_polygon_double_click_decides_select_or_deselect()
-    test_full_resolution_mask_honours_the_viewer_filters()
+    test_the_closing_click_is_not_part_of_the_shape()
+    test_the_selection_honours_the_viewer_filters()
+    test_the_same_lasso_selects_the_same_points_at_any_lod()
+    test_deselecting_does_not_collapse_the_selection()
+    test_the_selection_lives_on_the_branch_in_the_tree()
+    test_a_cache_toggle_keeps_the_selection()
+    test_click_picks_belong_to_the_branch_too()
+    test_the_tree_shows_selected_over_total()
+    test_a_mask_for_a_different_cloud_is_refused()
     test_a_stale_coarse_index_is_never_used()
     test_a_failed_build_is_not_retried_every_click()
     test_every_visible_branch_starts_building_on_one_click()
