@@ -6,6 +6,70 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-09-16 — Selection is a per-branch cloud-space mask, built eagerly; render space is derived
+Point selection stops being "a polygon plus camera state, re-tested lazily by
+whichever plugin asks" and becomes a **boolean mask per visible branch, parallel
+to that branch's full-resolution cloud**, built on a background thread as soon as
+each selection polygon closes and combined with boolean ops (`|=` to select,
+`&= ~` to deselect). The render-space highlight is **derived** from that mask at
+paint time through the branch's LOD sample indices, not stored alongside it: two
+structures kept in sync drift, one derived from the other cannot, which is what
+removes `picked_points_indices` and the `idx < len(self.points)` clamps every
+path that touched it needed (`deselect_point_at`, `deselect_cluster_at`,
+`_picked_positions`, the deselect lasso). Eager beats lazy here because making a
+branch visible already caches its full-res cloud, so the mask costs only a
+projection — work every plugin currently repeats on every call. Three things fall
+out: the cluster-lock/noise filters are applied once in cloud space at close time,
+so the `allowed=` gate and the ungated-widening wart in `picked_cloud_indices` /
+`get_selection_mask_for` go away; deselect stops discarding the stored polygons
+wholesale and silently downgrading later plugins to coordinate matching; and
+selection becomes a **snapshot over the branches visible when the polygon
+closed** — a branch hidden at that moment or created afterwards carries no mask,
+and a plugin run against one **errors** rather than silently operating on an
+empty selection (consistent with pipeline replay already refusing to carry a
+selection onto a freshly-produced intermediate). Masks are positional, so this
+assumes reconstruction never reorders a branch's rows; that holds today because
+transformers apply stored index arrays, and the user confirms reordering is not a
+thing that happens. Accepted cost: ~1 byte per point per visible branch.
+
+**Amended the same day:** the mask is held on the branch's **tree item** in
+`TreeStructureWidget`, not in a table on the viewer. A selection is a fact about
+the branch, and the viewer discards and rebuilds branches on every LOD change,
+visibility toggle and cache toggle, so anything owned by the viewer has to be
+rescued from each of those; owned by the tree it simply survives, and it is
+removed exactly once, with the branch, when `remove_branch` takes the item. Still
+not on the `DataNode`, which is pickled whole into the project file — a selection
+belongs to the session, not to the data. Consequently **cache invalidation no
+longer drops the mask**: invalidating says the cached *reconstruction* is stale,
+not that the points changed, and unchecking Cache goes down the same path, so
+dropping the selection there would mean a checkbox silently discarded the user's
+work. The case where a branch's cloud genuinely changes length is caught lazily
+instead, by the length check in `selection_mask_for_cloud`, which refuses a mask
+that does not describe the cloud the caller is holding. The **ordered click
+picks moved to the branches too**, as `(sequence, cloud row)` on each item:
+same kind of fact, same lifetime, and the sequence keeps the order global so
+clicks interleaved between two branches still come back in the order the user
+made them. Left on the viewer they outlived the branches they named — removing a
+branch took its mask but left picks addressing a cloud that no longer existed.
+The viewer now holds no selection state at all, only the rendered rows it
+derives from the masks for the highlight, which it drops on every re-render.
+
+**Polygon gesture, same day:** the closing double-click **ends the tracing and is
+not a vertex** — it arrives as a press first, which went through the ordinary
+add-a-vertex path, so every lasso gained a stray corner wherever the user
+happened to finish. And **where it lands chooses the side**: inside the shape
+acts on the points it encloses, outside acts on everything else, for both
+buttons. That gives four gestures from two, and "keep only this region" stops
+needing a lasso drawn all the way around the rest of the cloud — which on a
+street scan is most of the screen. `screen_selection.point_in_polygon` answers
+the inside/outside question with the same even-odd rule the per-point backends
+use, so the click and the points cannot disagree about an edge. The tree's third
+column became **Selected Points**, reading `selected/total`: the selected half is
+the full-resolution figure a plugin would actually receive, which until now was
+not visible anywhere. It is refreshed only from the GUI thread — the setters stay
+pure, because the lasso writes masks from a worker thread and setting item text
+there would emit `itemChanged` from outside the GUI thread.
+
 ## 2026-07-17 — Contours via a generic field-agnostic brick, keyed on cloud edges
 Contour lines are one generic `contour_growing` brick over *any* per-point field
 (the `services/point_fields` dropdown), never a per-field plugin — height

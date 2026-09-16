@@ -182,8 +182,30 @@ MainWindow.open_dialog_box(plugin_name)
                   └─ Cancel → nothing runs
 ```
 
-`selection_gate` also exposes the helpers plugins use to read a selection:
-`selectable_cloud_indices(node)` and `picked_cloud_indices(viewer, pc_points, kdtree, allowed)`.
+**Reading a selection.** The selection is a **boolean mask per branch, over that
+branch's full-resolution cloud**, built when the gesture completes (lasso close,
+click, cluster click) — not derived per plugin. It is held on the branch's item
+in the tree (`TreeStructureWidget.selection_mask`), so it survives re-renders,
+LOD changes and cache toggles, and is removed with the branch. A plugin reads it,
+it does not re-compute it:
+
+| Call | Returns |
+|---|---|
+| `selection_gate.selected_cloud_indices(viewer, uid, pc_points)` | sorted cloud rows, or `None` |
+| `viewer.selection_mask_for_cloud(uid, pc_points)` | the boolean mask, or `None` |
+| `viewer.selected_rows(uid)` / `viewer.selection_mask_for(uid)` | same, without the length check |
+| `viewer.picked_points` | ordered `(uid, cloud_row)` click picks, across branches — for "which was clicked first" |
+| `viewer.first_pick(uid)` | the first clicked cloud row — for "start here" gestures |
+| `viewer.selection_count()` / `viewer.has_selection()` | how many points, and whether any |
+| `viewer.selection_centroid()` | mean position of the selection — for "near here" gestures |
+
+`None` means *nothing is selected in that branch*, which is deliberately distinct
+from an empty array: report it to the user rather than running on nothing.
+
+Noise and clusters locked against selection are already excluded when the
+selection is made, so there is no gate for a plugin to pass — the `allowed=`
+argument callers used to have to remember is gone, along with
+`picked_cloud_indices` and `get_selection_mask_for`.
 
 Pipeline replay **bypasses** this gate and does its own pause instead (see §8), so a
 replayed step always asks for a fresh selection on the newly produced intermediate
