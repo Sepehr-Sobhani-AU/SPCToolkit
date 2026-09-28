@@ -165,6 +165,7 @@ sequenceDiagram
 |----------|-------------|
 | `global_hardware_info` | `main.py` (`initialize_hardware_and_backends`) |
 | `global_backend_registry` | `main.py` (`initialize_hardware_and_backends`) |
+| `global_shape_query` | `main.py` (`initialize_hardware_and_backends`) |
 | `global_file_manager` | `gui/main_window.py` |
 | `global_tree_structure_widget` | `gui/main_window.py` |
 | `global_pcd_viewer_widget` | `gui/main_window.py` |
@@ -312,6 +313,34 @@ sequenceDiagram
   around reconstruction and `execute()`, and long-running plugins poll it themselves
 - **Thread Safety:** plugins only READ data and return NEW objects
 - **No Deep Copy:** memory efficient — relies on read-only access
+- **GPU state released per run:** `_run_in_thread` ends in a `finally` that calls
+  `global_shape_query.release_all()`, so whatever a plugin's shape queries built
+  on the GPU is freed on success, error and cancel alike
+
+### Shape Queries
+
+"Which points are inside this shape?" is answered by one shared service, so no
+plugin builds its own index for it (design and measurements: `DECISIONS.md`
+§ 2026-09-28):
+
+```python
+from core.services.query_shapes import Cylinder
+rows = global_variables.global_shape_query.points_in(cloud.points, Cylinder(a, d, 0.05, 1.0))
+```
+
+- **Shapes** (`core/services/query_shapes.py`): `Sphere`, `Box`, `OrientedBox`,
+  `Cylinder`, `Slab`, `PlanPolygon` (plan fence, may be concave).
+- **Answer**: sorted int32 rows of the array passed (or a bool mask with
+  `as_mask=True`); the same query always returns the same array.
+- **How**: coarse spatial index over the full cloud → a per-cell sub-grid index
+  built the first time a query touches the cell → one CUDA kernel tests the
+  candidates (`shape_query_kernels.py`). Shapes over half the cloud skip the
+  index and test every point.
+- **GPU only**, no CPU path: ~13 bytes a point while prepared, +4 once cells
+  are indexed. Errors are raised as `ShapeQueryError`.
+- **Lifetime**: prepared on the first query for an array, freed at the end of the
+  plugin run or when the array is garbage-collected. Plugins never release.
+- **Use `NeighborIndex` instead** for k-nearest queries, which this does not do.
 
 ---
 
@@ -675,6 +704,7 @@ class ActionPlugin(ABC):
 | Support cancellation | poll `global_variables.global_cancel_event` |
 | Disable UI during processing | `MainWindow.disable_menus()`, `disable_tree()` |
 | Capture / replay a plugin sequence | `core/services/pipeline.py`, `application/pipeline_runner.py` |
+| Select points inside a shape | `global_variables.global_shape_query.points_in(points, shape)` |
 
 ### Signal Connections
 
@@ -717,6 +747,7 @@ call or a callback.
 | `core/services/analysis_service.py` | Plugin execution service |
 | `core/services/batch_processor.py` | Adaptive point-budget k-d tiling for large clouds |
 | `core/services/spatial_grid.py`, `neighbor_index.py` | Shared spatial index services |
+| `core/services/shape_query.py`, `query_shapes.py`, `shape_query_kernels.py` | Points inside a shape (GPU) |
 | `core/services/pipeline.py` | Pipeline capture / save / load (pure logic) |
 | `core/services/ransac/` | RANSAC primitive fitting (see `core/services/RANSAC.md`) |
 | `core/transformers/*.py` | Data type transformers for reconstruction |
