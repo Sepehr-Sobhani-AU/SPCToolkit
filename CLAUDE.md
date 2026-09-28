@@ -204,6 +204,7 @@ Access via `from config.config import global_variables`. Defined in `config/conf
 | `global_main_window` | `MainWindow` | Main application window |
 | `global_hardware_info` | `HardwareInfo` | Detected hardware capabilities |
 | `global_backend_registry` | `BackendRegistry` | Algorithm backend selection |
+| `global_shape_query` | `ShapeQueryService` | Points inside a shape (`points_in(points, shape)`); GPU, released after each plugin run |
 | `global_progress` | `tuple` | `(None, "msg")` indeterminate, `(50, "msg")` 50% determinate |
 | `training_data_folder` | `str` | Default training data directory (`"training_data"`) |
 

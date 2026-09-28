@@ -236,6 +236,25 @@ class AnalysisExecutor:
                 }
                 self._is_completed = True
                 logger.error(f"Exception in analysis thread: {e}")
+        finally:
+            self._release_shape_queries()
+
+    @staticmethod
+    def _release_shape_queries():
+        """Free whatever the plugin's shape queries built on the GPU.
+
+        The service's lifetime is one plugin run (DECISIONS.md § 2026-09-28), and
+        this is where every run ends — success, error and cancel alike — so
+        plugins never have to release anything themselves.
+        """
+        from config.config import global_variables
+        service = global_variables.global_shape_query
+        if service is None:                         # tests, or startup not finished
+            return
+        try:
+            service.release_all()
+        except Exception as e:
+            logger.error(f"Failed to release shape query state: {e}")
 
     def _handle_cancelled(self, analysis_type: str):
         """Store cancellation state and mark as completed."""

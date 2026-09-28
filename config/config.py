@@ -30,6 +30,9 @@ class GlobalVariables:
         self.global_hardware_info = None  # HardwareInfo from HardwareDetector
         self.global_backend_registry = None  # BackendRegistry for algorithm backends
 
+        # Shared services
+        self.global_shape_query = None  # ShapeQueryService: points inside a shape
+
         # Progress state (written by background thread, read by UI polling timer)
         # (None, "msg") = indeterminate bar, (50, "msg") = 50% determinate bar
         self.global_progress = (None, "")

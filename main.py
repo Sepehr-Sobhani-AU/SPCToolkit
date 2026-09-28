@@ -53,6 +53,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
 
 from plugins.plugin_manager import PluginManager
+from core.services.shape_query import ShapeQueryService
 from gui.main_window import MainWindow
 from gui.widgets.splash_screen import SplashScreen
 
@@ -75,6 +76,9 @@ def initialize_hardware_and_backends(splash=None):
     # Create and register backend registry
     backend_registry = BackendRegistry(hardware_info)
     global_variables.global_backend_registry = backend_registry
+
+    # Allocates nothing until a plugin first asks for points inside a shape.
+    global_variables.global_shape_query = ShapeQueryService()
 
     # Update splash with hardware info
     if splash:
