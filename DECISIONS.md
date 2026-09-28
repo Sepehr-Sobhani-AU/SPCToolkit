@@ -6,6 +6,70 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-09-28 — One shared service answers "which points are inside this shape"
+Plugins that are coming will select points by a shape (box, cylinder, fence…),
+so that question moves out of individual plugins into one service in
+`core/services/shape_query.py`, built ahead of any single plugin on purpose.
+The design was chosen by benchmark on the real 168M cloud (RTX 3080 Laptop,
+8 GB VRAM, 15 GB RAM), every answer checked against a test of every point:
+
+- **Cells first.** The branch's full cloud is numbered into the fixed
+  (11, 11, 2) coarse spatial index. The shape says which cells it misses, fully
+  covers, or partly covers. Covered cells are taken whole; only partly covered
+  cells are searched. Cell membership comes from the cell numbers, never from
+  coordinates, so no point is counted twice or lost on a border. The viewer's
+  coarse index is **not** reused: it covers the drawn (LOD) rows, not the cloud.
+- **A lazy per-cell index on the GPU.** Cells alone were too coarse: real data
+  is so clustered that 92 of 242 cells are empty and one holds 21M points, so a
+  0.5 m sphere tested ~10M points (72 ms). The first query to touch a cell sorts
+  that cell's rows by a sub-grid of ~32 points a sub-cell (z fastest, so a column
+  is one run). 4 bytes a point, no second copy of the coordinates: 0.67 GB with
+  every cell built, against 2.76 GB of RAM for `NeighborIndex`. A cell builds in
+  ~14 ms (151 ms for the 21M one).
+- **One kernel per query.** The host works out the sub-cell runs; a single CUDA
+  kernel walks the candidates, tests the shape and appends matches. Done as ~15
+  separate CuPy steps a small query cost 1.2-1.6 ms, all fixed overhead; fused it
+  is 0.35-0.5 ms. When the candidate cells hold over half the cloud the index is
+  skipped and one kernel tests every point.
+
+      median per query      one kernel   NeighborIndex (CPU)
+      sphere r=0.5 m          0.46 ms        0.42 ms
+      cylinder r=5 cm, 1 m    0.49 ms        0.35 ms
+      box 20x20x10 m (2.8M)   5-9 ms         327 ms
+      sphere r=50 m (81M)     83 ms          1,945 ms
+      box 1/4 site (119M)     105 ms         4,664 ms
+
+  `NeighborIndex` also needs 4.3 GB of RAM over the cloud to build, and its own
+  50 m ball query was OOM-killed under an 8 GB cap.
+
+  The service as built (`unit_test/shape_query_benchmark.py`, answer returned as
+  numpy): small shapes 0.6 ms, the 20 m box ~10 ms, the two large shapes 153 and
+  221 ms — the large-shape difference is copying 80-119M row numbers back to RAM,
+  which a plugin needs anyway. Preparing the cloud: 5.2 s.
+- **Its own memory pool.** In the app CuPy allocates through RAPIDS' RMM, one
+  real GPU allocation per array (~35 us); a small query makes about seven. The
+  service allocates from a CuPy pool of its own, emptied on release.
+- **GPU only.** The coordinates live on the GPU for the run (2.2 GB at 168M with
+  the cell numbers). GPU failures are reported, not silently run on the CPU.
+- **Upload in blocks, never in one call.** `cp.asarray` on a whole 2 GB array
+  leaves a same-size staging copy in host RAM; blocked `.set()` leaves none.
+- **One test, one truth.** Points exactly on a shape's edge can land on either
+  side depending on rounding order (1 point in 3.5M against CuPy's matmul), so
+  the kernel is the only definition of "inside", and results are sorted so the
+  same query always gives the same answer in the same order (replay).
+- **Shapes answer geometry only** — bounding box, cell miss/cover/partial, and
+  kernel parameters. How cells are searched is the service's business. A shape's
+  box is clipped to the cloud, which makes open shapes (slab) safe.
+- **Lifetime is one plugin run.** Everything is released automatically when the
+  run ends (success, error or cancel), or when nothing references the cloud any
+  more — no LRU, no memory setting, and plugins never release anything.
+- **No cell invalidation.** Plugins never change a cloud; a changed cloud is a new
+  branch with a new index.
+- **Deferred:** combining shapes (union / difference) and many shapes in one call.
+  `NeighborIndex` stays for now and is to be retired later.
+
+---
+
 ## 2026-09-16 — Selection is a per-branch cloud-space mask, built eagerly; render space is derived
 Point selection stops being "a polygon plus camera state, re-tested lazily by
 whichever plugin asks" and becomes a **boolean mask per visible branch, parallel
