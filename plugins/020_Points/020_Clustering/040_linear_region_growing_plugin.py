@@ -253,38 +253,48 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             linearity_threshold=params.get("linearity_threshold", 0.4),
             neighbor_k=params.get("neighbor_k", 16),
         )
-        lines, stopped_early = self._grow_threaded(main_window, grower, seed_groups)
-        if lines is None:  # error during grow — message already shown
-            return
-        if not lines:
-            QMessageBox.warning(main_window, "No Feature Points",
-                                "Growing did not find any points. "
-                                "Try adjusting the parameters." if not stopped_early
-                                else "Cancelled before any line was grown.")
-            return
+        # Every exit below frees what the grower's queries built on the GPU —
+        # unless the extension window took the grower over, in which case the
+        # window frees it when it closes (see LinearRegionGrower.release).
+        handed_over = False
+        try:
+            lines, stopped_early = self._grow_threaded(main_window, grower, seed_groups)
+            if lines is None:  # error during grow — message already shown
+                return
+            if not lines:
+                QMessageBox.warning(main_window, "No Feature Points",
+                                    "Growing did not find any points. "
+                                    "Try adjusting the parameters." if not stopped_early
+                                    else "Cancelled before any line was grown.")
+                return
 
-        # --- Build the result Clusters branch and optional debug branches ---
-        result_uid, labels = self._build_result_branch(
-            controller, tree_widget, selected_uid, node, pc_points, lines, params
-        )
-        self._build_debug_branches(controller, tree_widget, node, result_uid, lines, params)
+            # --- Build the result Clusters branch and optional debug branches ---
+            result_uid, labels = self._build_result_branch(
+                controller, tree_widget, selected_uid, node, pc_points, lines, params
+            )
+            self._build_debug_branches(controller, tree_widget, node, result_uid, lines, params)
 
-        # --- Render and clear selection ---
-        main_window.render_visible_data(zoom_extent=False)
-        viewer_widget.clear_selection()
+            # --- Render and clear selection ---
+            main_window.render_visible_data(zoom_extent=False)
+            viewer_widget.clear_selection()
 
-        self._show_summary(main_window, labels, lines, stopped_early)
+            self._show_summary(main_window, labels, lines, stopped_early)
 
-        # --- Offer to walk the stops and extend the traces that fell short ---
-        # Growth almost never reaches the end of every feature, and the fix is
-        # cheapest right now while the grower and the picks are still to hand.
-        # Declining is fine: the stops are persisted on the result branch, so
-        # "Extend Traced Lines" reopens this on the saved branch at any time.
-        self._offer_extension(main_window, result_uid, pc_points, lines, grower, params)
+            # --- Offer to walk the stops and extend the traces that fell short ---
+            # Growth almost never reaches the end of every feature, and the fix is
+            # cheapest right now while the grower and the picks are still to hand.
+            # Declining is fine: the stops are persisted on the result branch, so
+            # "Extend Traced Lines" reopens this on the saved branch at any time.
+            handed_over = self._offer_extension(
+                main_window, result_uid, pc_points, lines, grower, params)
+        finally:
+            if not handed_over:
+                grower.release()
 
     def _offer_extension(self, main_window, result_uid, pc_points, lines, grower, params):
         """Open the guided-extension window if any line stopped somewhere worth
-        looking at."""
+        looking at. Returns True when the window was opened — it then owns the
+        grower, and releases it on close."""
         claimed = np.zeros(len(pc_points), dtype=bool)
         for line in lines:
             claimed[line.indices] = True
@@ -293,7 +303,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             if grower.unclaimed_ahead(stop, claimed).size > 0
         )
         if promising == 0:
-            return
+            return False
 
         answer = QMessageBox.question(
             main_window, "Extend Traced Lines?",
@@ -305,7 +315,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
         )
         if answer != QMessageBox.Yes:
-            return
+            return False
 
         window = LineExtensionWindow(result_uid, pc_points, lines, grower, params,
                                      parent=main_window)
@@ -313,6 +323,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         # Held on the main window so Python does not garbage-collect a modeless
         # dialog the moment this method returns.
         main_window._line_extension_window = window
+        return True
 
     # ------------------------------------------------------------------ #
     # execute() steps                                                    #

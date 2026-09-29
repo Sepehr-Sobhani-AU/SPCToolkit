@@ -219,27 +219,32 @@ class PowerLineDetectionPlugin(ActionPlugin):
         already_grown = set()   # cloud points claimed by cables traced so far
         cable_id = 0
 
-        for cluster_label in sorted(unique_labels):
-            cable_seed_local = seed_indices[seed_labels == cluster_label]
+        # The grower's queries all happen in this loop; free their GPU state as
+        # soon as it ends, success or error (see LinearRegionGrower.release).
+        try:
+            for cluster_label in sorted(unique_labels):
+                cable_seed_local = seed_indices[seed_labels == cluster_label]
 
-            # DBSCAN can split ONE physical cable's picked seeds into several
-            # clusters (sparse/gappy picks, small eps). Growing each would retrace
-            # the same conductor and draw a duplicate centerline + cylinders over
-            # it. Skip a cluster whose seeds already belong to a traced cable.
-            if already_grown and len(cable_seed_local) > 0:
-                covered = sum(int(s) in already_grown for s in cable_seed_local)
-                if covered / len(cable_seed_local) > 0.5:
+                # DBSCAN can split ONE physical cable's picked seeds into several
+                # clusters (sparse/gappy picks, small eps). Growing each would retrace
+                # the same conductor and draw a duplicate centerline + cylinders over
+                # it. Skip a cluster whose seeds already belong to a traced cable.
+                if already_grown and len(cable_seed_local) > 0:
+                    covered = sum(int(s) in already_grown for s in cable_seed_local)
+                    if covered / len(cable_seed_local) > 0.5:
+                        continue
+
+                cable_indices = grower.grow(cable_seed_local)
+                if len(cable_indices) == 0:
                     continue
 
-            cable_indices = grower.grow(cable_seed_local)
-            if len(cable_indices) == 0:
-                continue
-
-            already_grown.update(int(i) for i in cable_indices)
-            all_cable_indices.append(cable_indices)
-            cable_assignments.append(np.full(len(cable_indices), cable_id, dtype=np.int32))
-            cluster_names[cable_id] = f"Cable {cable_id + 1}"
-            cable_id += 1
+                already_grown.update(int(i) for i in cable_indices)
+                all_cable_indices.append(cable_indices)
+                cable_assignments.append(np.full(len(cable_indices), cable_id, dtype=np.int32))
+                cluster_names[cable_id] = f"Cable {cable_id + 1}"
+                cable_id += 1
+        finally:
+            grower.release()
 
         if not all_cable_indices:
             QMessageBox.warning(main_window, "No Cable Points",

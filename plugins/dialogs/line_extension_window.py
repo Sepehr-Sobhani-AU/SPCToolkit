@@ -1379,4 +1379,8 @@ class LineExtensionWindow(QDialog):
         # into classification or a saved project.
         self._commit()
         self._clear_picks()
+        # The window owns the grower for as long as it is open (the growing
+        # plugin hands it over rather than freeing it), so it frees what the
+        # grower's queries built on the GPU — about 13 bytes a point.
+        self.grower.release()
         super().closeEvent(event)
