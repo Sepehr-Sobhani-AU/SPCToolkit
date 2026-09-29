@@ -30,6 +30,10 @@
 - Filter plugin needs a dialog box to create a filter. We need to discuss it later. please remind me.
   - **Reminder (open, Definition-level):** the filtering plugin currently takes a raw Python expression string; you want a guided builder dialog instead (cf. the query_select "Select By Attributes" builder, which is the obvious model). Left for a later discussion as requested.
 
+- The shape query service (`core/services/shape_query.py`) has no CPU fallback: on a machine with no NVIDIA GPU, or without enough GPU memory, any plugin using it fails.
+  - **Report (Open / by design, Definition-level):** GPU only is deliberate (`DECISIONS.md` § 2026-09-28): it follows the CLAUDE.md rule "report GPU failure, never silently fall back to CPU", and the kernel is the one definition of "inside", so a point on a shape's edge is decided the same way on every run (pipeline replay). Failures raise `ShapeQueryError` saying what is missing (no CuPy/GPU, or "need about X MB"). Needs ~13 bytes a point on the GPU, +4 once cells are indexed (~2.9 GB at 168M).
+  - **↳ If CPU-only machines must run these plugins:** a CPU path is feasible — `NeighborIndex` answered small shapes in 0.3-0.5 ms on the CPU, but 2-45x slower on large ones and with ~2.8 GB more RAM at 168M. It would need its own "inside" test kept identical to the kernel's rounding, or edge points could differ between machines. Reverses a recorded decision → new `DECISIONS.md` entry first.
+
 ### Not issues — recorded so they are not "fixed" by mistake
 
 - **Polygon selection includes LOD-hidden points, deliberately.** A lasso is an *area* gesture; the region exists independently of how many points were drawn. Returning only rendered points would make `Separate Selected Points` produce a subsample full of holes, with a different result at every zoom level. Storing the polygon + camera matrices makes the re-test exact and reproducible, which is what pipeline replay needs.
