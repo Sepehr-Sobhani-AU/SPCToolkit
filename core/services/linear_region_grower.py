@@ -30,9 +30,37 @@ from collections import deque, namedtuple
 import numpy as np
 
 from core.services.neighbor_index import NeighborIndex
+from core.services.query_shapes import Cylinder, Sphere
 from core.services.ransac import fit
 from core.services.geometry_utils import unit, perp_basis, principal_axis
 from core.entities.vector_feature import VectorFeature
+
+
+# How much larger than the region it actually wants every shape the grower
+# asks the shape query service for is, in metres. The service is only used to
+# FETCH candidates; the grower's own numpy test on them stays the definition of
+# "in the tube", exactly as it was when the candidates came from a bounding
+# ball. Padding makes the fetched set a strict superset, so a point on the edge
+# that the float32 kernel and the float64 test would round differently can never
+# be lost — results do not change by switching how candidates are fetched.
+_QUERY_PAD = 1e-4
+
+# Service for grower instances created outside the app (tests, scripts), where
+# global_variables.global_shape_query is not set. Created on first use.
+_standalone_shape_query = None
+
+
+def _default_shape_query():
+    """The app's shape query service, or one for this process outside the app."""
+    global _standalone_shape_query
+    from config.config import global_variables
+    service = global_variables.global_shape_query
+    if service is not None:
+        return service
+    if _standalone_shape_query is None:
+        from core.services.shape_query import ShapeQueryService
+        _standalone_shape_query = ShapeQueryService()
+    return _standalone_shape_query
 
 
 # Growth modes
@@ -149,10 +177,17 @@ class LinearRegionGrower:
 
     Parameters:
         all_points: ``(N, 3)`` array — the full point cloud.
-        index: Pre-built ``NeighborIndex`` over *all_points* (built on demand if
-            None). Every neighbour query below goes through it, so the whole
-            cloud is indexed once by the shared spatial-grid service rather than
-            by a KD-tree of this algorithm's own.
+        index: Pre-built ``NeighborIndex`` over *all_points*, used by the
+            linearity-connected mode only (built on first use if None). That
+            mode asks one neighbour question per point it grows — millions of
+            tiny radius / k-nearest queries — which is what ``NeighborIndex`` is
+            for and what the shape query service does not do.
+        shape_query: ``ShapeQueryService`` answering the axis march's
+            "which points are in this tube" questions (defaults to the app's
+            ``global_shape_query``). GPU only. Preparing a cloud costs a few
+            seconds where building ``NeighborIndex`` over it costs tens, and a
+            cable needs only hundreds of queries, so this is where a large
+            cloud's run time goes. Call ``release()`` when finished.
         mode: One of ``AXIS_TRACE``, ``LINEARITY_CONNECTED``, ``HYBRID``.
         ransac_threshold: RANSAC line inlier distance threshold (m).
         max_iterations: Max RANSAC hypotheses tried per line fit.
@@ -179,6 +214,7 @@ class LinearRegionGrower:
         all_points: np.ndarray,
         index: NeighborIndex = None,
         mode: str = AXIS_TRACE,
+        shape_query=None,
         ransac_threshold: float = 0.03,
         max_iterations: int = 100,
         cylinder_radius: float = 0.03,
@@ -194,7 +230,10 @@ class LinearRegionGrower:
         neighbor_k: int = 16,
     ):
         self.all_points = np.asarray(all_points)
-        self.index = index if index is not None else NeighborIndex(self.all_points)
+        # Built lazily: only the linearity-connected mode needs it (see `index`).
+        self._index = index
+        self.shape_query = shape_query if shape_query is not None \
+            else _default_shape_query()
         self.mode = mode
 
         self.ransac_threshold = ransac_threshold
@@ -303,6 +342,32 @@ class LinearRegionGrower:
             only_direction=only_direction,
         )
 
+    @property
+    def index(self) -> NeighborIndex:
+        """Neighbour index over the cloud, built on first use.
+
+        Only the linearity-connected mode asks for it. Building it over a large
+        cloud is the most expensive thing a run does — 16 s at 60M points, which
+        used to be almost the whole run — so the axis modes never touch it.
+        """
+        if self._index is None:
+            self._index = NeighborIndex(self.all_points)
+        return self._index
+
+    def release(self) -> None:
+        """Free what this grower's queries built: the shape query service's GPU
+        state (about 13 bytes a point) and the neighbour index, if any.
+
+        The service is released automatically when an analysis plugin's run
+        ends. The growing plugins are action plugins that run their own thread,
+        and their cloud usually stays referenced by the node cache afterwards,
+        so nothing else would free it — call this when the run is over, or when
+        the extension window closes. Safe to call more than once, and the grower
+        still works afterwards: the next query prepares the cloud again.
+        """
+        self._index = None
+        self.shape_query.release_all()
+
     def swept_indices(self) -> np.ndarray:
         """Unique point indices the last ``grow()`` swept — everything that fell
         inside a step's fit window, members and non-members alike.
@@ -361,11 +426,7 @@ class LinearRegionGrower:
 
         tip = np.asarray(stop.tip, dtype=float)
         direction = unit(np.asarray(stop.direction, dtype=float))
-        candidate_idx = self.index.query_ball_point(
-            tip + half * direction, np.sqrt(radius ** 2 + half ** 2)
-        )
-        # `.size`, not `if not ...`: the index answers with an array, and the
-        # truth value of an array with more than one element is an error.
+        candidate_idx = self._tube_candidates(tip, direction, radius, reach)
         if candidate_idx.size == 0:
             return np.empty(0, dtype=np.intp)
         vecs = self.all_points[candidate_idx] - tip
@@ -1062,7 +1123,7 @@ class LinearRegionGrower:
         anchor = seed_pts[int(np.argmin(np.abs(projections - mid)))].copy()
 
         direction = axis
-        nbr = self.index.query_ball_point(anchor, self.cylinder_length)
+        nbr = self._ball_candidates(anchor, self.cylinder_length)
         if len(nbr) >= 2:
             local_model, _ = self._fit_line(
                 self.all_points[np.asarray(nbr, dtype=np.intp)],
@@ -1097,8 +1158,6 @@ class LinearRegionGrower:
         # The fit window is one cylinder_length; the search reach looks further so
         # a short window can still bridge gaps in fragmented features.
         reach = self.cylinder_length * self.reach_factor
-        reach_half = reach / 2.0
-        reach_radius = np.sqrt(self.search_radius ** 2 + reach_half ** 2)
 
         current_tip = np.asarray(tip, dtype=float).copy()
         current_dir = np.asarray(direction, dtype=float).copy()
@@ -1121,7 +1180,7 @@ class LinearRegionGrower:
             if self._cancel_event is not None and self._cancel_event.is_set():
                 break  # cooperative cancel — keep whatever was collected so far
             tube = self._query_tube(
-                current_tip, current_dir, reach, reach_half, reach_radius,
+                current_tip, current_dir, reach,
                 use_linearity_gate,
             )
             if tube is None:  # nothing within reach / nothing in the tube
@@ -1235,8 +1294,7 @@ class LinearRegionGrower:
         # end_cylinders record above cannot represent.
         return collected, MarchStop(current_tip.copy(), current_dir.copy(), reason)
 
-    def _query_tube(self, tip, direction, reach, reach_half, reach_radius,
-                    use_linearity_gate):
+    def _query_tube(self, tip, direction, reach, use_linearity_gate):
         """Search the reach-tube ahead of *tip* and project candidates onto the
         current heading.
 
@@ -1246,8 +1304,8 @@ class LinearRegionGrower:
         is searched out to the full reach — not just the fit window — so points
         across a gap are visible.
         """
-        centre = tip + reach_half * direction
-        candidate_idx = self.index.query_ball_point(centre, reach_radius)
+        candidate_idx = self._tube_candidates(tip, direction,
+                                              self.search_radius, reach)
         if candidate_idx.size == 0:
             return None
 
@@ -1266,6 +1324,33 @@ class LinearRegionGrower:
         if not np.any(tube_mask):
             return None
         return candidate_idx, pts, along, perp_dist, tube_mask
+
+    def _tube_candidates(self, tip, direction, radius, length):
+        """Rows that may lie in the tube of *radius* running *length* from *tip*
+        along the unit *direction* — a superset, for the caller's own test.
+
+        Asked of the service as the tube itself, not as a ball around it: a long
+        thin tube's bounding ball is mostly clutter (3-6x the tube's points on a
+        cable through vegetation), all of which used to be fetched and projected
+        only to be thrown away. Padded by ``_QUERY_PAD`` so the caller's test,
+        not the kernel's rounding, decides every edge case.
+        """
+        direction = np.asarray(direction, dtype=float)
+        start = np.asarray(tip, dtype=float) - _QUERY_PAD * direction
+        shape = Cylinder(start, direction, float(radius) + _QUERY_PAD,
+                         float(length) + 2.0 * _QUERY_PAD)
+        return self.shape_query.points_in(self.all_points, shape).astype(np.intp)
+
+    def _ball_candidates(self, centre, radius):
+        """Rows within *radius* of *centre* (inclusive, as ``cKDTree`` has it)."""
+        centre = np.asarray(centre, dtype=float)
+        rows = self.shape_query.points_in(
+            self.all_points, Sphere(centre, float(radius) + _QUERY_PAD)
+        ).astype(np.intp)
+        if rows.size == 0:
+            return rows
+        dist = np.linalg.norm(self.all_points[rows] - centre, axis=1)
+        return rows[dist <= radius]
 
     def _fit_step(self, band, current_dir):
         """Fit the per-step axis (direction + centre) from the FULL near band.
