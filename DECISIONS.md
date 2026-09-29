@@ -6,6 +6,31 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-09-29 — Linear growing uses the shape query service; action plugins free it themselves
+The axis-trace and hybrid modes of `LinearRegionGrower` (and so linear region
+growing, power line detection and the extension window) now fetch their tube
+candidates from the shape query service instead of `NeighborIndex`. Measured on
+a 60M synthetic cloud, a run was ~59 s of index building (a full-cloud KD-tree
+the plugins built and never used: 42.6 s; `NeighborIndex`: 16.5 s) against 0.3 s
+of tracing; it is now ~4 s. Queries are ~0.5 ms against ~0.3 ms, which does not
+matter when a cable needs hundreds. The service only fetches — a slightly
+padded cylinder — and the grower's own numpy test still decides membership, so
+results are unchanged; the one difference seen (1 point in 20,027) is float
+summation order in the per-step fit, because the service returns rows sorted
+and the index returned them by grid cell. `NeighborIndex` stays only for the
+Linearity-Connected mode (one question per grown point, k-nearest), built only
+when that mode runs; whether it is needed at all is an open item in `ISSUES.md`.
+
+**Amends 2026-09-28's "plugins never release anything"** for action plugins that
+run their own thread. Their run does not end in `AnalysisExecutor`, and their
+cloud stays referenced by the node cache afterwards, so neither release path
+fires and ~13 bytes a point would stay on the GPU until some analysis plugin
+happened to run. `LinearRegionGrower.release()` frees it: the plugins call it
+when their run ends, and the extension window, which takes the grower over, calls
+it on close.
+
+---
+
 ## 2026-09-28 — One shared service answers "which points are inside this shape"
 Plugins that are coming will select points by a shape (box, cylinder, fence…),
 so that question moves out of individual plugins into one service in

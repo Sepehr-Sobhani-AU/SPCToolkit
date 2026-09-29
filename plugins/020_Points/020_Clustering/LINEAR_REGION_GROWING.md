@@ -132,6 +132,8 @@ With no picks, nothing is relaxed at all — which is what stops the workflow fr
 
 ---
 
+**Speed on large clouds.** Almost all of a run used to be building indexes, not tracing: at 60M points a full-cloud KD-tree (42.6 s, built and never used) plus the grower's `NeighborIndex` (16.5 s), against 0.3 s of tracing. The axis modes now fetch their tube candidates from the shared shape query service instead (`core/services/shape_query.py`, GPU only), which prepares the same cloud in about 3 s; a whole run went from ~59 s to ~4 s. Results are unchanged — the service only *fetches* candidates (asked for slightly more than the tube), and the grower's own test still decides what is in the tube. The service's GPU state (about 13 bytes a point) is freed when the plugin finishes, or when the extension window closes if it was opened.
+
 ## Growth modes
 
 Selected with the `growth_mode` parameter. All three start from the picked seed points and call the line-RANSAC engine; they differ only in how the region expands.
@@ -142,7 +144,7 @@ Raw points only — needs no upstream features. Best for **isolated thin feature
 1. Take the seeds' dominant (**PCA**) axis — used **only** to order the seeds along the feature and locate the span centre, never as a march heading. (A RANSAC line is the wrong tool here: seeds spanning a *curved* feature aren't collinear, so the fit fails outright and nothing grows. PCA always returns a usable sort axis.)
 2. Anchor at the seed nearest the span centre; take the initial heading from a line fit to the dense **cloud** within one `cylinder_length` of it — a genuine local tangent, independent of how sparsely the seeds were picked.
 3. **March a search cylinder outward from the anchor in both directions.** Each pass traverses half the seed body, reaches the far end, and continues past it, so the picked points obey the *same* cylinder rule as the growth (no single straight fit across the seeds); the two passes share the anchor and tile into one continuous chain. Per step, along the current direction:
-   - Ball-query the KD-tree at a point half a cylinder-length ahead, then keep candidates inside the forward half-cylinder (`0 < along < cylinder_length`, perpendicular distance `< cylinder_radius`).
+   - Ask the shape query service for the points in the search tube ahead (a `Cylinder` from the tip, `reach` long), then keep candidates inside the forward half-cylinder (`0 < along < cylinder_length`, perpendicular distance `< cylinder_radius`).
    - Re-fit a line to the cylinder contents; flip it to keep pointing forward.
    - **Stop** if the direction change exceeds `max_angle` (a bend — e.g. a pole or feature end), fewer than `min_points` fall in the cylinder, or the cylinder is empty.
    - Collect the inliers, then advance the tip by `(1 − cylinder_overlap%)` of a cylinder length, **re-projecting it onto the freshly-fit local axis** so the march stays on the feature through curves. **Show Search Cylinders** draws each step's *actual* selection cylinder (full `cylinder_length` × `cylinder_radius`, along the search direction), faithfully showing where points were selected — so consecutive cylinders overlap when `cylinder_overlap > 0` and step across bends. Repeat (capped at `max_steps = 500` per direction).
@@ -150,7 +152,7 @@ Raw points only — needs no upstream features. Best for **isolated thin feature
 ### Linearity-Connected (`linearity_connected`)
 Requires precomputed linearity. Best for **edges/kerbs embedded in a surface**, where an axis cylinder would leak into the surrounding plane.
 
-Breadth-first expansion over the KD-tree from the seeds: pop a point, query its `neighbor_k` nearest neighbours, and admit any unvisited neighbour whose `linearity ≥ linearity_threshold` into the region (and onto the queue). Traversal only walks through linear points, so it stays on the feature and the queue stays bounded by the feature's size.
+Breadth-first expansion over a `NeighborIndex` from the seeds (built only for this mode): pop a point, query its `neighbor_k` nearest neighbours, and admit any unvisited neighbour whose `linearity ≥ linearity_threshold` into the region (and onto the queue). Traversal only walks through linear points, so it stays on the feature and the queue stays bounded by the feature's size.
 
 ### Hybrid (`hybrid`)
 The Axis-Trace march with the linearity gate additionally applied to candidate points before the per-step line fit. Combines directional ordering with surface-leak resistance — also requires precomputed linearity.

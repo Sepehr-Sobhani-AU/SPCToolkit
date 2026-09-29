@@ -34,6 +34,15 @@
   - **Report (Open / by design, Definition-level):** GPU only is deliberate (`DECISIONS.md` § 2026-09-28): it follows the CLAUDE.md rule "report GPU failure, never silently fall back to CPU", and the kernel is the one definition of "inside", so a point on a shape's edge is decided the same way on every run (pipeline replay). Failures raise `ShapeQueryError` saying what is missing (no CuPy/GPU, or "need about X MB"). Needs ~13 bytes a point on the GPU, +4 once cells are indexed (~2.9 GB at 168M).
   - **↳ If CPU-only machines must run these plugins:** a CPU path is feasible — `NeighborIndex` answered small shapes in 0.3-0.5 ms on the CPU, but 2-45x slower on large ones and with ~2.8 GB more RAM at 168M. It would need its own "inside" test kept identical to the kernel's rounding, or edge points could differ between machines. Reverses a recorded decision → new `DECISIONS.md` entry first.
 
+- Double-check that we really need `NeighborIndex` (`core/services/neighbor_index.py`).
+  - **Report (Open, to check):** after the linear growers moved to the shape query service, its **only** caller is the Linearity-Connected mode of `LinearRegionGrower` (`_grow_linearity_connected`), and even there it is only built when that mode is chosen. `DECISIONS.md` § 2026-09-28 already says it "is to be retired later".
+  - **Why it is still there:** that mode asks one tiny question per point it grows — "radius r around this point" or "the k nearest points" — so thousands to millions of queries. The shape query service costs ~0.5 ms per query and has no k-nearest, so it is the wrong tool for this. `NeighborIndex` costs ~16 s and ~26 bytes a point to build at 60M.
+  - **To check before keeping or removing it:**
+    - Is Linearity-Connected mode actually used? If not, remove the mode and `NeighborIndex` with it.
+    - Could the mode reuse neighbours that already exist? It needs eigenvalues, which were computed from a k-nearest search upstream — if those neighbour lists are kept (or cheap to keep), the growth needs no index at all.
+    - Otherwise, could it grow one whole frontier at a time through the GPU k-nearest backend (`backend_registry.get_knn()`) instead of one point at a time?
+  - If none of these work out, `NeighborIndex` stays, but only for this mode.
+
 ### Not issues — recorded so they are not "fixed" by mistake
 
 - **Polygon selection includes LOD-hidden points, deliberately.** A lasso is an *area* gesture; the region exists independently of how many points were drawn. Returning only rendered points would make `Separate Selected Points` produce a subsample full of holes, with a different result at every zoom level. Storing the polygon + camera matrices makes the re-test exact and reproducible, which is what pipeline replay needs.
