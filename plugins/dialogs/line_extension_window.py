@@ -38,7 +38,6 @@ are noise, so before this nothing could be picked on a result branch. See
 """
 
 import numpy as np
-from scipy.spatial import cKDTree
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QMessageBox, QProgressBar, QSpinBox, QCheckBox
@@ -132,8 +131,6 @@ class LineExtensionWindow(QDialog):
 
         self.result_uid = result_uid
         self.pc_points = pc_points
-        # Built on the first pick and kept; see _pick_index.
-        self._pick_tree = None
         self.lines = list(lines)
         self.grower = grower
         self.params = dict(params)
@@ -771,21 +768,6 @@ class LineExtensionWindow(QDialog):
         if picked is None:
             return np.empty(0, dtype=np.intp)
         return np.intersect1d(picked, np.asarray(self.marked_indices, dtype=np.intp))
-
-    def _pick_index(self):
-        """KD-tree for mapping picked coordinates onto cloud rows, built once.
-
-        Deliberately not the grower's index. That one answers "what lies near
-        this position", one position at a time, thousands of times, which is
-        what a grid is good at. This answers "which row is each of these picked
-        coordinates" for the whole selection at once, and a polygon can leave
-        hundreds of thousands of picks: at 12M points a batch of 100,000 took
-        0.17 s through a tree and 38 s through the grid. Two questions, two
-        indexes.
-        """
-        if self._pick_tree is None:
-            self._pick_tree = cKDTree(self.pc_points)
-        return self._pick_tree
 
     def _extend(self):
         current = self._current()

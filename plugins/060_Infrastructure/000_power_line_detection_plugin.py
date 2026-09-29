@@ -9,7 +9,6 @@ Workflow:
 """
 
 import numpy as np
-from scipy.spatial import cKDTree
 from typing import Dict, Any
 from PyQt5.QtWidgets import QMessageBox
 
@@ -166,7 +165,6 @@ class PowerLineDetectionPlugin(ActionPlugin):
         # sets cost more than the re-test they were merging. `allowed` also
         # keeps the widening inside what the viewer would have let the user
         # pick, so locked clusters and noise cannot become seeds.
-        tree_kd = cKDTree(pc_points)
         seed_indices = selected_cloud_indices(
             viewer_widget, node.uid, pc_points)
         if seed_indices is None:

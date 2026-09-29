@@ -32,7 +32,6 @@ import time
 import threading
 
 import numpy as np
-from scipy.spatial import cKDTree
 from typing import Dict, Any
 from PyQt5.QtWidgets import QMessageBox, QApplication
 from PyQt5.QtCore import Qt
@@ -388,16 +387,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
         Returns the seed groups, or ``None`` when no usable one is found (a
         QMessageBox is shown).
-
-        The KD-tree here is local and dropped on return. It maps a batch of
-        picked coordinates onto cloud rows all at once, which is the one job in
-        this plugin a tree does far better than the grid: a lasso can leave
-        hundreds of thousands of picks, and at 12M points a batch of 100,000
-        took 0.17 s through the tree against 38 s through the grid. The grower
-        below indexes the cloud its own way, for its own kind of question — one
-        point at a time, thousands of times.
         """
-        tree_kd = cKDTree(pc_points)
         seed_indices = selected_cloud_indices(
             viewer_widget, node.uid, pc_points)
         if seed_indices is None:
