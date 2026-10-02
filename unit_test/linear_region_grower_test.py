@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from core.services.linear_region_grower import (
     LinearRegionGrower, AXIS_TRACE, LINEARITY_CONNECTED, HYBRID,
-    debug_vector_features, STOP_SHARP_BEND, STOP_PICKED_END, MarchStop,
+    debug_vector_features, frustums_to_vector_feature, STOP_SHARP_BEND, STOP_PICKED_END, MarchStop,
     lines_to_traces, traces_to_lines, resolved_stop_keys, stop_key,
 )
 
@@ -593,7 +593,7 @@ def test_debug_vector_features_built():
 
     feats = debug_vector_features(g, show_cylinders=True, show_lines=True)
     names = [n for n, _ in feats]
-    assert names == ["search_cylinders", "centerlines"], names
+    assert names == ["search_windows", "search_cylinders", "centerlines"], names
     for _, vf in feats:
         assert vf.geometry_type == "mesh"
         assert vf.geometry["vertices"].shape[1] == 3
@@ -1263,6 +1263,92 @@ def test_traces_round_trip_through_persistence():
         "a trace without stored cylinders should come back with none, not fail"
 
 
+def test_frustum_window_follows_a_tight_curve():
+    """A half-circle of radius 2 m traced with a 0.03 m radius and 0.5 m steps.
+    The curve drifts off each step's heading by the square of the distance, so a
+    fixed 0.03 m cylinder lost it after ~25 deg: the window only held the first
+    ~0.35 m of arc, and the tip advanced off the curve. The frustum widens by
+    max_angle, keeps the curve in view, and the march follows the whole arc
+    (each step turns ~14 deg, inside the 20 deg max_angle)."""
+    rng = np.random.default_rng(5)
+    R = 2.0
+    t = np.linspace(0, np.pi, int(R * np.pi / 0.02))
+    arc = np.stack([R * np.cos(t), R * np.sin(t), np.zeros_like(t)], axis=1)
+    arc += rng.normal(0, 0.003, arc.shape)
+
+    g = LinearRegionGrower(
+        arc, mode=AXIS_TRACE, ransac_threshold=0.03, cylinder_radius=0.03,
+        cylinder_length=0.5, min_points=5, max_angle_deg=20.0,
+    )
+    grown = g.grow(np.where(t < np.radians(15))[0])
+    reached = float(np.degrees(t[grown].max()))
+    print(f"tight curve (R={R} m): reached {reached:.0f} of 180 deg")
+    assert reached > 175.0, f"march lost the curve at {reached:.0f} deg"
+
+
+def test_dense_chunks_in_the_window_do_not_pull_the_line():
+    """A sparse line (one point every 0.05 m — exactly one slice) passing dense
+    chunks of clutter 0.07-0.13 m to one side. The narrow end of the frustum
+    never sees them, but its wide end does, and each chunk holds 30x the line's
+    points in that stretch. Choosing the line by span, not by point count, must
+    keep the march on the line: every line point claimed, no chunk point, and
+    the centerline never pulled sideways."""
+    rng = np.random.default_rng(7)
+    x = np.arange(0, 10, 0.05)
+    line = np.stack([x, np.zeros_like(x), np.zeros_like(x)], axis=1)
+    line += rng.normal(0, 0.003, line.shape)
+    chunks = [np.stack([rng.uniform(cx, cx + 0.3, 300),
+                        rng.uniform(0.07, 0.13, 300),
+                        rng.normal(0, 0.01, 300)], axis=1)
+              for cx in (2.0, 4.0, 6.0)]
+    pts = np.vstack([line] + chunks)
+    n_line = len(line)
+
+    g = LinearRegionGrower(
+        pts, mode=AXIS_TRACE, ransac_threshold=0.03, cylinder_radius=0.03,
+        cylinder_length=0.5, min_points=5, max_angle_deg=20.0,
+    )
+    grown = g.grow(np.arange(10))
+    on_line = int(np.count_nonzero(grown < n_line))
+    on_chunks = int(np.count_nonzero(grown >= n_line))
+    drift = max(abs(float(p[1])) for seg in g.debug_lines for p in seg)
+    print(f"chunks in window: {on_line}/{n_line} line pts, {on_chunks} chunk pts, "
+          f"centerline max |y| {drift:.3f} m")
+    assert on_line == n_line, f"line not fully traced ({on_line}/{n_line})"
+    assert on_chunks == 0, f"{on_chunks} chunk points claimed"
+    assert drift < 0.02, f"centerline pulled {drift:.3f} m toward the chunks"
+
+
+def test_search_windows_are_drawn_as_frustums():
+    """Every march step records the frustum it searched — Tip Radius at the tip,
+    widened by max_angle over the window length — and each line carries them,
+    so the overlay shows the cone each step looked in, not the band it fitted."""
+    points, line_idx = _straight_line_cloud()
+    g = LinearRegionGrower(
+        points, mode=AXIS_TRACE, ransac_threshold=0.05, cylinder_radius=0.1,
+        cylinder_length=1.0, min_points=3, max_angle_deg=20.0,
+    )
+    lines = g.grow_lines([line_idx[:12]])
+    windows = lines[0].windows
+    far = 0.1 + 1.0 * np.tan(np.radians(20.0))
+    assert len(windows) >= len(lines[0].cylinders), \
+        f"{len(windows)} windows for {len(lines[0].cylinders)} fitted steps"
+    for _tip, direction, tip_r, far_r, length in windows:
+        assert abs(tip_r - 0.1) < 1e-9 and abs(far_r - far) < 1e-9, (tip_r, far_r)
+        assert abs(length - 1.0) < 1e-9
+        assert abs(np.linalg.norm(direction) - 1.0) < 1e-6
+
+    vf = frustums_to_vector_feature(windows)
+    verts = vf.geometry["vertices"].reshape(len(windows), 2, 12, 3)
+    tip, direction = np.asarray(windows[0][0]), np.asarray(windows[0][1])
+    for ring, radius in ((verts[0, 0], 0.1), (verts[0, 1], far)):
+        rel = ring - tip
+        perp = rel - np.outer(rel @ direction, direction)
+        assert np.allclose(np.linalg.norm(perp, axis=1), radius, atol=1e-5), \
+            "drawn ring does not match the window radius"
+    print(f"search windows: {len(windows)} frustums, radius 0.1 -> {far:.3f} m")
+
+
 if __name__ == "__main__":
     test_axis_trace_collects_line()
     test_axis_trace_long_curved_seeds()
@@ -1306,4 +1392,7 @@ if __name__ == "__main__":
     test_extension_bridges_to_sparse_picks_below_min_points()
     test_centerline_reaches_the_points_the_march_claimed()
     test_traces_round_trip_through_persistence()
+    test_frustum_window_follows_a_tight_curve()
+    test_dense_chunks_in_the_window_do_not_pull_the_line()
+    test_search_windows_are_drawn_as_frustums()
     print("\nAll linear_region_grower tests passed.")

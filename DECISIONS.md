@@ -6,6 +6,26 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-02 — Linear march: frustum fit window, tip-anchored span-scored line choice
+Curves were cut off: a curve drifts off the heading by the square of the
+distance, so the fixed `cylinder_radius` window held only the first ~0.35 m of a
+2 m-radius arc and the tip advanced off it (stopped after ~25°). The fit window
+is now a frustum — `cylinder_radius` at the tip, widening at `max_angle` — and
+the same arc is followed through 180°. The wide end sees more clutter, so each
+step first **chooses** the line to follow: candidates run from the tip through
+window points (plus the heading), within `max_angle`, ranked by span (slices of
+the window their `cylinder_radius` band reaches, gaps of one slice forgiven),
+ties to the straightest. This partly revisits 2026-07-08: free two-point RANSAC
+stays retired (it locks onto the densest chunk), but an anchored one is used,
+because scoring by span rather than count is what a human sees — a sparse line
+running the whole window beats a dense chunk beside it. 2026-07-09 still holds:
+the step's axis is PCA + centroid of the full band around the chosen line, not
+a threshold stripe. Two variants failed tests and were dropped: span at
+`ransac_threshold` with count tie-break (a scattered patch locked onto an
+arbitrary tilt), and span without forgiving one-slice gaps (a sparse line lost
+slices by chance and a line tilted onto a chunk won). Known limit: a sparse line
+with gaps of two or more slices can still lose to a chunk.
+
 ## 2026-09-29 — Linear growing uses the shape query service; action plugins free it themselves
 The axis-trace and hybrid modes of `LinearRegionGrower` (and so linear region
 growing, power line detection and the extension window) now fetch their tube

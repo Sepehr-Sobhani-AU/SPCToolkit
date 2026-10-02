@@ -18,7 +18,7 @@ The same `LinearRegionGrower` (in `AXIS_TRACE` mode) backs the `power_line_detec
 
 **Output:**
 - A single `Clusters` branch (`linear_region_growing`) over the input cloud: label `0` = the grown feature, `-1` = everything else — the same output shape as [Surface Region Growing](SURFACE_REGION_GROWING.md), ready to classify (cluster → class → DXF layer).
-- If **Show Search Cylinders** / **Show Centerlines** are ticked, render-only `vector_feature` branches (`search_cylinders`, `centerlines`) are added under the result and shown — wireframe geometry, fully controllable in the tree (toggle, delete) like any other branch. Everything drawn lives in a branch; nothing is an ad-hoc viewer overlay.
+- If **Show Search Windows** / **Show Centerlines** are ticked, render-only `vector_feature` branches (`search_windows` and `cylinders`, `centerlines`) are added under the result and shown — wireframe geometry, fully controllable in the tree (toggle, delete) like any other branch. Everything drawn lives in a branch; nothing is an ad-hoc viewer overlay.
 
 Several features can be traced from one selection — the picked points are grouped with DBSCAN (`seed_eps`) and each group grows its own line. After running, the input branch is hidden and the result is shown.
 
@@ -144,10 +144,11 @@ Raw points only — needs no upstream features. Best for **isolated thin feature
 1. Take the seeds' dominant (**PCA**) axis — used **only** to order the seeds along the feature and locate the span centre, never as a march heading. (A RANSAC line is the wrong tool here: seeds spanning a *curved* feature aren't collinear, so the fit fails outright and nothing grows. PCA always returns a usable sort axis.)
 2. Anchor at the seed nearest the span centre; take the initial heading from a line fit to the dense **cloud** within one `cylinder_length` of it — a genuine local tangent, independent of how sparsely the seeds were picked.
 3. **March a search cylinder outward from the anchor in both directions.** Each pass traverses half the seed body, reaches the far end, and continues past it, so the picked points obey the *same* cylinder rule as the growth (no single straight fit across the seeds); the two passes share the anchor and tile into one continuous chain. Per step, along the current direction:
-   - Ask the shape query service for the points in the search tube ahead (a `Cylinder` from the tip, `reach` long), then keep candidates inside the forward half-cylinder (`0 < along < cylinder_length`, perpendicular distance `< cylinder_radius`).
-   - Re-fit a line to the cylinder contents; flip it to keep pointing forward.
-   - **Stop** if the direction change exceeds `max_angle` (a bend — e.g. a pole or feature end), fewer than `min_points` fall in the cylinder, or the cylinder is empty.
-   - Collect the inliers, then advance the tip by `(1 − cylinder_overlap%)` of a cylinder length, **re-projecting it onto the freshly-fit local axis** so the march stays on the feature through curves. **Show Search Cylinders** draws each step's *actual* selection cylinder (full `cylinder_length` × `cylinder_radius`, along the search direction), faithfully showing where points were selected — so consecutive cylinders overlap when `cylinder_overlap > 0` and step across bends. Repeat (capped at `max_steps = 500` per direction).
+   - Ask the shape query service for the points ahead (a `Cylinder` from the tip, `reach` long, wide enough for both regions below). Two regions are cut from them: the **reach-tube** (`search_radius` wide, `reach` long) that gap bridging searches, and the **fit window** — a frustum (a cone with its tip cut off) `cylinder_length` long, `cylinder_radius` wide at the tip and widening forward at `max_angle`. A curve drifts off the heading by the square of the distance, so it soon leaves a fixed-width cylinder; the frustum keeps it in view as long as it turns less than `max_angle` per step.
+   - **Choose the line to follow** (`_choose_line`): candidate lines run from the tip through window points (plus the current heading itself), within `max_angle` of the heading. Each is scored by **span** — how many of the window's 10 slices along the heading hold a point of its `cylinder_radius` band (a slice next to a covered one counts too, so a sparse line is not penalised for gaps of one slice). Ties go to the candidate nearest the heading. Point count plays no part: a dense chunk of clutter beside the feature has more points than a sparse line but fills few slices, and no candidate can run through the chunk's middle because all start at the tip.
+   - **Fit the step** on the band within `cylinder_radius` of the chosen line: PCA direction and centroid, as before, so the axis re-centres on the band. The wide end of the window widens what the march can *see*, not what it takes — the band is what gets fitted, claimed, swept and drawn as a cylinder.
+   - **Stop** if the direction change exceeds `max_angle` (a bend — e.g. a pole or feature end), fewer than `min_points` fall in the window or the band (after trying to bridge a gap), or nothing is ahead at all.
+   - Collect the inliers, then advance the tip by `(1 − cylinder_overlap%)` of a cylinder length, **re-projecting it onto the freshly-fit local axis** so the march stays on the feature through curves. **Show Search Windows** adds two branches: `search_windows` (light green) draws each step's frustum exactly where it searched — so consecutive windows overlap and their wide ends stand off the feature — and `cylinders` (light blue) draws the band each step fitted, chained between the fitted centres. The bands are what trim, rollback and saved traces use; the windows are display only and are not saved with the project. Repeat (capped at `max_steps = 500` per direction).
 
 ### Linearity-Connected (`linearity_connected`)
 Requires precomputed linearity. Best for **edges/kerbs embedded in a surface**, where an axis cylinder would leak into the surrounding plane.
@@ -165,12 +166,12 @@ The Axis-Trace march with the linearity gate additionally applied to candidate p
 |-----------------------|---------|----------------------------------------------------------------------|
 | `growth_mode`         | Axis Trace | Axis Trace / Linearity-Connected / Hybrid (see above).            |
 | `ransac_threshold`    | `0.03`  | Line-RANSAC inlier distance threshold (m).                          |
-| `ransac_iterations`   | `100`   | Max RANSAC hypotheses per line fit (higher = more robust, slower).  |
-| `cylinder_radius`     | `0.03`  | Axis-trace search cylinder radius per step (m).                     |
-| `cylinder_length`     | `0.5`   | Axis-trace search cylinder length per step (m).                     |
+| `ransac_iterations`   | `100`   | Max candidate lines tried per fit — at the seed and at each march step (higher = more robust, slower). |
+| `cylinder_radius`     | `0.03`  | **Tip Radius**: fit-window radius at the tip (m); also the band width fitted around the chosen line. |
+| `cylinder_length`     | `0.5`   | Fit window length per step (m).                                     |
 | `cylinder_overlap`    | `0.0`   | Percent each step's cylinder overlaps the previous (0 = end-to-end … 90). Higher follows curves better, slower. |
 | `min_points`          | `5`     | Stop the axis march below this many points in a cylinder.            |
-| `max_angle`           | `20°`   | Max per-step direction change before the axis march stops.           |
+| `max_angle`           | `20°`   | Max per-step direction change before the axis march stops; also how fast the fit window widens (capped at 80°). |
 | `linearity_threshold` | `0.4`   | Linearity / Hybrid: accept a point only above this linearity.        |
 | `neighbor_k`          | `16`    | Linearity-Connected: k-NN used to expand the region.                |
 | `show_cylinders`      | `off`   | Add the axis-trace search cylinders as a controllable wireframe branch (debug). |

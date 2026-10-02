@@ -51,8 +51,11 @@ class PowerLineDetectionPlugin(ActionPlugin):
                 "default": 0.03,
                 "min": 0.001,
                 "max": 5.0,
-                "label": "Cylinder Radius",
-                "description": "Search cylinder radius per growth step (m)",
+                "label": "Tip Radius",
+                "description": "Radius of the fit window at the tip (m). The "
+                               "window widens forward at Max Angle so curves "
+                               "stay in view. Also the width of the band fitted "
+                               "around the chosen line each step",
             },
             "cylinder_length": {
                 "type": "float",
@@ -86,7 +89,9 @@ class PowerLineDetectionPlugin(ActionPlugin):
                 "min": 1.0,
                 "max": 90.0,
                 "label": "Max Angle (deg)",
-                "description": "Max direction change per step — larger angles stop tracing (pole detection)",
+                "description": "Max direction change per step — larger angles stop "
+                               "tracing (pole detection). Also how fast the fit "
+                               "window widens from the tip",
             },
             "ransac_threshold": {
                 "type": "float",
@@ -102,13 +107,16 @@ class PowerLineDetectionPlugin(ActionPlugin):
                 "min": 10,
                 "max": 1000,
                 "label": "RANSAC Iterations",
-                "description": "Max RANSAC hypotheses per line fit (higher = more robust, slower)",
+                "description": "Max candidate lines tried per fit — at the seed and "
+                               "at each march step (higher = more robust, slower)",
             },
             "show_cylinders": {
                 "type": "bool",
                 "default": False,
-                "label": "Show Search Cylinders",
-                "description": "Overlay the search cylinders used while tracing in the viewer (debug)",
+                "label": "Show Search Windows",
+                "description": "Add two debug branches: the cone-shaped window "
+                               "each step searched, and the cylinder band each "
+                               "step then fitted",
             },
             "show_lines": {
                 "type": "bool",

@@ -48,6 +48,7 @@ from core.services.linear_region_grower import (
     HYBRID,
     centerlines_to_vector_feature,
     cylinders_to_vector_feature,
+    frustums_to_vector_feature,
     lines_to_traces,
     STOP_REASONS,
 )
@@ -116,15 +117,19 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "min": 10,
                 "max": 1000,
                 "label": "RANSAC Iterations",
-                "description": "Max RANSAC hypotheses per line fit (higher = more robust, slower)",
+                "description": "Max candidate lines tried per fit — at the seed and "
+                               "at each march step (higher = more robust, slower)",
             },
             "cylinder_radius": {
                 "type": "float",
                 "default": 0.03,
                 "min": 0.001,
                 "max": 5.0,
-                "label": "Cylinder Radius",
-                "description": "Axis-trace search cylinder radius per step (m)",
+                "label": "Tip Radius",
+                "description": "Radius of the fit window at the tip (m). The "
+                               "window widens forward at Max Angle so curves "
+                               "stay in view. Also the width of the band fitted "
+                               "around the chosen line each step",
             },
             "cylinder_length": {
                 "type": "float",
@@ -171,7 +176,9 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "min": 1.0,
                 "max": 90.0,
                 "label": "Max Angle (deg)",
-                "description": "Max direction change per step before the axis march stops",
+                "description": "Max direction change per step before the axis march "
+                               "stops. Also how fast the fit window widens from "
+                               "the tip",
             },
             "linearity_threshold": {
                 "type": "float",
@@ -193,8 +200,10 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             "show_cylinders": {
                 "type": "bool",
                 "default": False,
-                "label": "Show Search Cylinders",
-                "description": "Overlay the axis-trace search cylinders in the viewer (debug; axis-trace / hybrid only)",
+                "label": "Show Search Windows",
+                "description": "Add two debug branches (axis-trace / hybrid only): "
+                               "the cone-shaped window each step searched, and "
+                               "the cylinder band each step then fitted",
             },
             "show_lines": {
                 "type": "bool",
@@ -527,7 +536,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
     def _build_debug_branches(self, controller, tree_widget, node, result_uid, lines, params):
         """Add the optional debug geometry branches (one centerlines branch, one
-        cylinders branch, and one end-cylinder branch per stop reason), each
+        search-windows and one cylinders branch, and one end-cylinder branch per
+        stop reason), each
         gated by its ``show_*`` box and holding all lines."""
         extras = []
         if params.get("show_lines"):
@@ -536,6 +546,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 vf.cluster_reference = result_uid
                 extras.append(("centerlines", vf))
         if params.get("show_cylinders"):
+            vf = frustums_to_vector_feature(
+                [w for line in lines for w in line.windows])
+            if vf is not None:
+                vf.cluster_reference = result_uid
+                extras.append(("search_windows", vf))
             all_cylinders = [c for line in lines for c in line.cylinders]
             vf = cylinders_to_vector_feature(all_cylinders)
             if vf is not None:
