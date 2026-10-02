@@ -43,7 +43,13 @@
     - Otherwise, could it grow one whole frontier at a time through the GPU k-nearest backend (`backend_registry.get_knn()`) instead of one point at a time?
   - If none of these work out, `NeighborIndex` stays, but only for this mode.
 
-### Not issues — recorded so they are not "fixed" by mistake
+
+- ### Reviews
+
+- Calculated Normal Z by Estimate Normals plugin are between 0 and 1, while I expected -1 to +1. Why?  
+ 
+
+- ### Not issues — recorded so they are not "fixed" by mistake
 
 - **Polygon selection includes LOD-hidden points, deliberately.** A lasso is an *area* gesture; the region exists independently of how many points were drawn. Returning only rendered points would make `Separate Selected Points` produce a subsample full of holes, with a different result at every zoom level. Storing the polygon + camera matrices makes the re-test exact and reproducible, which is what pipeline replay needs.
 - **Single-point click does NOT widen, deliberately.** A click is an *identity* gesture naming one point; the pick tolerance absorbs mouse imprecision and is not a capture radius. Widening it would scale the points-per-click with the LOD factor, silently and with no feedback. The practical route to a specific LOD-hidden point is to zoom in until AUTO-LOD draws it — or, where the point is hidden for a semantic rather than a density reason, to promote it to a visible cluster first, as the line-extension window does with `pick_candidates`.
