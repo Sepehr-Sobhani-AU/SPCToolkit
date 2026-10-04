@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - CuPy is optional
 from config.config import global_variables
 from application.selection_gate import selected_cloud_mask
 from core.entities.vector_feature import VectorFeature
+from core.entities.clusters import is_cluster
 from core.entities.data_node import DataNode
 from plugins.interfaces import ActionPlugin
 
@@ -170,11 +171,11 @@ class MeshDrapePlugin(ActionPlugin):
                 QMessageBox.warning(main_window, "No Selection",
                                     "Nothing is selected in this branch.")
                 return
-            picked_cluster_ids = {int(c) for c in np.unique(cluster_labels[selection])}
-            picked_cluster_ids.discard(-1)
+            picked_cluster_ids = {int(c) for c in np.unique(cluster_labels[selection])
+                                  if is_cluster(c)}
             if not picked_cluster_ids:
                 QMessageBox.warning(main_window, "Noise Pick",
-                                    "Picked points are all noise (label -1). "
+                                    "Picked points are not in any cluster. "
                                     "Pick a clustered point.")
                 return
             subset_mask = np.isin(cluster_labels, np.array(sorted(picked_cluster_ids),

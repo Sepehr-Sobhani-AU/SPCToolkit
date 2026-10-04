@@ -15,7 +15,7 @@ import uuid
 from plugins.interfaces import ActionPlugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
-from core.entities.clusters import Clusters
+from core.entities.clusters import Clusters, UNASSIGNED_LABEL
 from core.services.batch_processor import BatchProcessor
 from config.config import global_variables
 from PyQt5.QtWidgets import QMessageBox, QApplication
@@ -266,8 +266,10 @@ class ClusterByClassPlugin(ActionPlugin):
         print(f"  Target/tile:      {target_points:,}")
         print(f"{'='*60}")
 
-        # Get unique classes
+        # Get unique classes. Unassigned points are not a class: they are not
+        # clustered, and come through as unassigned (see _do_clustering).
         unique_class_ids = np.unique(cluster_labels)
+        unique_class_ids = unique_class_ids[unique_class_ids != UNASSIGNED_LABEL]
         print(f"Found {len(unique_class_ids)} unique classes")
 
         # Show processing overlay
@@ -299,6 +301,8 @@ class ClusterByClassPlugin(ActionPlugin):
         # Initialize output arrays
         output_cluster_labels = np.full(len(points), -1, dtype=np.int32)
         output_class_labels = np.full(len(points), -1, dtype=np.int32)
+        # Unassigned stays unassigned — it was never a class to cluster.
+        output_cluster_labels[cluster_labels == UNASSIGNED_LABEL] = UNASSIGNED_LABEL
         next_cluster_id = 0
 
         # Fixed batch overlap at 10%

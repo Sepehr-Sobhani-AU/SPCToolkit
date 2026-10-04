@@ -17,6 +17,7 @@ from PyQt5.QtGui import QColor
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
+from core.entities.clusters import is_cluster
 from application.selection_gate import selected_cloud_mask
 
 
@@ -86,7 +87,7 @@ class ColorClustersPlugin(ActionPlugin):
             return
 
         # Affected cluster IDs, noise excluded
-        affected_cluster_ids = {cid for cid in np.unique(labels[selection]) if cid != -1}
+        affected_cluster_ids = {cid for cid in np.unique(labels[selection]) if is_cluster(cid)}
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",

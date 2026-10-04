@@ -55,6 +55,7 @@ from PyQt5.QtWidgets import QMessageBox
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from core.entities.point_cloud import PointCloud
+from core.entities.clusters import is_cluster
 from core.entities.data_node import DataNode
 from core.entities.vector_feature import VectorFeature
 from core.services.ransac import fit
@@ -441,7 +442,7 @@ class FitCylinderConePlugin(ActionPlugin):
                     "(Shift+Click or polygon select), then run again.",
                 )
                 return
-            selected_ids = [int(c) for c in np.unique(cluster_labels[selection_mask]) if int(c) != -1]
+            selected_ids = [int(c) for c in np.unique(cluster_labels[selection_mask]) if is_cluster(c)]
             if not selected_ids:
                 QMessageBox.warning(
                     main_window, "No Valid Clusters",

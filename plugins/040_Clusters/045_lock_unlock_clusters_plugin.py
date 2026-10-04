@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QCheckBox, QDialo
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
+from core.entities.clusters import is_cluster
 from application.selection_gate import selected_cloud_mask
 
 
@@ -140,7 +141,7 @@ class LockUnlockClustersPlugin(ActionPlugin):
 
         # Affected cluster IDs, noise excluded
         affected_cluster_ids = set(
-            int(cid) for cid in np.unique(labels[selection]) if cid != -1
+            int(cid) for cid in np.unique(labels[selection]) if is_cluster(cid)
         )
 
         if not affected_cluster_ids:

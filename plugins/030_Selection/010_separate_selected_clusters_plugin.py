@@ -6,6 +6,7 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.masks import Masks
+from core.entities.clusters import is_cluster
 
 
 class SeparateSelectedClustersPlugin(Plugin):
@@ -83,7 +84,15 @@ class SeparateSelectedClustersPlugin(Plugin):
         # Expand the selection to every point sharing a selected cluster id.
         # Vectorized — the old per-point Python loop was O(n) and very slow on
         # 10M+ point clouds.
+        # Only real clusters: an unassigned point is selectable, but "its
+        # cluster" would be the whole unlabelled rest of the cloud.
         selected_cluster_ids = np.unique(cluster_labels[selection_mask])
+        selected_cluster_ids = selected_cluster_ids[is_cluster(selected_cluster_ids)]
+        if selected_cluster_ids.size == 0:
+            raise ValueError(
+                "The selected points are not in any cluster. Select points on "
+                "the clusters you want, then run this plugin."
+            )
         cluster_mask = np.isin(cluster_labels, selected_cluster_ids)
 
         # Create a Masks object with the result

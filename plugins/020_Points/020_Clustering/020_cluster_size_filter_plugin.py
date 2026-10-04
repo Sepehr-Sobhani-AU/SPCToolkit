@@ -6,6 +6,7 @@ from plugins.interfaces import Plugin
 from core.entities.data_node import DataNode
 from core.entities.point_cloud import PointCloud
 from core.entities.masks import Masks
+from core.entities.clusters import NOISE_LABEL, UNASSIGNED_LABEL, is_cluster
 
 
 class ClusterSizeFilterPlugin(Plugin):
@@ -156,10 +157,14 @@ class ClusterSizeFilterPlugin(Plugin):
                 # Create a boolean array where True means the cluster meets the size criteria
                 valid_clusters = point_counts >= min_points
 
-                # Handle noise points (labeled as -1) separately based on include_noise parameter
-                noise_mask = unique_labels == -1
+                # Handle noise points separately based on include_noise parameter
+                noise_mask = unique_labels == NOISE_LABEL
                 if np.any(noise_mask):
                     valid_clusters[noise_mask] = include_noise
+
+                # Unassigned points are not a cluster to judge by size — they
+                # are the rest of the cloud, and pass through untouched.
+                valid_clusters[unique_labels == UNASSIGNED_LABEL] = True
 
                 # Create a mapping from cluster labels to validity status
                 valid_label_dict = dict(zip(unique_labels, valid_clusters))
@@ -172,12 +177,12 @@ class ClusterSizeFilterPlugin(Plugin):
 
                 # Count statistics for reporting
                 kept_points = np.sum(mask)
-                kept_clusters = np.sum(valid_clusters & (unique_labels != -1))
+                kept_clusters = np.sum(valid_clusters & is_cluster(unique_labels))
 
                 # Log information about the filtering
                 print(f"[ClusterSizeFilter] Filtering clusters with less than {min_points} points")
                 print(
-                    f"[ClusterSizeFilter] Original clusters: {len(unique_labels) - (1 if -1 in unique_labels else 0)}")
+                    f"[ClusterSizeFilter] Original clusters: {int(np.sum(is_cluster(unique_labels)))}")
                 print(f"[ClusterSizeFilter] Clusters meeting criteria: {kept_clusters}")
                 print(f"[ClusterSizeFilter] Points kept: {kept_points} out of {len(labels)} "
                       f"({kept_points / len(labels) * 100:.1f}%)")

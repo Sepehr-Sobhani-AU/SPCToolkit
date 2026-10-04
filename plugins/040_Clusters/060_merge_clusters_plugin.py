@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import QMessageBox
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from application.selection_gate import selected_cloud_mask
-from core.entities.clusters import Clusters
+from core.entities.clusters import Clusters, is_cluster
 
 
 class MergeClustersPlugin(ActionPlugin):
@@ -83,7 +83,7 @@ class MergeClustersPlugin(ActionPlugin):
             return
 
         # Affected cluster IDs, noise excluded
-        affected_cluster_ids = {cid for cid in np.unique(labels[selection]) if cid != -1}
+        affected_cluster_ids = {cid for cid in np.unique(labels[selection]) if is_cluster(cid)}
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",

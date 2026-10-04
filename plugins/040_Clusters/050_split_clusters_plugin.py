@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import QMessageBox
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
 from application.selection_gate import selected_cloud_indices
-from core.entities.clusters import Clusters
+from core.entities.clusters import Clusters, is_cluster
 
 
 class SplitClustersPlugin(ActionPlugin):
@@ -89,8 +89,8 @@ class SplitClustersPlugin(ActionPlugin):
         # cluster, so it is never cut and never names a target.
         picked_rows = picked_rows[picked_rows < len(labels)]
         picked_labels = labels[picked_rows]
-        selected_rows = picked_rows[picked_labels != -1]
-        affected_cluster_ids = {cid for cid in np.unique(picked_labels) if cid != -1}
+        selected_rows = picked_rows[is_cluster(picked_labels)]
+        affected_cluster_ids = {cid for cid in np.unique(picked_labels) if is_cluster(cid)}
 
         if not affected_cluster_ids:
             QMessageBox.warning(main_window, "No Valid Clusters",

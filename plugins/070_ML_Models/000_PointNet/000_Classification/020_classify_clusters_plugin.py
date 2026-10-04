@@ -24,7 +24,7 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.entities.clusters import Clusters
+from core.entities.clusters import Clusters, is_cluster
 from models.pointnet.inference import (
     load_model_with_metadata,
     classify_clusters_batch
@@ -240,7 +240,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
                         "Could not retrieve coordinates for the selected points."
                     )
                 selected_cluster_ids = {
-                    cid for cid in np.unique(cluster_labels[selection]) if cid != -1
+                    cid for cid in np.unique(cluster_labels[selection]) if is_cluster(cid)
                 }
 
                 if not selected_cluster_ids:
@@ -255,7 +255,7 @@ class ClassifyClustersMLPlugin(ActionPlugin):
             else:  # All Clusters
                 # Get all unique cluster IDs (excluding noise)
                 unique_clusters = np.unique(cluster_labels)
-                clusters_to_classify = [int(cid) for cid in unique_clusters if cid != -1]
+                clusters_to_classify = [int(cid) for cid in unique_clusters if is_cluster(cid)]
                 print(f"\nProcessing mode: All clusters")
                 print(f"Total clusters: {len(clusters_to_classify)}")
 
