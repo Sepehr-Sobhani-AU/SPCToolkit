@@ -76,16 +76,17 @@ def test_candidate_label_leaves_other_clusters_alone():
     SORTS decides whether the traced lines keep their colours. One above the
     highest appends and disturbs nothing; anything sorting first shifts every
     line's colour each time candidates appear and vanish — the cables would
-    change colour every time the user stepped to another stop."""
+    change colour every time the user stepped to another stop. (-3, not -2:
+    UNASSIGNED_LABEL is -2 and is deliberately kept out of the palette.)"""
     base = [-1, -1, 0, 0, 1, 1]
     before = _cluster_colours(base)
     appended = _cluster_colours(base + [2, 2])       # max + 1
-    prepended = _cluster_colours(base + [-2, -2])    # sorts before everything
+    prepended = _cluster_colours(base + [-3, -3])    # sorts before everything
 
     print("line colours with candidates = max+1: " + ", ".join(
         f"{l}:{'same' if np.allclose(before[l], appended[l]) else 'CHANGED'}"
         for l in (0, 1)))
-    print("line colours with candidates = -2:    " + ", ".join(
+    print("line colours with candidates = -3:    " + ", ".join(
         f"{l}:{'same' if np.allclose(before[l], prepended[l]) else 'CHANGED'}"
         for l in (0, 1)))
 

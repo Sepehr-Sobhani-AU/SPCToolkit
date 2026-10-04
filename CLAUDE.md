@@ -103,6 +103,11 @@ class MyManager:
 - Do NOT use ExitPlanMode for writing/content tasks (LinkedIn posts, documentation drafts) — only for code planning.
 - When committing, split messy working trees into logical, scoped commits rather than one broad commit.
 
+### Cluster Labels
+
+- Two reserved labels in `core/entities/clusters.py`: `NOISE_LABEL = -1` (rejected by a clustering algorithm) and `UNASSIGNED_LABEL = -2` (not labelled yet; keeps the parent's colours and stays selectable). Every label `>= 0` is a real cluster.
+- Use `is_cluster(labels)` and the constants; never compare against `-1` by hand. See PLUGIN_ARCHITECTURE.md §5.
+
 ### Background Threading
 
 - Use Python `threading.Thread` (NOT QThread)

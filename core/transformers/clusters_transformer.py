@@ -6,8 +6,10 @@ This unified task handles both simple clusters (with per-point colors)
 and named clusters (with semantic names and class colors).
 """
 
+import numpy as np
+
 from core.entities.point_cloud import PointCloud
-from core.entities.clusters import Clusters
+from core.entities.clusters import Clusters, UNASSIGNED_LABEL
 
 
 class ClustersTransformer:
@@ -19,7 +21,9 @@ class ClustersTransformer:
     as attributes and visualization colors.
 
     If the Clusters object has cluster_names, colors are determined
-    by the semantic names. Otherwise, per-point colors are used.
+    by the semantic names. Otherwise, per-point colors are used. Either way,
+    UNASSIGNED points keep the parent cloud's own colours, so the part of the
+    cloud nothing has labelled yet looks exactly as it did before.
     """
 
     def __init__(self, point_cloud: PointCloud, clusters: Clusters):
@@ -45,6 +49,8 @@ class ClustersTransformer:
             colors = self.clusters.get_named_colors()
         else:
             colors = self.clusters.colors
+
+        colors = self._keep_parent_colors_where_unassigned(colors)
 
         # Create a NEW point cloud instead of modifying the original
         # This ensures the original point cloud's colors are not changed
@@ -72,3 +78,16 @@ class ClustersTransformer:
             new_point_cloud.attributes["_cluster_colors"] = self.clusters.cluster_colors
 
         return new_point_cloud
+
+    def _keep_parent_colors_where_unassigned(self, colors):
+        """*colors* with UNASSIGNED rows taken from the parent cloud, when it
+        has colours; otherwise they keep the fallback the Clusters gave them."""
+        parent = self.point_cloud.colors
+        if colors is None or parent is None or len(parent) != len(colors):
+            return colors
+        unassigned = self.clusters.labels == UNASSIGNED_LABEL
+        if not np.any(unassigned):
+            return colors
+        colors = np.array(colors, dtype=np.float32, copy=True)
+        colors[unassigned] = parent[unassigned, :3]
+        return colors

@@ -1272,7 +1272,7 @@ class LineExtensionWindow(QDialog):
 
         The new label is one above the highest in use. That matters: colours are
         handed out in sorted label order, so a label that sorts LAST leaves every
-        existing cluster's colour untouched, while one sorting first (-2, say)
+        existing cluster's colour untouched, while one sorting first (-3, say)
         would shift every line's colour each time candidates came and went.
 
         Colouring has to follow whichever scheme the branch uses, and a growth

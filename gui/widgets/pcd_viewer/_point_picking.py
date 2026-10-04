@@ -3,6 +3,8 @@ import numpy as np
 from OpenGL.GL import glReadPixels, GL_DEPTH_COMPONENT, GL_FLOAT
 from OpenGL.GLU import gluProject, gluUnProject
 
+from core.entities.clusters import is_cluster
+
 logger = logging.getLogger(__name__)
 
 
@@ -334,7 +336,9 @@ class PointPickingMixin:
 
         Returns:
             tuple or None: None when nothing is under the cursor, the point's
-            branch carries no cluster labels, or the point is noise (-1).
+            branch carries no cluster labels, or the point is not in a real
+            cluster (noise, or unassigned — picking "the unassigned cluster"
+            would select the whole rest of the cloud).
         """
         clicked_index, _ = self._unproject_mouse_to_nearest_point(mouse_pos)
         if clicked_index is None:
@@ -349,7 +353,7 @@ class PointPickingMixin:
             return None
 
         label = int(labels[row])
-        if label == -1:
+        if not is_cluster(label):
             return None
         return uid, row, label
 

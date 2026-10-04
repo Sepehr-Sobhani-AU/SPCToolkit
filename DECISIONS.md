@@ -6,6 +6,21 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-05 — Reserved label -2 = "unassigned", separate from -1 = noise
+-1 meant "noise" everywhere: dark grey, never selectable. Branches that label
+only part of a cloud (linear region growing's lines) also used -1 for the rest,
+so the rest became unpickable and a flat grey — a user who wants to grow more
+lines from it can neither see it nor pick it. A per-branch flag was rejected
+(the same number meaning two things is exactly what confuses later code);
+instead `UNASSIGNED_LABEL = -2` is a project-wide standard: drawn in the parent
+branch's own colours (white if it has none), selectable, never a cluster. Noise
+is unchanged. -2 was unused. Every label read in the codebase was audited:
+"picked clusters" filters, Cluster Size Filter (passes -2 through), Cluster by
+Class (carries -2 through), Separate Selected Clusters, and click-to-pick-a-
+cluster now skip -2 via `is_cluster()`. -2 takes no slot in the random palette —
+it sorts first, so a slot would recolour every cluster. Only linear region
+growing will write -2 for now; other "rest" producers wait for a real need.
+
 ## 2026-10-02 — Linear march: frustum fit window, tip-anchored span-scored line choice
 Curves were cut off: a curve drifts off the heading by the square of the
 distance, so the fixed `cylinder_radius` window held only the first ~0.35 m of a

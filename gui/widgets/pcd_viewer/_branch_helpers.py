@@ -2,6 +2,7 @@ import logging
 import numpy as np
 
 from config.config import global_variables
+from core.entities.clusters import NOISE_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ class BranchSelectionMixin:
             return False
 
         label = int(labels[row])
-        if label == -1:                       # noise
+        if label == NOISE_LABEL:              # noise; unassigned stays pickable
             return False
 
         info = self._get_cluster_lock_info(uid)

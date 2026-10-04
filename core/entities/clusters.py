@@ -9,6 +9,36 @@ import numpy as np
 from typing import Dict, List, Optional
 
 
+# The two reserved labels. Everything >= 0 is a real cluster.
+#
+# NOISE: a point a clustering algorithm looked at and rejected (DBSCAN/HDBSCAN
+# output). Drawn dark grey, never selectable, never a cluster.
+#
+# UNASSIGNED: a point no step has assigned YET — the rest of the cloud on a
+# branch that labels only some of it (e.g. linear region growing's lines). Drawn
+# in the parent branch's own colours and selectable, so the user can keep
+# picking from it; never a cluster.
+NOISE_LABEL = -1
+UNASSIGNED_LABEL = -2
+
+# Colour for UNASSIGNED points when the parent has no colours of its own — the
+# viewer's default for an uncoloured cloud, so the rest looks like the plain
+# cloud rather than like noise.
+UNASSIGNED_COLOR = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
+
+def is_cluster(labels):
+    """Whether each label is a real cluster — neither noise nor unassigned.
+
+    The one test every consumer should use instead of comparing against -1, so
+    a new reserved label never has to be hunted down across the plugins again.
+    Accepts a scalar (returns bool) or an array (returns a bool array).
+    """
+    if np.isscalar(labels):
+        return int(labels) >= 0
+    return np.asarray(labels) >= 0
+
+
 class Clusters:
     """
     A class for a DataNode's 'data' attribute containing cluster labels and optional colors.
@@ -21,7 +51,9 @@ class Clusters:
 
     Args:
         labels (np.ndarray): Integer array of cluster labels with shape (n_points,).
-                            Label -1 typically indicates noise points.
+                            ``NOISE_LABEL`` (-1) marks noise and
+                            ``UNASSIGNED_LABEL`` (-2) points not assigned yet;
+                            see the module constants.
         colors (np.ndarray, optional): Array of RGB color values with shape (n_points, 3).
                                       Values should be in the range [0, 1].
                                       Defaults to None.
@@ -146,7 +178,9 @@ class Clusters:
         Get color values for all points based on their cluster names.
 
         Uses vectorized lookup table for O(n) performance instead of O(n*k).
-        Requires cluster_names and cluster_colors to be set.
+        Requires cluster_names and cluster_colors to be set. UNASSIGNED points get
+        ``UNASSIGNED_COLOR``; the clusters transformer replaces it with the
+        parent's own colours where the parent has them.
 
         Returns:
             np.ndarray: Array of RGB color values for each point with shape (n_points, 3).
@@ -177,6 +211,7 @@ class Clusters:
         # Apply lookup using vectorized indexing (O(n))
         adjusted_labels = self.labels + offset
         colors = color_lut[adjusted_labels]
+        colors[self.labels == UNASSIGNED_LABEL] = UNASSIGNED_COLOR
 
         return colors.astype(np.float32)
 
@@ -185,7 +220,13 @@ class Clusters:
         Generates random colors for each cluster and assigns them to points.
 
         This method creates a unique random color for each cluster label and
-        assigns a specified color to noise points (label -1).
+        assigns a specified color to noise points (``NOISE_LABEL``).
+
+        UNASSIGNED points take no part in the palette: they get
+        ``UNASSIGNED_COLOR`` (the clusters transformer replaces it with the
+        parent's own colours), and every other label keeps exactly the colour it
+        would have without them. UNASSIGNED sorts before every other label, so
+        giving it a palette slot would shift the colour of every cluster.
 
         Args:
             noise_color (np.ndarray): The RGB color to assign to noise points.
@@ -194,12 +235,16 @@ class Clusters:
         # Get unique labels and their indexes
         unique_labels, label_indexes = np.unique(self.labels, return_inverse=True)
 
-        # Generate random colors for all labels (including -1)
+        # Random colours for every label except UNASSIGNED (noise included, then
+        # overwritten — that keeps the palette order it has always had).
         np.random.seed(42)  # Optional: Set a seed for reproducibility
-        cluster_colors = np.random.rand(len(unique_labels), 3)
+        in_palette = unique_labels != UNASSIGNED_LABEL
+        cluster_colors = np.empty((len(unique_labels), 3))
+        cluster_colors[in_palette] = np.random.rand(int(in_palette.sum()), 3)
+        cluster_colors[~in_palette] = UNASSIGNED_COLOR
 
-        # Assign a color for noise (-1 labels)
-        noise_labels = unique_labels == -1
+        # Assign a color for noise
+        noise_labels = unique_labels == NOISE_LABEL
         cluster_colors[noise_labels] = noise_color
 
         # Assign colors to each point based on their label_indexes
@@ -227,7 +272,7 @@ class Clusters:
         if self.cluster_names:
             for label_val, idx_in_unique in zip(unique_labels, range(len(unique_labels))):
                 cid = int(label_val)
-                if cid in self.cluster_names and cid != -1:
+                if cid in self.cluster_names and is_cluster(cid):
                     name = self.cluster_names[cid]
                     # Use custom color if set, otherwise the random color
                     if cid in self.custom_colors:
@@ -236,8 +281,8 @@ class Clusters:
                         self.cluster_colors[name] = np.array(cluster_colors[idx_in_unique], dtype=np.float32)
 
     def __repr__(self):
-        n_clusters = len(np.unique(self.labels[self.labels != -1]))
-        n_noise = np.sum(self.labels == -1)
+        n_clusters = len(np.unique(self.labels[is_cluster(self.labels)]))
+        n_noise = np.sum(self.labels == NOISE_LABEL)
         has_colors = self.colors is not None
         has_names = self.has_names()
 

@@ -24,6 +24,8 @@ from typing import Optional
 
 import numpy as np
 from PyQt5.QtCore import Qt
+
+from core.entities.clusters import NOISE_LABEL
 from PyQt5.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
@@ -130,7 +132,8 @@ def selectable_cloud_indices(node, n_points=None):
     """Which rows of *node*'s cloud the viewer would let the user select.
 
     A point is admissible unless its cluster is locked against selection, or it
-    is noise. The viewer applies this once, in cloud space, as each selection
+    is noise. Unassigned points (``UNASSIGNED_LABEL``) ARE admissible — they are
+    the part of the cloud still open for picking. The viewer applies this once, in cloud space, as each selection
     gesture completes — see ``PCDViewerWidget.selectable_cloud_mask``, which
     wraps this so there is one definition of "selectable" rather than two.
 
@@ -164,7 +167,7 @@ def selectable_cloud_indices(node, n_points=None):
         )
         return None
 
-    admissible = labels != -1                       # noise is never selectable
+    admissible = labels != NOISE_LABEL              # noise is never selectable
     locked = getattr(clusters, "locked_clusters", None) or {}
     locked_ids = [cid for cid, locks in locked.items() if "select" in locks]
     if locked_ids:

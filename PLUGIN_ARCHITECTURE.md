@@ -214,6 +214,19 @@ from an empty array: report it to the user rather than running on nothing. The
 viewer never stores an all-False mask, so `None` is the only way "nothing"
 arrives.
 
+**Reserved labels.** `core/entities/clusters.py` reserves two labels; every
+label `>= 0` is a real cluster. Test with `is_cluster(labels)` and the named
+constants — never compare against `-1` by hand.
+
+| Label | Constant | Meaning | Colour | Selectable |
+|---|---|---|---|---|
+| `-1` | `NOISE_LABEL` | rejected by a clustering algorithm (DBSCAN/HDBSCAN) | dark grey | no |
+| `-2` | `UNASSIGNED_LABEL` | not labelled *yet* — the rest of the cloud on a branch that labels only part of it | the parent branch's own colours (white if it has none) | yes |
+
+A plugin that acts on "the clusters the user picked" must drop both: an
+unassigned point can be selected, but "its cluster" would be the whole
+unlabelled rest of the cloud.
+
 Noise and clusters locked against selection are already excluded when the
 selection is made, so there is no gate for a plugin to pass — the `allowed=`
 argument callers used to have to remember is gone, along with
