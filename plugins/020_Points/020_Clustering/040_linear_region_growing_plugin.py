@@ -247,6 +247,16 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         }
 
     def execute(self, main_window, params: Dict[str, Any]) -> None:
+        # Every phase reports in the status bar — not only the growing itself.
+        # Growing a few lines takes a moment; reading the cloud, relabelling
+        # every point and redrawing take longer on a large cloud, and with
+        # nothing shown the run looked like it had not started.
+        try:
+            self._run(main_window, params)
+        finally:
+            main_window.clear_progress()
+
+    def _run(self, main_window, params: Dict[str, Any]) -> None:
         controller = global_variables.global_application_controller
         viewer_widget = global_variables.global_pcd_viewer_widget
         tree_widget = global_variables.global_tree_structure_widget
@@ -254,6 +264,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         mode = _MODE_MAP.get(params.get("growth_mode", "Axis Trace"), AXIS_TRACE)
 
         # --- Validate + reconstruct the selected branch ---
+        main_window.show_progress("Linear region growing: reading the cloud...")
         prep = self._validate_and_reconstruct(controller, viewer_widget, main_window, mode, params)
         if prep is None:
             return
@@ -261,6 +272,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         pc_points = point_cloud.points
 
         # --- Map the picked seeds and group them into separate lines ---
+        main_window.show_progress("Linear region growing: grouping the picked seeds...")
         seeds = self._resolve_seed_groups(viewer_widget, pc_points, params,
                                           main_window, node=node)
         if seeds is None:
@@ -304,6 +316,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 return
 
             # --- Write the lines: a new result branch, or into the selected one ---
+            main_window.show_progress(
+                f"Linear region growing: writing {len(lines)} line(s)...")
             resolved = set()
             if existing is None:
                 result_uid, labels = self._build_result_branch(
@@ -321,9 +335,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                             result_uid, all_lines, lines, params)
 
             # --- Render and clear selection ---
+            main_window.show_progress("Linear region growing: drawing...")
             main_window.render_visible_data(zoom_extent=False)
             viewer_widget.clear_selection()
 
+            main_window.clear_progress()
             self._show_summary(main_window, labels, lines, stopped_early,
                                n_before=len(all_lines) - len(lines))
 
@@ -332,6 +348,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             # cheapest right now while the grower and the picks are still to hand.
             # Declining is fine: the stops are persisted on the result branch, so
             # "Extend Traced Lines" reopens this on the saved branch at any time.
+            main_window.show_progress("Linear region growing: checking line ends...")
             handed_over = self._offer_extension(
                 main_window, result_uid, pc_points, all_lines, lines, grower,
                 params, resolved)
@@ -356,6 +373,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         if promising == 0:
             return False
 
+        main_window.clear_progress()
         answer = QMessageBox.question(
             main_window, "Extend Traced Lines?",
             f"{promising} of the traced line ends have unclaimed points just "
