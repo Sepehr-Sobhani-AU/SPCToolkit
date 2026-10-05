@@ -75,6 +75,11 @@ class KeyInputEventHandler:
             main_window = global_variables.global_main_window
             if main_window:
                 main_window.execute_action_plugin("merge_clusters")
+        elif event.key() == Qt.Key_Space:
+            # Space: run the previous menu plugin again
+            main_window = global_variables.global_main_window
+            if main_window:
+                main_window.repeat_last_plugin()
         elif event.key() == Qt.Key_Delete:
             main_window = global_variables.global_main_window
             if main_window:

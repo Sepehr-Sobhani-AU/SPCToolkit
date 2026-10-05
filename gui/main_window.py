@@ -35,6 +35,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Set up the main window components
         self.menus = {}  # Dictionary to store menu/submenu references
         self.actions = {}  # Dictionary to store action references
+        self._last_plugin_name = None  # Last plugin opened from a menu (Space re-runs it)
 
         # Standard components as before
         self.setWindowTitle("SPCToolkit")
@@ -454,6 +455,7 @@ class MainWindow(QtWidgets.QMainWindow):
         prompted (non-modally) before the run proceeds. See
         ``_gate_selection_then``.
         """
+        self._last_plugin_name = plugin_name
         if self.plugin_manager.is_action_plugin(plugin_name):
             # Action plugin: collects its own params inside execute_action_plugin.
             self._gate_selection_then(
@@ -467,6 +469,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._start_analysis(plugin_name, params)
 
             self._gate_selection_then(plugin_name, _proceed)
+
+    def repeat_last_plugin(self):
+        """Open the last plugin run from a menu again (Space shortcut).
+
+        Ignored while a plugin is running (the menu bar is disabled then) or
+        when nothing has been run yet.
+        """
+        if self._last_plugin_name is None or not self.menubar.isEnabled():
+            return
+        self.open_dialog_box(self._last_plugin_name)
 
     def _gate_selection_then(self, plugin_name, proceed):
         """Run ``proceed`` once the plugin's required selection is available.
