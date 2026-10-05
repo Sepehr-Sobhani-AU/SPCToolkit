@@ -158,6 +158,8 @@ class ExtendLinesPlugin(ActionPlugin):
             overlap=params.get("cylinder_overlap", 0.0) / 100.0,
             min_points=params.get("min_points", 5),
             max_angle_deg=params.get("max_angle", 20.0),
+            # Absent on traces grown before Min Angle existed: one fixed cone.
+            min_angle_deg=params.get("min_angle"),
             linearity=linearity,
             linearity_threshold=params.get("linearity_threshold", 0.4),
             neighbor_k=params.get("neighbor_k", 16),

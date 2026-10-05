@@ -180,15 +180,26 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "label": "Min Points",
                 "description": "Stop the axis march if fewer points found in a cylinder",
             },
+            "min_angle": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.0,
+                "max": 90.0,
+                "label": "Min Angle (deg)",
+                "description": "Every step first searches a narrow cone at this "
+                               "angle — little clutter, so the cleanest fit where "
+                               "the line is clear. 0 = a plain cylinder",
+            },
             "max_angle": {
                 "type": "float",
                 "default": 20.0,
                 "min": 1.0,
                 "max": 90.0,
                 "label": "Max Angle (deg)",
-                "description": "Max direction change per step before the axis march "
-                               "stops. Also how fast the fit window widens from "
-                               "the tip",
+                "description": "When the narrow cone loses the line (after trying "
+                               "to bridge a gap), the cone opens step by step up "
+                               "to this angle. Also the largest turn per step "
+                               "before the march stops",
             },
             "linearity_threshold": {
                 "type": "float",
@@ -268,6 +279,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             overlap=params.get("cylinder_overlap", 0.0) / 100.0,
             min_points=params.get("min_points", 5),
             max_angle_deg=params.get("max_angle", 20.0),
+            min_angle_deg=params.get("min_angle"),
             linearity=linearity,
             linearity_threshold=params.get("linearity_threshold", 0.4),
             neighbor_k=params.get("neighbor_k", 16),

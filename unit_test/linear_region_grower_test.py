@@ -1381,6 +1381,63 @@ def test_blocked_points_are_seen_but_not_claimed():
     assert g._blocked is None, "blocked mask outlived the grow_lines call"
 
 
+def test_narrow_cone_first_keeps_off_a_dense_branch():
+    """A sparse straight line (a point every 0.12 m) with a dense branch
+    leaving it at 10 deg. A single 20 deg cone sees the branch as a full-length
+    line and turns onto it, abandoning the line at the fork; starting every
+    step with a 5 deg cone keeps the branch out of view, so the march stays on
+    the line. Only the few branch points right at the fork are taken."""
+    rng = np.random.default_rng(1)
+    x = np.arange(0, 10, 0.12)
+    line = np.stack([x, np.zeros_like(x), np.zeros_like(x)], axis=1)
+    s = np.arange(0, 6, 0.01)
+    a = np.radians(10.0)
+    branch = np.stack([3 + s * np.cos(a), s * np.sin(a), np.zeros_like(s)], axis=1)
+    pts = np.vstack([line, branch]) + rng.normal(0, 0.003, (len(x) + len(s), 3))
+    n_line = len(x)
+    seeds = np.where(pts[:n_line, 0] < 1.0)[0]
+
+    def run(min_angle):
+        g = LinearRegionGrower(
+            pts, mode=AXIS_TRACE, ransac_threshold=0.03, cylinder_radius=0.03,
+            cylinder_length=0.5, min_points=3, max_angle_deg=20.0,
+            min_angle_deg=min_angle,
+        )
+        got = g.grow(seeds)
+        return (float(pts[got[got < n_line], 0].max()),
+                int(np.count_nonzero(got >= n_line)))
+
+    single = run(None)
+    narrow_first = run(5.0)
+    print(f"dense branch: single 20 deg cone -> line to x={single[0]:.1f}, "
+          f"{single[1]} branch pts; 5->20 deg -> line to x={narrow_first[0]:.1f}, "
+          f"{narrow_first[1]} branch pts")
+    assert single[1] > 100, "setup wrong: the single wide cone was expected to take the branch"
+    assert narrow_first[0] > 9.5, f"left the line at x={narrow_first[0]:.1f}"
+    assert narrow_first[1] < 50, f"took {narrow_first[1]} branch points"
+
+
+def test_widening_still_follows_a_tight_curve():
+    """Each step of a 2 m radius arc turns ~14 deg — more than the 5 deg cone
+    allows — so every step must open up and then start narrow again."""
+    rng = np.random.default_rng(5)
+    R = 2.0
+    t = np.linspace(0, np.pi, int(R * np.pi / 0.02))
+    arc = np.stack([R * np.cos(t), R * np.sin(t), np.zeros_like(t)], axis=1)
+    arc += rng.normal(0, 0.003, arc.shape)
+    g = LinearRegionGrower(
+        arc, mode=AXIS_TRACE, ransac_threshold=0.03, cylinder_radius=0.03,
+        cylinder_length=0.5, min_points=5, max_angle_deg=20.0, min_angle_deg=5.0,
+    )
+    grown = g.grow(np.where(t < np.radians(15))[0])
+    reached = float(np.degrees(t[grown].max()))
+    widths = sorted({round(float(w[3]), 3) for w in g.debug_windows})
+    print(f"widening on a curve: reached {reached:.0f} of 180 deg, "
+          f"window far radii used {widths}")
+    assert reached > 175.0, f"lost the curve at {reached:.0f} deg"
+    assert len(widths) > 1, "never widened — the curve should need it"
+
+
 if __name__ == "__main__":
     test_axis_trace_collects_line()
     test_axis_trace_long_curved_seeds()
@@ -1428,4 +1485,6 @@ if __name__ == "__main__":
     test_dense_chunks_in_the_window_do_not_pull_the_line()
     test_search_windows_are_drawn_as_frustums()
     test_blocked_points_are_seen_but_not_claimed()
+    test_narrow_cone_first_keeps_off_a_dense_branch()
+    test_widening_still_follows_a_tight_curve()
     print("\nAll linear_region_grower tests passed.")

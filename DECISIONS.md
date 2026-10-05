@@ -6,6 +6,19 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-05 — Linear march: narrow cone first, bridge, then widen to max_angle
+One fixed cone was a compromise: wide enough for curves, it also saw any dense
+feature within max_angle, and a sparse line lost to a branch (measured: points
+0.12 m apart, a dense branch at 10 deg — a 20 deg cone turned onto it). Each
+step now tries `min_angle` first. Too few points → bridge a gap along the
+heading first (the user's call: a gap is the likelier cause); no gap, or the
+line turns more than the cone allows → widen in 4 levels to `max_angle`. The
+next step starts narrow again — simple; starting from the last angle that
+worked is the upgrade if steady curves prove slow. The bend limit follows the
+cone the line was found in, so a wide search cannot find a turn the bend check
+then rejects. `min_angle` absent (older traces, power line detection) = one
+fixed `max_angle` cone, exactly the previous behaviour.
+
 ## 2026-10-05 — Linear growing adds to its result branch; lines are locked, never re-claimed
 Every run used to make a new result branch with its own debug sub-branches, and
 a second run could grow over — or reseed from — the first run's lines. Now a

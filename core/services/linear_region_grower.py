@@ -103,6 +103,12 @@ _SEED_FIT_MIN_INLIER_RATIO = 0.2
 # half-space.
 _MAX_WIDEN_DEG = 80.0
 
+# How many cone angles a step may try, from min_angle to max_angle inclusive.
+# A step starts with the narrowest cone — least clutter, so the cleanest fit
+# where the line is clear — and opens up a level at a time only when that finds
+# nothing it can follow.
+_WIDEN_LEVELS = 4
+
 # Slices the fit window is cut into along the heading to score a candidate
 # line. A candidate scores by how many slices hold its inliers — how much of the
 # window it SPANS — and only then by how many inliers it has. A dense chunk
@@ -179,6 +185,17 @@ GrownLine = namedtuple(
 # and those ends are exactly the ones worth re-seeding.
 MarchStop = namedtuple("MarchStop", ["tip", "direction", "reason"])
 
+# One march step's attempt at a fit window.
+#   band_mask: candidates within cylinder_radius of the chosen line, or None
+#              when no line could be chosen or too few points surround it.
+#   fit_dir / fit_point: the step's fitted axis (None without a band).
+#   bent:      the window held a line, but it turns more than the cone allows.
+class _Step(namedtuple("_Step", ["band_mask", "fit_dir", "fit_point", "bent"])):
+    @property
+    def ok(self):
+        return self.band_mask is not None and not self.bent
+
+
 # The outcome of continuing a trace past one of its stops.
 #   line:    the extended GrownLine (picks always included — see
 #            extend_from_stop; the user picking a point IS the statement that it
@@ -223,9 +240,15 @@ class LinearRegionGrower:
             march looks this far ahead for the next points, so a short fit window
             still bridges gaps in fragmented features. 1.0 = no bridging.
         min_points: Stop the axis march if fewer points fall in the cylinder.
-        max_angle_deg: Max direction change per step before stopping (deg).
-            Also how fast the fit window widens from the tip (see
-            ``_MAX_WIDEN_DEG``).
+        max_angle_deg: The widest the fit window opens (deg), and the largest
+            turn a step may take before the march stops on a bend.
+        min_angle_deg: The angle every step tries first (deg) — a narrow cone,
+            clean where the line is clear. When it finds too few points the
+            march bridges the gap first; when that fails, or the line turns
+            more than the cone allows, the step widens in ``_WIDEN_LEVELS``
+            levels up to *max_angle_deg*, and the next step starts narrow again.
+            A step may turn as far as the cone it was found in. None (default)
+            uses *max_angle_deg* alone, i.e. a single fixed cone.
         max_steps: Safety cap on axis-march steps per direction.
         linearity: ``(N,)`` per-point linearity, required for the linearity
             modes. Consumed from upstream eigenvalues; never computed here.
@@ -249,6 +272,7 @@ class LinearRegionGrower:
         reach_factor: float = 3.0,
         min_points: int = 5,
         max_angle_deg: float = 20.0,
+        min_angle_deg: float = None,
         max_steps: int = 500,
         linearity: np.ndarray = None,
         linearity_threshold: float = 0.4,
@@ -279,9 +303,14 @@ class LinearRegionGrower:
         # bridge gaps in fragmented features. 1.0 disables bridging.
         self.reach_factor = max(1.0, reach_factor)
         self.min_points = min_points
-        self.max_angle_cos = np.cos(np.radians(max_angle_deg))
-        # How much wider the fit window gets per metre forward of the tip.
-        self.widen_rate = np.tan(np.radians(min(max_angle_deg, _MAX_WIDEN_DEG)))
+        # The cone angles a step tries, narrowest first, and for each the turn
+        # it allows (cos) and how much wider the window gets per metre (tan).
+        lo = max_angle_deg if min_angle_deg is None else min(min_angle_deg,
+                                                              max_angle_deg)
+        self.angle_levels = np.unique(np.linspace(lo, max_angle_deg, _WIDEN_LEVELS))
+        self.angle_cos = np.cos(np.radians(self.angle_levels))
+        self.angle_tan = np.tan(np.radians(np.minimum(self.angle_levels,
+                                                      _MAX_WIDEN_DEG)))
         self.max_steps = max_steps
         # Samples candidate lines when a window holds more than max_iterations
         # points. Seeded, so the same cloud and parameters trace the same line.
@@ -1242,96 +1271,88 @@ class LinearRegionGrower:
         for _ in range(self.max_steps):
             if self._cancel_event is not None and self._cancel_event.is_set():
                 break  # cooperative cancel — keep whatever was collected so far
-            self.debug_windows.append((
-                current_tip.copy(), current_dir.copy(), self.cylinder_radius,
-                self.cylinder_radius + self.cylinder_length * self.widen_rate,
-                self.cylinder_length,
-            ))
             tube = self._query_tube(
                 current_tip, current_dir, reach,
                 use_linearity_gate,
             )
-            if tube is None:  # nothing within reach / nothing in the tube
+            if tube is None:  # nothing within reach, even in the widest cone
+                self._record_window(current_tip, current_dir,
+                                    len(self.angle_levels) - 1)
                 reason = STOP_EMPTY_SPACE
                 break
-            (candidate_idx, pts, along, perp_dist,
-             tube_mask, window_mask) = tube
+            candidate_idx, pts, along, perp_dist, tube_mask, gate = tube
 
-            # Choose the line this step follows from the frustum fit window,
-            # then fit on the band within cylinder_radius of that line. The band
-            # — not the whole window — is what gets FITTED, claimed and drawn as
-            # a cylinder, so the window's wide far end widens what the march can
-            # SEE without widening what it takes.
-            band_mask = None
-            bent = False
-            if np.count_nonzero(window_mask) >= self.min_points:
-                line_dir, bent = self._choose_line(
-                    pts, along, window_mask, current_tip, current_dir)
-                if line_dir is not None:
-                    band_mask = window_mask & (
-                        self._dist_to_line(pts, current_tip, line_dir)
-                        < self.cylinder_radius)
-                    if np.count_nonzero(band_mask) < self.min_points:
-                        band_mask = None
-            if band_mask is not None:
-                band = pts[band_mask]
-                fit_dir, fit_point = self._fit_step(band, current_dir)
-                # A genuine (measured) bend of the fitted axis.
-                bent = np.dot(fit_dir, current_dir) < self.max_angle_cos
+            def window(level):
+                return self._window_mask(along, perp_dist, gate, level)
 
-            if bent:
-                # Keep the points still hugging the CURRENT heading before
-                # giving up — they are on this line even though the window's
-                # fitted axis turned away (the turn is usually caused by
-                # something else entering the window). Mirrors the
-                # too-few-points branch below; without it a bend throws away
-                # up to a full window of genuine members.
+            # The narrowest cone first: where the line is clear it has the
+            # least clutter in it, so the cleanest fit.
+            level = 0
+            step = self._fit_window(pts, along, window(0), current_tip,
+                                    current_dir, 0)
+            # Points on the current heading belong to the line whatever this
+            # step decides — kept when the march bridges or stops here.
+            near_on_axis = window(0) & (perp_dist < self.ransac_threshold)
+
+            if step.band_mask is None and not step.bent:
+                # Too few points: most likely a gap. Bridge to a continuation
+                # further along the SAME heading before looking wider.
+                next_tip = self._bridge_gap(current_tip, current_dir, pts, along,
+                                            tube_mask, candidate_idx)
+                if next_tip is not None:
+                    self._record_window(current_tip, current_dir, 0)
+                    collected.update(int(i) for i in candidate_idx[near_on_axis])
+                    current_tip = next_tip
+                    just_bridged = True
+                    continue
+
+            # No gap to bridge (or the line turned more than this cone allows):
+            # open the cone a level at a time until a line is found. The next
+            # step starts narrow again.
+            while not step.ok and level + 1 < len(self.angle_levels):
+                level += 1
+                step = self._fit_window(pts, along, window(level), current_tip,
+                                        current_dir, level)
+            self._record_window(current_tip, current_dir, level)
+
+            if not step.ok:
+                # Even the widest cone found nothing to follow. Keep the points
+                # still hugging the CURRENT heading — they are on this line
+                # even though no window here could be fitted (the turn is
+                # usually caused by something else entering the window);
+                # without it a stop throws away up to a full window of genuine
+                # members.
                 #
                 # Deliberately NOT recorded as swept: a bend often means a
                 # second feature crosses here, and marking its neighbourhood
                 # swept would consume that feature's seed group.
-                collected.update(
-                    int(i) for i in candidate_idx[window_mask
-                                                  & (perp_dist < self.ransac_threshold)]
-                )
-                reason = STOP_SHARP_BEND  # direction turned more than max_angle
+                collected.update(int(i) for i in candidate_idx[near_on_axis])
+                # A bend: the line turned more than max_angle. Otherwise there
+                # were too few points and no continuation within reach.
+                reason = STOP_SHARP_BEND if step.bent else STOP_TOO_FEW_POINTS
                 break
 
-            if band_mask is not None:
-                near_idx = candidate_idx[band_mask]
-                # The whole band was swept, not just the points close enough to
-                # the axis to become members.
-                self._swept_chunks.append(near_idx)
-                collected.update(
-                    self._collect_members(band, near_idx, fit_point, fit_dir)
-                )
-                # Record on the midpoint chain. A segment spanning a just-bridged
-                # gap gets no cylinder (nothing was searched inside the gap).
-                self._record_step(prev_mid, fit_point,
-                                  record_cylinder=not just_bridged)
-                prev_mid = fit_point
-                just_bridged = False
-                # Far end of this fitted line, for extending the final segment.
-                last_end = fit_point + float(
-                    ((band - fit_point) @ fit_dir).max()) * fit_dir
-                current_tip = self._advance_tip(current_tip, fit_point, fit_dir)
-                current_dir = fit_dir
-
-            else:
-                # Too few points in the fit window, or around any line through
-                # it: an empty gap, a sparse/scattered patch, or a genuine turn.
-                # Keep any near on-axis points (they belong to the line) and try
-                # to bridge to a real continuation further along the SAME heading.
-                near_on_axis = window_mask & (perp_dist < self.ransac_threshold)
-                collected.update(int(i) for i in candidate_idx[near_on_axis])
-
-                next_tip = self._bridge_gap(current_tip, current_dir, pts, along,
-                                            tube_mask, candidate_idx)
-                if next_tip is None:
-                    reason = STOP_TOO_FEW_POINTS  # no band continuation within reach
-                    break
-                current_tip = next_tip
-                just_bridged = True
+            band_mask = step.band_mask
+            band = pts[band_mask]
+            fit_dir, fit_point = step.fit_dir, step.fit_point
+            near_idx = candidate_idx[band_mask]
+            # The whole band was swept, not just the points close enough to
+            # the axis to become members.
+            self._swept_chunks.append(near_idx)
+            collected.update(
+                self._collect_members(band, near_idx, fit_point, fit_dir)
+            )
+            # Record on the midpoint chain. A segment spanning a just-bridged
+            # gap gets no cylinder (nothing was searched inside the gap).
+            self._record_step(prev_mid, fit_point,
+                              record_cylinder=not just_bridged)
+            prev_mid = fit_point
+            just_bridged = False
+            # Far end of this fitted line, for extending the final segment.
+            last_end = fit_point + float(
+                ((band - fit_point) @ fit_dir).max()) * fit_dir
+            current_tip = self._advance_tip(current_tip, fit_point, fit_dir)
+            current_dir = fit_dir
 
         # Extend the final segment from the last midpoint to the end of the last
         # fitted line, so the centerline (and its tube) reach the feature's end
@@ -1376,18 +1397,22 @@ class LinearRegionGrower:
     def _query_tube(self, tip, direction, reach, use_linearity_gate):
         """Search ahead of *tip* and project candidates onto the current heading.
 
-        Returns ``(candidate_idx, pts, along, perp_dist, tube_mask,
-        window_mask)`` for the points found ahead, or ``None`` when nothing is
-        within reach or nothing falls inside either region (the caller stops
-        with STOP_EMPTY_SPACE). Two regions, two jobs:
+        Returns ``(candidate_idx, pts, along, perp_dist, tube_mask, gate)`` for
+        the points found ahead, or ``None`` when nothing is within reach or
+        nothing falls inside either region (the caller stops with
+        STOP_EMPTY_SPACE). Two regions, two jobs:
 
         - ``tube_mask`` — the reach-tube, ``search_radius`` wide, searched out
           to the full reach so points across a gap are visible to the bridge.
-        - ``window_mask`` — the fit window: a frustum ``cylinder_length`` long,
-          ``cylinder_radius`` wide at the tip and widening at ``max_angle``.
+        - the fit window — a frustum ``cylinder_length`` long, ``cylinder_radius``
+          wide at the tip, widening at one of ``angle_levels``. Cut per level by
+          ``_window_mask``; fetched here at the widest level, so one query
+          serves every level a step tries.
+
+        ``gate`` is the per-candidate linearity gate (all True outside HYBRID).
         """
         window_far_radius = (self.cylinder_radius
-                             + self.cylinder_length * self.widen_rate)
+                             + self.cylinder_length * self.angle_tan[-1])
         candidate_idx = self._tube_candidates(
             tip, direction, max(self.search_radius, window_far_radius), reach)
         if candidate_idx.size == 0:
@@ -1403,15 +1428,51 @@ class LinearRegionGrower:
         perp_dist = np.linalg.norm(perp, axis=1)
 
         tube_mask = (along > 0) & (along <= reach) & (perp_dist < self.search_radius)
-        window_mask = ((along > 0) & (along <= self.cylinder_length)
-                       & (perp_dist < self.cylinder_radius + along * self.widen_rate))
-        if use_linearity_gate:
-            linear = self.linearity[candidate_idx] >= self.linearity_threshold
-            tube_mask &= linear
-            window_mask &= linear
-        if not np.any(tube_mask | window_mask):
+        gate = (self.linearity[candidate_idx] >= self.linearity_threshold
+                if use_linearity_gate else np.ones(len(candidate_idx), dtype=bool))
+        tube_mask &= gate
+        if not (np.any(tube_mask)
+                or np.any(self._window_mask(along, perp_dist, gate, -1))):
             return None
-        return candidate_idx, pts, along, perp_dist, tube_mask, window_mask
+        return candidate_idx, pts, along, perp_dist, tube_mask, gate
+
+    def _window_mask(self, along, perp_dist, gate, level):
+        """The fit window at cone angle ``angle_levels[level]``: a frustum
+        ``cylinder_length`` long, ``cylinder_radius`` wide at the tip."""
+        widen = self.angle_tan[level]
+        return (gate & (along > 0) & (along <= self.cylinder_length)
+                & (perp_dist < self.cylinder_radius + along * widen))
+
+    def _fit_window(self, pts, along, window_mask, tip, current_dir, level):
+        """Choose and fit this step's line inside one fit window.
+
+        Returns a ``_Step``: ``ok`` when a line was found and turns no more than
+        this level's angle; otherwise ``bent`` tells a turn (the window held a
+        line, but it turned too far) from too few points.
+        """
+        cos_limit = self.angle_cos[level]
+        if np.count_nonzero(window_mask) < self.min_points:
+            return _Step(None, None, None, False)
+        line_dir, bent = self._choose_line(pts, along, window_mask, tip,
+                                           current_dir, cos_limit)
+        if line_dir is None:
+            return _Step(None, None, None, bent)
+        band_mask = window_mask & (self._dist_to_line(pts, tip, line_dir)
+                                   < self.cylinder_radius)
+        if np.count_nonzero(band_mask) < self.min_points:
+            return _Step(None, None, None, False)
+        fit_dir, fit_point = self._fit_step(pts[band_mask], current_dir)
+        # A genuine (measured) bend of the fitted axis.
+        return _Step(band_mask, fit_dir, fit_point,
+                     bool(np.dot(fit_dir, current_dir) < cos_limit))
+
+    def _record_window(self, tip, direction, level):
+        """Record the fit window a step ended up searching, for display."""
+        self.debug_windows.append((
+            tip.copy(), direction.copy(), self.cylinder_radius,
+            self.cylinder_radius + self.cylinder_length * self.angle_tan[level],
+            self.cylinder_length,
+        ))
 
     def _tube_candidates(self, tip, direction, radius, length):
         """Rows that may lie in the tube of *radius* running *length* from *tip*
@@ -1440,13 +1501,13 @@ class LinearRegionGrower:
         dist = np.linalg.norm(self.all_points[rows] - centre, axis=1)
         return rows[dist <= radius]
 
-    def _choose_line(self, pts, along, window_mask, tip, current_dir):
+    def _choose_line(self, pts, along, window_mask, tip, current_dir, cos_limit):
         """Choose the line this step follows through the fit window.
 
         Returns ``(direction, bent)``: the unit direction of the chosen line
         through *tip*, or ``None`` with ``bent=False`` when no window point is
         far enough ahead to aim at, or ``None`` with ``bent=True`` when every
-        candidate turns more than max_angle off *current_dir*.
+        candidate turns further off *current_dir* than *cos_limit* allows.
 
         A RANSAC whose candidates are anchored at the tip and scored by span:
 
@@ -1456,7 +1517,7 @@ class LinearRegionGrower:
           chunk outnumbers the line, and its best line runs through it — the
           failure that retired the per-step RANSAC, DECISIONS 2026-07-08.) The
           current heading is always a candidate too.
-        - Candidates more than max_angle off the heading are dropped.
+        - Candidates turning more than this cone's angle are dropped.
         - Candidates are ranked by SPAN: how many of the window's
           ``_N_SLICES`` slices along the heading hold a point of their band
           (within cylinder_radius — the band the step will fit). Point count
@@ -1479,7 +1540,7 @@ class LinearRegionGrower:
         if len(aim) == 0:
             return None, False
         dirs = aim / np.linalg.norm(aim, axis=1)[:, None]
-        dirs = dirs[dirs @ current_dir >= self.max_angle_cos]
+        dirs = dirs[dirs @ current_dir >= cos_limit]
         if len(dirs) == 0:
             return None, True
         if len(dirs) > self.max_iterations:
