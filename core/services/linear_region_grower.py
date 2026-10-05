@@ -317,6 +317,14 @@ class LinearRegionGrower:
         # the caller owns the event (e.g. global_variables.global_cancel_event).
         self._cancel_event = None
 
+        # Per-point flag for points the march may SEE but never CLAIM — those
+        # already on another line. Set for the duration of a grow_lines() call
+        # (see its *blocked* argument); None otherwise, which claims freely.
+        # Seeing them matters: where a new cable crosses an old one, the
+        # crossing points still steer the fit and keep the window from reading
+        # as a gap, they just stay with the line that has them.
+        self._blocked = None
+
         # Point indices the march may bridge a gap to even when too few of them
         # to satisfy min_points — the points the user picked during a guided
         # extension. Set for the duration of extend_from_stop(); None otherwise,
@@ -369,12 +377,19 @@ class LinearRegionGrower:
             region = self._grow_linearity_connected(seed_indices)
             # No march, so no wider search region: the region IS what was swept.
             self._swept_chunks = [region]
-            return region
+            return self._drop_blocked(region)
         # AXIS_TRACE and HYBRID both march along the axis; HYBRID adds the gate.
-        return self._grow_axis_trace(
+        return self._drop_blocked(self._grow_axis_trace(
             seed_indices, use_linearity_gate=(self.mode == HYBRID),
             only_direction=only_direction,
-        )
+        ))
+
+    def _drop_blocked(self, indices):
+        """*indices* without the points another line already holds."""
+        if self._blocked is None:
+            return indices
+        indices = np.asarray(indices, dtype=np.intp)
+        return indices[~self._blocked[indices]]
 
     @property
     def index(self) -> NeighborIndex:
@@ -940,7 +955,8 @@ class LinearRegionGrower:
         )
         return Extension(extended, new_stops[-1] if new_stops else stop, marched)
 
-    def grow_lines(self, seed_groups, *, progress_cb=None, cancel_event=None) -> list:
+    def grow_lines(self, seed_groups, *, progress_cb=None, cancel_event=None,
+                   blocked=None) -> list:
         """
         Grow one line per physical feature, greedily, largest cluster first.
 
@@ -975,6 +991,11 @@ class LinearRegionGrower:
         when set the method stops early and returns the lines grown so far
         (partial result). Both default off, so existing callers are unaffected.
 
+        *blocked*, if given, is an ``(N,)`` bool mask of points already on
+        another line — typically the lines of an earlier run on the same branch.
+        Growth sees them (they steer the fit and bridge a crossing) but never
+        claims them, so a new line never takes points from an existing one.
+
         Returns a list of ``GrownLine``, one per physical line.
         """
         pool = [np.asarray(g, dtype=np.intp) for g in seed_groups
@@ -982,6 +1003,8 @@ class LinearRegionGrower:
         lines = []
         total = len(pool)
         self._cancel_event = cancel_event
+        self._blocked = (None if blocked is None
+                         else np.asarray(blocked, dtype=bool))
 
         # Everything the KEPT lines have swept, as a per-point flag (cheap to
         # test, and cumulative — a cluster half-covered by one line and half by
@@ -1042,6 +1065,7 @@ class LinearRegionGrower:
                                 f"{len(pool)} seed group(s) left")
         finally:
             self._cancel_event = None
+            self._blocked = None
         return lines
 
     def _join_centerline(self, segments):
@@ -1328,7 +1352,8 @@ class LinearRegionGrower:
         # Only ever LENGTHENS the chain along the heading already travelled — it
         # cannot move or reroute a segment the march fitted.
         if collected:
-            idx = np.fromiter(collected, dtype=np.intp, count=len(collected))
+            idx = self._drop_blocked(
+                np.fromiter(collected, dtype=np.intp, count=len(collected)))
             reach_out = (self.all_points[idx] - prev_mid) @ current_dir
             if reach_out.size and float(reach_out.max()) > _TAIL_MIN_GAIN:
                 tail = self.all_points[idx[int(np.argmax(reach_out))]]
@@ -1872,6 +1897,25 @@ def segments_to_vector_feature(segments, color=None):
         "Centerlines", verts, edges,
         _CENTERLINE_COLOR if color is None else color,
     )
+
+
+def merge_wireframes(existing, added):
+    """One wireframe VectorFeature holding both *existing* and *added*, in
+    *existing*'s name and colour. Either may be None.
+
+    For debug geometry that is drawn but not persisted (search windows, stop
+    markers): a later run on the same branch cannot rebuild the earlier run's
+    copy, so it appends to it instead.
+    """
+    if existing is None or added is None:
+        return added if existing is None else existing
+    old_v = np.asarray(existing.geometry["vertices"])
+    new_v = np.asarray(added.geometry["vertices"])
+    edges = np.vstack([np.asarray(existing.geometry["edges"]),
+                       np.asarray(added.geometry["edges"]) + len(old_v)])
+    return _wireframe_vector_feature(existing.symbol_type,
+                                     np.vstack([old_v, new_v]), edges,
+                                     existing.color)
 
 
 def _wireframe_vector_feature(symbol_type, verts, edges, color):

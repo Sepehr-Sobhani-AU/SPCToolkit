@@ -1349,6 +1349,38 @@ def test_search_windows_are_drawn_as_frustums():
     print(f"search windows: {len(windows)} frustums, radius 0.1 -> {far:.3f} m")
 
 
+def test_blocked_points_are_seen_but_not_claimed():
+    """Growing into a result that already has a line: a new cable crossing it
+    must march straight through the crossing — the old line's points still
+    steer the fit and keep the window from reading as a gap — but every one of
+    them stays with the old line."""
+    rng = np.random.default_rng(13)
+    x = np.linspace(-10, 10, 400)
+    first = np.stack([x, np.zeros_like(x), np.zeros_like(x)], axis=1)
+    second = np.stack([np.zeros_like(x), x, np.zeros_like(x)], axis=1)
+    pts = np.vstack([first, second]) + rng.normal(0, 0.003, (800, 3))
+    first_idx = np.arange(400)
+    second_idx = np.arange(400, 800)
+
+    g = LinearRegionGrower(
+        pts, mode=AXIS_TRACE, ransac_threshold=0.03, cylinder_radius=0.03,
+        cylinder_length=0.5, min_points=3, max_angle_deg=20.0,
+    )
+    blocked = np.zeros(len(pts), dtype=bool)
+    blocked[first_idx] = True
+    seeds = second_idx[pts[second_idx, 1] < -8.0]           # one end of the 2nd
+    lines = g.grow_lines([seeds], blocked=blocked)
+
+    grown = lines[0].indices
+    taken = np.intersect1d(grown, first_idx).size
+    reached = float(pts[np.intersect1d(grown, second_idx), 1].max())
+    print(f"blocked: second line reached y={reached:.1f}, "
+          f"took {taken} of the first line's points")
+    assert taken == 0, f"took {taken} points that belong to the first line"
+    assert reached > 9.5, f"stopped at the crossing (reached y={reached:.1f})"
+    assert g._blocked is None, "blocked mask outlived the grow_lines call"
+
+
 if __name__ == "__main__":
     test_axis_trace_collects_line()
     test_axis_trace_long_curved_seeds()
@@ -1395,4 +1427,5 @@ if __name__ == "__main__":
     test_frustum_window_follows_a_tight_curve()
     test_dense_chunks_in_the_window_do_not_pull_the_line()
     test_search_windows_are_drawn_as_frustums()
+    test_blocked_points_are_seen_but_not_claimed()
     print("\nAll linear_region_grower tests passed.")
