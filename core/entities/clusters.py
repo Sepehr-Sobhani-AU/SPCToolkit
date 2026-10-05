@@ -84,7 +84,8 @@ class Clusters:
         cluster_colors: Optional[Dict[str, np.ndarray]] = None,
         locked_clusters: Optional[Dict[int, set]] = None,
         custom_colors: Optional[Dict[int, np.ndarray]] = None,
-        line_traces: Optional[Dict] = None
+        line_traces: Optional[Dict] = None,
+        tint_locked: bool = True
     ):
         # Type conversion
         self.labels = labels.astype(np.int32)
@@ -94,6 +95,11 @@ class Clusters:
         self.locked_clusters = locked_clusters if locked_clusters is not None else {}
         self.custom_colors = custom_colors if custom_colors is not None else {}
         self.line_traces = line_traces if line_traces is not None else {}
+        # Whether locked clusters are tinted grey-blue. On by default as feedback
+        # for a lock the user chose; off where locks are automatic and every
+        # cluster carries one (linear region growing locks each line against
+        # selection), since tinting them all would only wash the result out.
+        self.tint_locked = tint_locked
 
         # Validate labels
         if not isinstance(self.labels, np.ndarray):
@@ -135,7 +141,31 @@ class Clusters:
         if name == "line_traces":
             self.line_traces = {}
             return self.line_traces
+        if name == "tint_locked":
+            self.tint_locked = True
+            return self.tint_locked
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def __setstate__(self, state):
+        """Unpickle, then bring an old linear-region-growing result up to date.
+
+        Those results were saved with the rest of the cloud as -1 and their lines
+        unlocked: on load the rest could not be picked, so no further line could
+        be grown from it. Their -1 never meant noise — linear growing does not
+        produce noise, it labels the lines and leaves the rest — so it becomes
+        UNASSIGNED, and each line is locked against selection the way a fresh
+        result is. Identified by its line traces; every other branch loads as
+        saved.
+        """
+        self.__dict__.update(state)
+        traces = self.__dict__.get("line_traces")
+        if not (isinstance(traces, dict) and "lines" in traces):
+            return
+        self.labels[self.labels == NOISE_LABEL] = UNASSIGNED_LABEL
+        locked = self.__dict__.setdefault("locked_clusters", {})
+        for label in np.unique(self.labels[is_cluster(self.labels)]):
+            locked.setdefault(int(label), set()).add("select")
+        self.tint_locked = False
 
     def has_names(self) -> bool:
         """Check if this Clusters object has semantic names assigned."""
@@ -259,7 +289,7 @@ class Clusters:
                     point_colors[mask] = self.custom_colors[cid]
 
         # Tint locked clusters to provide visual feedback
-        if self.locked_clusters:
+        if self.locked_clusters and self.tint_locked:
             lock_tint = np.array([0.4, 0.5, 0.6], dtype=np.float32)
             for label_val, idx_in_unique in zip(unique_labels, range(len(unique_labels))):
                 if int(label_val) in self.locked_clusters:
