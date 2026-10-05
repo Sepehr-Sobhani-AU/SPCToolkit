@@ -98,9 +98,9 @@ def test_candidate_label_leaves_other_clusters_alone():
 
 
 def test_labelling_candidates_makes_them_selectable():
-    """The regression this whole feature turns on. Unclaimed points are -1 and
-    the viewer refuses them, so nothing can be picked to extend into. Giving the
-    candidates a label of their own is what lifts that."""
+    """Noise (-1) is refused by the viewer; giving a point a label of its own
+    lifts that, and only for that point. (Unclaimed points on a linear-growing
+    result are UNASSIGNED now, not noise — this pins the rule itself.)"""
     labels = np.array([0, 0, -1, -1, -1])
     _install_branch(labels)
     viewer = _StubViewer(len(labels))
@@ -208,7 +208,8 @@ def test_offering_and_withdrawing_leaves_the_branch_as_it_was():
     """
     from plugins.dialogs.line_extension_window import LineExtensionWindow as W
 
-    labels = np.array([0, 0, -1, -1, -1, -1], dtype=np.int32)
+    # Unclaimed points on a linear-growing result are UNASSIGNED (-2).
+    labels = np.array([0, 0, -2, -2, -2, -2], dtype=np.int32)
     clusters = Clusters(labels=labels.copy())
     clusters.set_random_color()
     before_labels = clusters.labels.copy()

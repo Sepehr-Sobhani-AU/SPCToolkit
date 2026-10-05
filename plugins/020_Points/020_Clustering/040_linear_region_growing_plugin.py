@@ -13,7 +13,13 @@ Workflow:
    growth mode (axis trace, linearity-connected, or hybrid). Grown groups that
    turn out to be the same physical line are joined back together.
 3. The result is one Clusters branch over the input cloud: label 0, 1, 2, … = the
-   grown lines, -1 = everything else.
+   grown lines, -2 (UNASSIGNED) = everything else, drawn in the input's own
+   colours. Each line is locked against selection.
+4. Running again with that result branch selected grows MORE lines into it:
+   pick seeds on the unassigned points (the locked lines cannot be picked), and
+   the new lines are added after the existing ones. Growth sees the existing
+   lines' points but never claims them. Clusters > Undo Cluster Edit reverts the
+   last run.
 
 Several lines can be traced from a single selection. Optionally, each line's
 joined centerline (a polyline) and search cylinders are added as their own
@@ -28,6 +34,7 @@ Growth modes:
   recomputed here.
 """
 
+import copy
 import time
 import threading
 
@@ -38,7 +45,7 @@ from PyQt5.QtCore import Qt
 
 from plugins.interfaces import ActionPlugin
 from config.config import global_variables
-from core.entities.clusters import Clusters
+from core.entities.clusters import Clusters, UNASSIGNED_LABEL, is_cluster
 from core.entities.point_cloud import PointCloud
 from core.services.eigenvalue_utils import EigenvalueUtils
 from core.services.linear_region_grower import (
@@ -50,6 +57,9 @@ from core.services.linear_region_grower import (
     cylinders_to_vector_feature,
     frustums_to_vector_feature,
     lines_to_traces,
+    merge_wireframes,
+    resolved_stop_keys,
+    traces_to_lines,
     STOP_REASONS,
 )
 from plugins.dialogs.line_extension_window import LineExtensionWindow
@@ -236,7 +246,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         prep = self._validate_and_reconstruct(controller, viewer_widget, main_window, mode, params)
         if prep is None:
             return
-        selected_uid, node, point_cloud, linearity = prep
+        selected_uid, node, point_cloud, linearity, existing = prep
         pc_points = point_cloud.points
 
         # --- Map the picked seeds and group them into separate lines ---
@@ -267,7 +277,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         # window frees it when it closes (see LinearRegionGrower.release).
         handed_over = False
         try:
-            lines, stopped_early = self._grow_threaded(main_window, grower, seed_groups)
+            # Growing into an existing result: its lines' points steer growth
+            # but are never taken from them.
+            blocked = None if existing is None else is_cluster(existing.labels)
+            lines, stopped_early = self._grow_threaded(main_window, grower,
+                                                       seed_groups, blocked)
             if lines is None:  # error during grow — message already shown
                 return
             if not lines:
@@ -277,17 +291,29 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                     else "Cancelled before any line was grown.")
                 return
 
-            # --- Build the result Clusters branch and optional debug branches ---
-            result_uid, labels = self._build_result_branch(
-                controller, tree_widget, selected_uid, node, pc_points, lines, params
-            )
-            self._build_debug_branches(controller, tree_widget, node, result_uid, lines, params)
+            # --- Write the lines: a new result branch, or into the selected one ---
+            resolved = set()
+            if existing is None:
+                result_uid, labels = self._build_result_branch(
+                    controller, tree_widget, selected_uid, node, pc_points, lines, params
+                )
+                all_lines = lines
+                self._build_debug_branches(controller, tree_widget, node,
+                                           result_uid, lines, params)
+            else:
+                result_uid = selected_uid
+                all_lines, labels, resolved = self._expand_result_branch(
+                    controller, node, lines, params)
+                input_node = controller.get_node(str(node.parent_uid))
+                self._update_debug_branches(controller, tree_widget, input_node,
+                                            result_uid, all_lines, lines, params)
 
             # --- Render and clear selection ---
             main_window.render_visible_data(zoom_extent=False)
             viewer_widget.clear_selection()
 
-            self._show_summary(main_window, labels, lines, stopped_early)
+            self._show_summary(main_window, labels, lines, stopped_early,
+                               n_before=len(all_lines) - len(lines))
 
             # --- Offer to walk the stops and extend the traces that fell short ---
             # Growth almost never reaches the end of every feature, and the fix is
@@ -295,20 +321,24 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             # Declining is fine: the stops are persisted on the result branch, so
             # "Extend Traced Lines" reopens this on the saved branch at any time.
             handed_over = self._offer_extension(
-                main_window, result_uid, pc_points, lines, grower, params)
+                main_window, result_uid, pc_points, all_lines, lines, grower,
+                params, resolved)
         finally:
             if not handed_over:
                 grower.release()
 
-    def _offer_extension(self, main_window, result_uid, pc_points, lines, grower, params):
-        """Open the guided-extension window if any line stopped somewhere worth
-        looking at. Returns True when the window was opened — it then owns the
-        grower, and releases it on close."""
+    def _offer_extension(self, main_window, result_uid, pc_points, all_lines,
+                         new_lines, grower, params, resolved):
+        """Open the guided-extension window if any line this run grew stopped
+        somewhere worth looking at. The window gets ALL the branch's lines — it
+        rewrites the branch from them — but only this run's are asked about.
+        Returns True when the window was opened — it then owns the grower, and
+        releases it on close."""
         claimed = np.zeros(len(pc_points), dtype=bool)
-        for line in lines:
+        for line in all_lines:
             claimed[line.indices] = True
         promising = sum(
-            1 for line in lines for stop in line.stops
+            1 for line in new_lines for stop in line.stops
             if grower.unclaimed_ahead(stop, claimed).size > 0
         )
         if promising == 0:
@@ -326,7 +356,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         if answer != QMessageBox.Yes:
             return False
 
-        window = LineExtensionWindow(result_uid, pc_points, lines, grower, params,
+        window = LineExtensionWindow(result_uid, pc_points, all_lines, grower,
+                                     params, resolved=resolved,
                                      parent=main_window)
         window.show()
         # Held on the main window so Python does not garbage-collect a modeless
@@ -342,8 +373,14 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         """Validate the selection + picks, reconstruct the branch, and consume
         upstream linearity for the linearity modes.
 
-        Returns ``(selected_uid, node, point_cloud, linearity)`` or ``None`` when
-        a check fails (a QMessageBox has been shown).
+        When the selected branch is itself a linear-region-growing result, the
+        run grows MORE lines into it: the cloud reconstructed is its input (the
+        cloud its labels index, exactly as Extend Traced Lines does), and
+        ``existing`` is its Clusters. Otherwise ``existing`` is None and a new
+        result branch is made under the selected one.
+
+        Returns ``(selected_uid, node, point_cloud, linearity, existing)`` or
+        ``None`` when a check fails (a QMessageBox has been shown).
         """
         # --- Validate: one branch selected ---
         selected_branches = controller.selected_branches
@@ -371,12 +408,21 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                 "or Shift+Click.")
             return None
 
-        # --- Reconstruct selected branch ---
+        # --- Reconstruct the cloud to grow in ---
+        existing = node.data if self._is_linear_result(node) else None
+        source_uid = str(node.parent_uid) if existing is not None else selected_uid
         try:
-            point_cloud = controller.reconstruct(selected_uid)
+            point_cloud = controller.reconstruct(source_uid)
         except Exception as e:
             QMessageBox.critical(main_window, "Reconstruction Error",
                                  f"Failed to reconstruct branch:\n{str(e)}")
+            return None
+        if existing is not None and len(existing.labels) != len(point_cloud.points):
+            QMessageBox.warning(
+                main_window, "Branch Changed",
+                f"This result has {len(existing.labels):,} labels but its input "
+                f"cloud now reconstructs to {len(point_cloud.points):,} points, so "
+                f"the two no longer line up. Run the growth on the input cloud.")
             return None
 
         # --- Consume upstream linearity for the linearity-based modes ---
@@ -392,7 +438,16 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 return None
             linearity = EigenvalueUtils().compute_geometric_features(eigenvalues)["linearity"]
 
-        return selected_uid, node, point_cloud, linearity
+        return selected_uid, node, point_cloud, linearity, existing
+
+    @staticmethod
+    def _is_linear_result(node):
+        """Whether *node* is a result of this plugin — a Clusters branch
+        carrying line traces — and so the place a new run adds its lines."""
+        if node is None or node.data_type != "cluster_labels":
+            return False
+        traces = getattr(node.data, "line_traces", None)
+        return isinstance(traces, dict) and "lines" in traces
 
     def _resolve_seed_groups(self, viewer_widget, pc_points, params, main_window,
                              node=None):
@@ -441,13 +496,14 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
         return seed_groups
 
-    def _grow_threaded(self, main_window, grower, seed_groups):
+    def _grow_threaded(self, main_window, grower, seed_groups, blocked=None):
         """Run ``grower.grow_lines`` on a daemon thread with a status-bar progress
         bar and cancel button (matching surface_region_growing's UX).
 
         Returns ``(lines, stopped_early)``. ``lines`` is ``None`` on error (a
         QMessageBox has been shown); on cancel it holds whatever was grown before
-        the user stopped, and ``stopped_early`` is True.
+        the user stopped, and ``stopped_early`` is True. *blocked* is passed
+        through to ``grow_lines`` (points growth may see but not claim).
         """
         main_window.disable_menus()
         main_window.disable_tree()
@@ -464,7 +520,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         def _work():
             try:
                 state["lines"] = grower.grow_lines(
-                    seed_groups, progress_cb=_progress, cancel_event=cancel_event
+                    seed_groups, progress_cb=_progress, cancel_event=cancel_event,
+                    blocked=blocked,
                 )
             except Exception as e:
                 state["error"] = str(e)
@@ -497,19 +554,18 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
     def _build_result_branch(self, controller, tree_widget, selected_uid, node,
                              pc_points, lines, params):
-        """Build the one Clusters branch (label per line, -1 = rest), register it,
-        and toggle visibility (hide input, show result). Returns
+        """Build the one Clusters branch (label per line, UNASSIGNED = rest),
+        register it, and toggle visibility (hide input, show result). Returns
         ``(result_uid, labels)``."""
-        labels = np.full(len(pc_points), -1, dtype=np.int32)
-        cluster_names = {}
-        for k, line in enumerate(lines):
-            labels[line.indices] = k
-            cluster_names[k] = f"Line {k + 1}"
+        labels = self._labels_for(lines, len(pc_points))
+        cluster_names = {k: f"Line {k + 1}" for k in range(len(lines))}
         # Carry the stops and centerlines on the result so a short trace can be
         # continued in a later session without re-growing it (see
         # Clusters.line_traces and the Extend Traced Lines plugin).
         clusters = Clusters(labels=labels, cluster_names=cluster_names,
-                            line_traces=lines_to_traces(lines, params))
+                            line_traces=lines_to_traces(lines, params),
+                            tint_locked=False)
+        self._lock_lines(clusters, range(len(lines)))
         clusters.set_random_color()
 
         result_uid = controller.add_analysis_result(
@@ -533,6 +589,57 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         tree_widget.blockSignals(False)
 
         return result_uid, labels
+
+    @staticmethod
+    def _labels_for(lines, n_points):
+        """Per-point labels: line k's points get k, everything else UNASSIGNED."""
+        labels = np.full(n_points, UNASSIGNED_LABEL, dtype=np.int32)
+        for k, line in enumerate(lines):
+            labels[line.indices] = k
+        return labels
+
+    @staticmethod
+    def _lock_lines(clusters, labels):
+        """Lock these lines against selection, so the next seeds can only be
+        picked from what is still unassigned. Not tinted (``tint_locked`` is off):
+        every line carries the lock, and tinting them all would only wash the
+        result out."""
+        for label in labels:
+            clusters.locked_clusters.setdefault(int(label), set()).add("select")
+
+    def _expand_result_branch(self, controller, node, new_lines, params):
+        """Add *new_lines* to the existing result branch *node*, in place.
+
+        The lines already there keep their labels, names (a line classified as
+        "Cable" stays "Cable"), colours and settled stops; the new ones follow
+        them. The previous Clusters is kept for Clusters > Undo Cluster Edit, so
+        a run that grew the wrong thing can be taken back in one step.
+
+        Returns ``(all_lines, labels, resolved)`` — every line on the branch,
+        the new labels, and the stops already dismissed as real ends.
+        """
+        clusters = node.data
+        controller._cluster_undo[str(node.uid)] = copy.deepcopy(clusters)
+
+        old_lines = traces_to_lines(clusters.line_traces, clusters.labels)
+        resolved = resolved_stop_keys(clusters.line_traces)
+        all_lines = old_lines + list(new_lines)
+        added = range(len(old_lines), len(all_lines))
+
+        clusters.labels = self._labels_for(all_lines, len(clusters.labels))
+        for k in added:
+            clusters.cluster_names[k] = f"Line {k + 1}"
+        self._lock_lines(clusters, added)
+        clusters.tint_locked = False
+        # The traces carry ONE set of growth parameters, read back by Extend
+        # Traced Lines to rebuild the grower — the latest run's, so extending
+        # continues under the settings last chosen.
+        clusters.line_traces = lines_to_traces(all_lines, params, resolved=resolved)
+        clusters.set_random_color()
+
+        controller.cache_service.invalidate(str(node.uid))
+        controller.cache_service.invalidate_descendants(str(node.uid))
+        return all_lines, clusters.labels, resolved
 
     def _build_debug_branches(self, controller, tree_widget, node, result_uid, lines, params):
         """Add the optional debug geometry branches (one centerlines branch, one
@@ -574,6 +681,13 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                     vf.cluster_reference = result_uid
                     extras.append((f"stop_{reason}", vf))
 
+        self._add_debug_branches(controller, tree_widget, node, result_uid,
+                                 extras, params)
+
+    def _add_debug_branches(self, controller, tree_widget, node, result_uid,
+                            extras, params):
+        """Add each ``(name, feature)`` in *extras* as a visible branch under the
+        result. *node* is the input cloud the geometry depends on."""
         if not extras:
             return
 
@@ -591,10 +705,68 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             tree_widget.visibility_status[vf_uid] = True
         tree_widget.blockSignals(False)
 
-    def _show_summary(self, main_window, labels, lines, stopped_early):
+    def _update_debug_branches(self, controller, tree_widget, input_node,
+                               result_uid, all_lines, new_lines, params):
+        """Bring the debug branches of an expanded result up to date.
+
+        Centerlines and cylinders are rebuilt from every line (the traces carry
+        both), so a branch already there always matches the lines. Search
+        windows and stop markers are not saved, so the earlier runs' copies
+        cannot be rebuilt — this run's geometry is appended to them instead.
+        Branches that do not exist yet are created only when this run's dialog
+        asked for them, and the appended kinds only grow when it did.
+        """
+        result_node = controller.get_node(result_uid)
+        children = {child.params: (uid, child)
+                    for uid, child in controller.data_nodes.data_nodes.items()
+                    if child.parent_uid == result_node.uid}
+
+        wanted = []
+        if params.get("show_lines") or "centerlines" in children:
+            wanted.append(("centerlines", centerlines_to_vector_feature(
+                [line.centerline for line in all_lines])))
+        if params.get("show_cylinders") or "cylinders" in children:
+            wanted.append(("cylinders", cylinders_to_vector_feature(
+                [c for line in all_lines for c in line.cylinders])))
+
+        def appended(name, feature):
+            old = children.get(name, (None, None))[1]
+            return name, merge_wireframes(None if old is None else old.data, feature)
+
+        if params.get("show_cylinders"):
+            wanted.append(appended("search_windows", frustums_to_vector_feature(
+                [w for line in new_lines for w in line.windows])))
+        if params.get("show_end_cylinders"):
+            by_reason = {}
+            for line in new_lines:
+                for reason, cyl in line.end_cylinders:
+                    by_reason.setdefault(reason, []).append(cyl)
+            for reason, cyls in by_reason.items():
+                label, color = STOP_REASONS.get(
+                    reason, (reason, np.array([1.0, 1.0, 1.0], dtype=np.float32)))
+                wanted.append(appended(f"stop_{reason}", cylinders_to_vector_feature(
+                    cyls, color=color, symbol_type=f"Stop: {label}")))
+
+        new_branches = []
+        for name, feature in wanted:
+            if feature is None:
+                continue
+            feature.cluster_reference = result_uid
+            if name in children:
+                uid, child = children[name]
+                child.data = feature
+                controller.cache_service.invalidate(str(uid))
+            else:
+                new_branches.append((name, feature))
+        self._add_debug_branches(controller, tree_widget, input_node, result_uid,
+                                 new_branches, params)
+
+    def _show_summary(self, main_window, labels, lines, stopped_early, n_before=0):
         """Show the completion message: feature/rest counts and per-line stop
-        reasons, noting if the user cancelled."""
-        n_feature = int((labels >= 0).sum())
+        reasons for the lines this run grew, noting if the user cancelled.
+        *n_before* is how many lines the branch already had, when this run
+        added to an existing result."""
+        n_feature = int(is_cluster(labels).sum())
         n_rest = len(labels) - n_feature
 
         # Per-line stop reasons: why each end of each line stopped growing.
@@ -602,15 +774,19 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         for k, line in enumerate(lines):
             reasons = [STOP_REASONS.get(r, (r, None))[0] for r, _ in line.end_cylinders]
             if reasons:
-                stop_lines.append(f"Line {k + 1}: stopped on {', '.join(reasons)}")
+                stop_lines.append(f"Line {n_before + k + 1}: stopped on "
+                                  f"{', '.join(reasons)}")
         stop_summary = ("\n\nStop reasons:\n" + "\n".join(stop_lines)) if stop_lines else ""
         cancel_note = ("\n\nCancelled early — partial result saved."
                        if stopped_early else "")
+        added_note = (f" Added to this branch's {n_before} existing line(s); "
+                      f"Clusters > Undo Cluster Edit takes this run back."
+                      if n_before else "")
 
         QMessageBox.information(
             main_window,
             "Linear Region Growing Cancelled" if stopped_early
             else "Linear Region Growing Complete",
             f"Grew {len(lines)} line(s) — {n_feature:,} feature points, "
-            f"{n_rest:,} remaining." + stop_summary + cancel_note
+            f"{n_rest:,} remaining." + added_note + stop_summary + cancel_note
         )

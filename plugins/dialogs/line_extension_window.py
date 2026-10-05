@@ -46,6 +46,7 @@ from PyQt5.QtCore import Qt, QTimer
 
 from config.config import global_variables
 from application.selection_gate import selected_cloud_indices
+from core.entities.clusters import UNASSIGNED_LABEL, UNASSIGNED_COLOR
 from core.services.linear_region_grower import (
     STOP_REASONS,
     cylinders_to_vector_feature,
@@ -88,9 +89,6 @@ _CANDIDATE_COLOR = np.array([1.0, 1.0, 0.0], dtype=np.float32)   # yellow
 # they are. Removed again the moment they stop being candidates.
 _CANDIDATE_NAME = "Pick candidates"
 
-# What a point goes back to when it stops being a candidate: the noise colour
-# Clusters.set_random_color paints label -1 with.
-_NOISE_COLOR = np.array([0.2, 0.2, 0.2], dtype=np.float32)
 
 # Width the centerlines are drawn at while this window is open. At the default
 # 1.0 a centerline is a one-pixel hair, and picking reads the depth buffer at
@@ -197,6 +195,9 @@ class LineExtensionWindow(QDialog):
         self.poll_timer.timeout.connect(self._refresh_pick_count)
 
         self._claim_the_viewport()
+        # Lines are locked against selection so growth seeds skip them, but here
+        # they are what Trim, Delete and Join are aimed at. Put back on close.
+        self._set_line_locks(False)
         self._setup_ui()
         self._build_queue()
         self._show_current(focus=True)
@@ -726,6 +727,26 @@ class LineExtensionWindow(QDialog):
         self.tree_widget.visibility_status[uid] = True
         return uid
 
+    def _set_line_locks(self, locked):
+        """Lock every line against selection, or lift those locks.
+
+        Only the "select" lock is touched: any other lock the user put on a
+        line (delete, cut, merge) is left as it was.
+        """
+        node = self.controller.get_node(self.result_uid)
+        if node is None or node.data is None:
+            return
+        clusters = node.data
+        if locked:
+            for label in range(len(self.lines)):
+                clusters.locked_clusters.setdefault(label, set()).add("select")
+            clusters.tint_locked = False
+        else:
+            for label in list(clusters.locked_clusters):
+                clusters.locked_clusters[label].discard("select")
+                if not clusters.locked_clusters[label]:
+                    del clusters.locked_clusters[label]
+
     def _remove_branch(self, uid):
         """Drop a branch this window owns. Callers block tree signals around it —
         blockSignals does not nest, so unblocking here would silently re-enable
@@ -888,7 +909,7 @@ class LineExtensionWindow(QDialog):
         the candidate points have been promoted out of noise into a cluster of
         their own, so the branch would report them as belonging to a line.
         """
-        labels = np.full(len(self.pc_points), -1, dtype=np.int32)
+        labels = np.full(len(self.pc_points), UNASSIGNED_LABEL, dtype=np.int32)
         for label, line in enumerate(self.lines):
             labels[line.indices] = label
         return labels
@@ -1156,7 +1177,7 @@ class LineExtensionWindow(QDialog):
             return
         clusters = node.data
 
-        labels = np.full(len(self.pc_points), -1, dtype=np.int32)
+        labels = np.full(len(self.pc_points), UNASSIGNED_LABEL, dtype=np.int32)
         for label, line in enumerate(self.lines):
             labels[line.indices] = label
         clusters.labels = labels
@@ -1235,16 +1256,16 @@ class LineExtensionWindow(QDialog):
         self._render()
 
     def _unmark_candidates(self, clusters):
-        """Put the points offered last time back to being noise."""
+        """Put the points offered last time back to being unassigned."""
         self._forget_candidate_naming(clusters)
         if self.marked_indices is None or self.marked_indices.size == 0:
             self.marked_indices = None
             return
         idx = self.marked_indices
         idx = idx[idx < len(clusters.labels)]
-        clusters.labels[idx] = -1
+        clusters.labels[idx] = UNASSIGNED_LABEL
         if clusters.colors is not None:
-            clusters.colors[idx] = _NOISE_COLOR
+            clusters.colors[idx] = UNASSIGNED_COLOR
         self.marked_indices = None
 
     def _forget_candidate_naming(self, clusters):
@@ -1263,12 +1284,11 @@ class LineExtensionWindow(QDialog):
     def _mark_candidates(self, clusters):
         """Promote the candidate points to a cluster of their own.
 
-        This is the whole of the "fade the rest and lock it" behaviour, and it
-        needs no viewer support because a label already carries both halves of
-        it: an unnamed/noise point is drawn grey AND refused by the picking
-        filters (``_filter_locked_and_noise``). Unclaimed points are ``-1``, which is
-        why they cannot be picked today — so the fix is not to fade anything, it
-        is to stop the points the user needs from being noise.
+        Unclaimed points are UNASSIGNED, so they can already be picked; what the
+        candidate cluster adds is the statement of which ones are on offer at
+        this stop. It colours them (yellow) and it is what ``_picked_indices``
+        intersects the selection with, so anything else a lasso covers is
+        ignored. ``_apply_emphasis`` draws them big and fades the rest.
 
         The new label is one above the highest in use. That matters: colours are
         handed out in sorted label order, so a label that sorts LAST leaves every
@@ -1378,6 +1398,7 @@ class LineExtensionWindow(QDialog):
         # cluster exists to make picking possible, and has no business surviving
         # into classification or a saved project.
         self._commit()
+        self._set_line_locks(True)
         self._clear_picks()
         # The window owns the grower for as long as it is open (the growing
         # plugin hands it over rather than freeing it), so it frees what the

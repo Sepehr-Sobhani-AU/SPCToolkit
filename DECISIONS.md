@@ -6,6 +6,21 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-05 — Linear growing adds to its result branch; lines are locked, never re-claimed
+Every run used to make a new result branch with its own debug sub-branches, and
+a second run could grow over — or reseed from — the first run's lines. Now a
+run on an existing result adds its lines to that branch in place (the second
+action-plugin path to edit a branch, after the Extend window; the "plugins
+return new objects" rule does not hold for this kind of interactive building).
+Lines are select-locked so seeds can only come from unassigned points; the
+lock tint is turned off for these branches (`Clusters.tint_locked`) because
+every line carries the lock. Growth may SEE existing lines' points but not
+CLAIM them: hiding them instead would turn every crossing into a gap. The
+Extend window lifts the select locks while open, since its edit tools are aimed
+by clicking lines. One-step undo reuses `controller._cluster_undo`. Old results
+(rest = -1) are upgraded on unpickle in `Clusters.__setstate__`, keyed on
+`line_traces` — the one place a branch's own data says it is a linear result.
+
 ## 2026-10-05 — Reserved label -2 = "unassigned", separate from -1 = noise
 -1 meant "noise" everywhere: dark grey, never selectable. Branches that label
 only part of a cloud (linear region growing's lines) also used -1 for the rest,

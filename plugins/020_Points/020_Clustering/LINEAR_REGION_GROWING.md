@@ -12,15 +12,29 @@ The same `LinearRegionGrower` (in `AXIS_TRACE` mode) backs the `power_line_detec
 ## Inputs and output
 
 **Inputs (from the application):**
-- Exactly one `PointCloud` branch selected.
+- Exactly one branch selected: a `PointCloud` for the first run, or an earlier result of this plugin to add more lines to it (see [Growing more lines into a result](#growing-more-lines-into-a-result)).
 - At least two seed points picked in the viewer (polygon select with `P`, or Shift+Click) lying along one linear feature.
 - For the linearity-based modes only: per-point **eigenvalues** on the selected branch (run **Compute Eigenvalues** first, select the eigenvalues node). Linearity is *consumed* from them, never recomputed here.
 
 **Output:**
-- A single `Clusters` branch (`linear_region_growing`) over the input cloud: label `0` = the grown feature, `-1` = everything else — the same output shape as [Surface Region Growing](SURFACE_REGION_GROWING.md), ready to classify (cluster → class → DXF layer).
+- A single `Clusters` branch (`linear_region_growing`) over the input cloud: labels `0, 1, 2, …` = the grown lines ("Line 1", "Line 2", …), `-2` (`UNASSIGNED_LABEL`) = everything else, ready to classify (cluster → class → DXF layer). Unassigned points are drawn in the input cloud's own colours and stay selectable; each line is locked against selection (untinted), so the next seeds can only be picked from what is still unassigned.
 - If **Show Search Windows** / **Show Centerlines** are ticked, render-only `vector_feature` branches (`search_windows` and `cylinders`, `centerlines`) are added under the result and shown — wireframe geometry, fully controllable in the tree (toggle, delete) like any other branch. Everything drawn lives in a branch; nothing is an ad-hoc viewer overlay.
 
 Several features can be traced from one selection — the picked points are grouped with DBSCAN (`seed_eps`) and each group grows its own line. After running, the input branch is hidden and the result is shown.
+
+### Growing more lines into a result
+
+Run the plugin again with the **result branch** selected and it adds lines to that branch instead of making a new one. Pick seeds on the unassigned points — the existing lines are locked, so a lasso drawn across them skips them.
+
+- **The existing lines stay exactly as they were:** labels, names (a line classified as "Cable" stays "Cable"), colours, and stops already dismissed as real ends. New lines are numbered after them.
+- **New lines never take points from existing ones.** Growth *sees* those points — where a new cable crosses an old one, the crossing still steers the fit and does not read as a gap — but they stay with the line that has them (`grow_lines(..., blocked=...)`).
+- **Undo:** the branch as it was before the run is kept for **Clusters › Undo Cluster Edit**. That restores the labels and traces; the debug wireframe branches keep showing the undone lines until the next run or extension redraws them.
+- **Debug branches:** `centerlines` and `cylinders` are rebuilt from every line. `search_windows` and the `stop_*` markers are not saved with the project, so this run's geometry is appended to the earlier copies.
+- The traces carry one set of growth parameters — the latest run's — which **Extend Traced Lines** uses to rebuild the grower.
+
+Results saved before this existed (rest as `-1`, lines unlocked) are upgraded when the project loads: their `-1` always meant "the rest", never noise.
+
+While the **Extend Traced Lines** window is open the lines' select locks are lifted, because Trim, Delete and Join are aimed by clicking lines; they are put back when it closes.
 
 ### One line per physical feature
 
