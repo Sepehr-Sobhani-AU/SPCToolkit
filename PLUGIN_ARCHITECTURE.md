@@ -539,6 +539,7 @@ Generated from the source tree. **100 plugins** (69 Action, 31 Analysis) across 
 | Points > Clustering | `crease_edge` | Action | `CreaseEdgePlugin` |
 | Points > Clustering | `contour_growing` | Action | `ContourGrowingPlugin` |
 | Points > Clustering | `extend_traced_lines` | Action | `ExtendLinesPlugin` |
+| Points > Clustering | `kalman_line_preview` | Action | `KalmanLinePreviewPlugin` |
 | Points > Analysis | `compute_eigenvalues` | Analysis | `ComputeEigenvaluesPlugin` |
 | Points > Analysis | `knn_analysis` | Analysis | `KNNAnalysisPlugin` |
 | Points > Analysis | `geometric_classification` | Analysis | `GeometricClassificationPlugin` |

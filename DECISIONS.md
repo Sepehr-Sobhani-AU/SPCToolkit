@@ -6,6 +6,22 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-17 — Kalman path tracker: standalone, previewed before the march uses it
+The march remembers only its last heading, so one noisy step steers the next
+and a gap is crossed straight even on a curve. A Kalman tracker
+(`core/services/path_tracker.py`) carries the whole history instead: one
+machinery, two models — straight (plain Kalman: position + direction) and
+curved (extended Kalman: + curvature, exact arcs, Jacobian taken numerically).
+It does not replace RANSAC or the fit: the fitted steps are its measurements;
+it would replace the march's memory (where to look next), bridge along the
+predicted curve, and smooth the final centerline. Built standalone (no
+project imports) and tested on synthetic lines, then exposed only through a
+read-only preview plugin on saved results — no existing code changed — so it
+is judged on real test sets before linear growing uses it. CPU + float64 on
+purpose: a 9-number state is microseconds per step and inherently sequential,
+so a GPU would be slower; float64 keeps the covariance stable over hundreds of
+steps. Trust settings start fixed; estimating them per line is the upgrade.
+
 ## 2026-10-05 — Linear march: narrow cone first, bridge, then widen to max_angle
 One fixed cone was a compromise: wide enough for curves, it also saw any dense
 feature within max_angle, and a sparse line lost to a branch (measured: points
