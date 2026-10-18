@@ -150,7 +150,7 @@ With no picks, nothing is relaxed at all — which is what stops the workflow fr
 
 ## Growth modes
 
-Selected with the `growth_mode` parameter. All three start from the picked seed points and call the line-RANSAC engine; they differ only in how the region expands.
+Selected with the `growth_mode` parameter. All start from the picked seed points. Axis Trace, Linearity-Connected and Hybrid call the line-RANSAC engine and differ only in how the region expands; Kalman Trace follows the line with a Kalman filter instead.
 
 ### Axis Trace (`axis_trace`)
 Raw points only — needs no upstream features. Best for **isolated thin features** (cables, pipes, rails).
@@ -164,6 +164,19 @@ Raw points only — needs no upstream features. Best for **isolated thin feature
    - **Fit the step** on the band within `cylinder_radius` of the chosen line: PCA direction and centroid, as before, so the axis re-centres on the band. The wide end of the window widens what the march can *see*, not what it takes — the band is what gets fitted, claimed, swept and drawn as a cylinder.
    - **Stop** when even the `max_angle` cone finds nothing to follow: the line turns more than `max_angle` (a bend — e.g. a pole or feature end), or fewer than `min_points` fall in the window or the band and no gap could be bridged, or nothing is ahead at all.
    - Collect the inliers, then advance the tip by `(1 − cylinder_overlap%)` of a cylinder length, **re-projecting it onto the freshly-fit local axis** so the march stays on the feature through curves. **Show Search Windows** adds two branches: `search_windows` (light green) draws each step's frustum exactly where it searched — so consecutive windows overlap and their wide ends stand off the feature — and `cylinders` (light blue) draws the band each step fitted, chained between the fitted centres. The bands are what trim, rollback and saved traces use; the windows are display only and are not saved with the project. Repeat (capped at `max_steps = 500` per direction).
+
+### Kalman Trace (`kalman_trace`)
+Raw points only. Follows the line with a Kalman filter (`core/services/kalman_line_tracer.py`, on `path_tracker`'s extended Kalman model): a running estimate of position, direction and bend, with how sure it is of each.
+
+1. **Measure the line from its seeds.** Start at the densest spot of the seed group; the line's radius is the median distance of its points from the centre line plus two robust (median-absolute-deviation) standard deviations — the *apparent* width, true size plus scanner noise, measured on short pieces so a bend is not read as thickness. A 2 cm cable with 1 cm noise and a 30 cm hollow pipe both come out right. No width is set by hand.
+2. **Predict, then read.** Each step (`kalman_step`) predicts where the line is and reads its position from the points in a window (`kalman_window`) round the prediction, picking the cluster that is both dense and close to the prediction.
+3. **Coast through clutter and gaps.** With `kalman_open_air` on, a window crowded by other points (vegetation, a support) is not trusted: the trace coasts on the prediction, and after clutter a reading counts only if the next ones agree. Turn it off for lines on a surface.
+4. **Find the far side.** After a gap, rays from the last good point search for a continuation. It is taken only if it **lands where the line was predicted, within the prediction's own uncertainty** (which grows with the gap) and is **about as thick** as the line. Otherwise, after `kalman_max_gap`, the line **ends** — it does not reach across empty space onto whatever is nearest.
+5. **Kinks.** Where readings stop in open space, a short search from points along the predicted bend finds where the line leaves, up to `kalman_max_turn`.
+6. **Each line once.** Points already on a line — this run's or the result branch's — are seen but never taken. A trace that runs onto another line **stops and joins it** there; two of this run's lines that join end to end are merged into one; a join onto the middle of a line is a junction and stays two lines. A seed group that holds more than one line (lines touching inside the selection) is traced again from its seeds the first line did not cover.
+7. **Claim.** The radius is measured again along the whole traced line (the seed's densest spot reads too tight further on), and the line takes the points within it. Ends where the line ended are saved as stops (`empty_space`) for Extend Traced Lines; ends where it joined another line are not stops.
+
+The assumptions about a *kind* of feature are settings, not code: `kalman_open_air`, `kalman_max_gap`, `kalman_max_turn`, `kalman_bridge_cone`, `kalman_min_bend_radius`, `kalman_flexibility`. Their defaults came from overhead-wire test data; presets for particular features belong on top of them. Extend Traced Lines still extends with the Axis Trace march.
 
 ### Linearity-Connected (`linearity_connected`)
 Requires precomputed linearity. Best for **edges/kerbs embedded in a surface**, where an axis cylinder would leak into the surrounding plane.
@@ -179,7 +192,7 @@ The Axis-Trace march with the linearity gate additionally applied to candidate p
 
 | Parameter             | Default | Role                                                                 |
 |-----------------------|---------|----------------------------------------------------------------------|
-| `growth_mode`         | Axis Trace | Axis Trace / Linearity-Connected / Hybrid (see above).            |
+| `growth_mode`         | Axis Trace | Axis Trace / Kalman Trace / Linearity-Connected / Hybrid (see above). |
 | `ransac_threshold`    | `0.03`  | Line-RANSAC inlier distance threshold (m).                          |
 | `ransac_iterations`   | `100`   | Max candidate lines tried per fit — at the seed and at each march step (higher = more robust, slower). |
 | `cylinder_radius`     | `0.03`  | **Tip Radius**: fit-window radius at the tip (m); also the band width fitted around the chosen line. |
@@ -190,6 +203,14 @@ The Axis-Trace march with the linearity gate additionally applied to candidate p
 | `max_angle`           | `20°`   | Widest the cone opens when the narrow one loses the line, and the largest turn per step before the march stops (cone capped at 80°). |
 | `linearity_threshold` | `0.4`   | Linearity / Hybrid: accept a point only above this linearity.        |
 | `neighbor_k`          | `16`    | Linearity-Connected: k-NN used to expand the region.                |
+| `kalman_step`         | `0.5`   | Kalman Trace: metres between readings.                               |
+| `kalman_window`       | `1.0`   | Kalman Trace: length of line each reading is taken from (m).         |
+| `kalman_max_gap`      | `20`    | Kalman Trace: longest stretch with no reading before the line ends (m). |
+| `kalman_max_turn`     | `30°`   | Kalman Trace: sharpest kink the line may take.                       |
+| `kalman_bridge_cone`  | `15°`   | Kalman Trace: cone searched for the far side of a gap.               |
+| `kalman_min_bend_radius` | `50` | Kalman Trace: tightest smooth bend followed (m).                     |
+| `kalman_flexibility`  | `0.02`  | Kalman Trace: how fast the bend may change.                          |
+| `kalman_open_air`     | `on`    | Kalman Trace: crowding round the line is clutter to coast through (off for lines on a surface). |
 | `show_cylinders`      | `off`   | Add the axis-trace search cylinders as a controllable wireframe branch (debug). |
 | `show_lines`          | `off`   | Add the traced centerline as a controllable wireframe branch (debug). |
 

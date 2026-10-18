@@ -28,6 +28,11 @@ controllable branches.
 Growth modes:
 - **Axis Trace** — march a search cylinder along the fitted line; best for
   isolated thin features. Needs no upstream features.
+- **Kalman Trace** — follow the line with a Kalman filter that predicts where
+  it goes, coasts through clutter and gaps, and re-finds it after a gap or a
+  kink; the line's width is measured from its own points. Each line is traced
+  once: a trace that reaches another line joins it there. See
+  ``core/services/kalman_line_tracer.py``.
 - **Linearity-Connected** / **Hybrid** — gate growth by per-point linearity;
   best for edges/kerbs embedded in a surface. These require eigenvalues on the
   selected branch (run Compute Eigenvalues first) — they are consumed, not
@@ -62,12 +67,19 @@ from core.services.linear_region_grower import (
     traces_to_lines,
     STOP_REASONS,
 )
+from core.services.kalman_line_tracer import KalmanLineTracer
 from plugins.dialogs.line_extension_window import LineExtensionWindow
 from application.selection_gate import selected_cloud_indices
 
 
+# Kalman Trace is not a LinearRegionGrower mode: its lines come from
+# KalmanLineTracer. The grower is still built (as Axis Trace) for the line
+# extension that follows a run.
+KALMAN_TRACE = "kalman_trace"
+
 _MODE_MAP = {
     "Axis Trace": AXIS_TRACE,
+    "Kalman Trace": KALMAN_TRACE,
     "Linearity-Connected": LINEARITY_CONNECTED,
     "Hybrid": HYBRID,
 }
@@ -87,13 +99,17 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         return {
             "growth_mode": {
                 "type": "choice",
-                "options": ["Axis Trace", "Linearity-Connected", "Hybrid"],
+                "options": ["Axis Trace", "Kalman Trace", "Linearity-Connected", "Hybrid"],
                 "default": "Axis Trace",
                 "label": "Growth Mode",
                 "description": "Axis Trace marches a cylinder along the line "
-                               "(isolated features). Linearity-Connected / Hybrid "
-                               "gate growth by per-point linearity (edges in a "
-                               "surface) and require eigenvalues on the branch.",
+                               "(isolated features). Kalman Trace follows the "
+                               "line with a Kalman filter: measures its width "
+                               "from the seeds, coasts through clutter and gaps, "
+                               "traces each line once (uses the Kalman settings "
+                               "below). Linearity-Connected / Hybrid gate growth "
+                               "by per-point linearity (edges in a surface) and "
+                               "require eigenvalues on the branch.",
             },
             "seed_eps": {
                 "type": "float",
@@ -218,6 +234,87 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "label": "Neighbours (k)",
                 "description": "Linearity-Connected: k-NN used to expand the region",
             },
+            "kalman_step": {
+                "type": "float",
+                "default": 0.5,
+                "min": 0.01,
+                "max": 20.0,
+                "label": "Kalman: Step (m)",
+                "description": "Kalman Trace: distance between readings of the "
+                               "line. Shorter follows tight bends; longer is faster",
+            },
+            "kalman_window": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.02,
+                "max": 50.0,
+                "label": "Kalman: Window (m)",
+                "description": "Kalman Trace: length of line each reading is "
+                               "taken from. Longer holds more points on a sparse "
+                               "line. The width is measured from the seeds, not "
+                               "set here",
+            },
+            "kalman_max_gap": {
+                "type": "float",
+                "default": 20.0,
+                "min": 0.0,
+                "max": 500.0,
+                "label": "Kalman: Max Gap (m)",
+                "description": "Kalman Trace: the longest stretch with no "
+                               "reading (a gap in the scan, through vegetation) "
+                               "crossed before the line is ended. A continuation "
+                               "is only taken if it lands where the line was "
+                               "predicted and is about as thick",
+            },
+            "kalman_max_turn": {
+                "type": "float",
+                "default": 30.0,
+                "min": 0.0,
+                "max": 90.0,
+                "label": "Kalman: Max Kink (deg)",
+                "description": "Kalman Trace: the sharpest sudden turn the line "
+                               "may take (e.g. at a support). 0 = no kinks",
+            },
+            "kalman_bridge_cone": {
+                "type": "float",
+                "default": 15.0,
+                "min": 1.0,
+                "max": 60.0,
+                "label": "Kalman: Gap Search Cone (deg)",
+                "description": "Kalman Trace: how far off its heading the line "
+                               "is looked for on the far side of a gap",
+            },
+            "kalman_min_bend_radius": {
+                "type": "float",
+                "default": 50.0,
+                "min": 0.1,
+                "max": 100000.0,
+                "label": "Kalman: Min Bend Radius (m)",
+                "description": "Kalman Trace: the tightest smooth bend the line "
+                               "may follow (kinks aside). Large for straight or "
+                               "gently sagging lines, small for curving ones",
+            },
+            "kalman_flexibility": {
+                "type": "float",
+                "default": 0.02,
+                "min": 0.0001,
+                "max": 10.0,
+                "decimals": 4,
+                "label": "Kalman: Flexibility",
+                "description": "Kalman Trace: how quickly the bend may change "
+                               "along the line. Larger follows changing curves "
+                               "faster; smaller smooths more",
+            },
+            "kalman_open_air": {
+                "type": "bool",
+                "default": True,
+                "label": "Kalman: Line in Open Air",
+                "description": "Kalman Trace: the line stands free of other "
+                               "points (cable, pipe) - points crowding round it "
+                               "are clutter (vegetation, a support) and are "
+                               "coasted through. Turn off for a line on or along "
+                               "a surface (kerb, edge)",
+            },
             "show_cylinders": {
                 "type": "bool",
                 "default": False,
@@ -280,9 +377,24 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         seed_groups = seeds
 
         # --- Grow one line per group on a background thread (progress + cancel) ---
+        # Kalman Trace grows with its own tracer; the grower is still built (as
+        # Axis Trace) for the line extension offered after the run.
+        tracer = None
+        if mode == KALMAN_TRACE:
+            tracer = KalmanLineTracer(
+                pc_points,
+                step=params.get("kalman_step", 0.5),
+                window=params.get("kalman_window", 1.0),
+                max_gap=params.get("kalman_max_gap", 20.0),
+                max_turn_deg=params.get("kalman_max_turn", 30.0),
+                bridge_cone_deg=params.get("kalman_bridge_cone", 15.0),
+                min_bend_radius=params.get("kalman_min_bend_radius", 50.0),
+                flexibility=params.get("kalman_flexibility", 0.02),
+                open_air=params.get("kalman_open_air", True),
+            )
         grower = LinearRegionGrower(
             all_points=pc_points,
-            mode=mode,
+            mode=AXIS_TRACE if mode == KALMAN_TRACE else mode,
             ransac_threshold=params.get("ransac_threshold", 0.03),
             max_iterations=params.get("ransac_iterations", 100),
             cylinder_radius=params.get("cylinder_radius", 0.03),
@@ -304,8 +416,9 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             # Growing into an existing result: its lines' points steer growth
             # but are never taken from them.
             blocked = None if existing is None else is_cluster(existing.labels)
-            lines, stopped_early = self._grow_threaded(main_window, grower,
-                                                       seed_groups, blocked)
+            lines, stopped_early = self._grow_threaded(
+                main_window, tracer if tracer is not None else grower,
+                seed_groups, blocked)
             if lines is None:  # error during grow — message already shown
                 return
             if not lines:
@@ -528,7 +641,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
     def _grow_threaded(self, main_window, grower, seed_groups, blocked=None):
         """Run ``grower.grow_lines`` on a daemon thread with a status-bar progress
-        bar and cancel button (matching surface_region_growing's UX).
+        bar and cancel button (matching surface_region_growing's UX). *grower*
+        is a ``LinearRegionGrower`` or a ``KalmanLineTracer`` - same contract.
 
         Returns ``(lines, stopped_early)``. ``lines`` is ``None`` on error (a
         QMessageBox has been shown); on cancel it holds whatever was grown before

@@ -6,6 +6,17 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-19 — Kalman Trace joins linear growing; general engine, measured width, each line once
+The Kalman tracker became a fourth growth mode (`core/services/kalman_line_tracer.py`), leaving
+the axis march untouched so both can be compared on the same data. Three rules came from real
+test failures: width is measured from the line's points (median distance + 2 robust sd) because
+a fixed width left points unclaimed and they were traced again; each line is traced once (points
+on a line are seen, never taken; a trace reaching a line joins it) because removing duplicates
+afterwards failed across scan gaps; and a continuation after a gap must land within the
+prediction's uncertainty at similar thickness, else the line ends, because coasting onto the
+nearest line attached unrelated ones. Kept general on the user's direction: feature assumptions
+(open air, gap, kink, bend) are plain settings, with presets for particular features to come.
+
 ## 2026-10-17 — Kalman path tracker: standalone, previewed before the march uses it
 The march remembers only its last heading, so one noisy step steers the next
 and a gap is crossed straight even on a curve. A Kalman tracker
