@@ -1,7 +1,8 @@
 # gui/dialog_boxes/dynamic_dialog.py
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                              QDialogButtonBox, QLabel, QSpinBox, QDoubleSpinBox,
-                             QComboBox, QCheckBox, QHBoxLayout, QPushButton, QFileDialog, QWidget)
+                             QComboBox, QCheckBox, QHBoxLayout, QPushButton, QFileDialog, QWidget,
+                             QInputDialog, QMessageBox, QFrame)
 from typing import Dict, Any
 
 
@@ -13,7 +14,8 @@ class DynamicDialog(QDialog):
     the parameter schema provided by plugins.
     """
 
-    def __init__(self, title: str, parameter_schema: Dict[str, Dict[str, Any]], parent=None):
+    def __init__(self, title: str, parameter_schema: Dict[str, Dict[str, Any]], parent=None,
+                 plugin_name: str = None):
         """
         Initialize the dialog with a title and parameter schema.
 
@@ -21,10 +23,14 @@ class DynamicDialog(QDialog):
             title (str): The dialog box title
             parameter_schema (Dict[str, Dict[str, Any]]): Schema defining parameters and their properties
             parent: Parent widget, if any
+            plugin_name: The plugin these are settings of. When given, the dialog
+                offers named presets of them (``services/preset_service.py``).
         """
         super().__init__(parent)
         self.setWindowTitle(title)
         self.parameter_schema = parameter_schema
+        self.plugin_name = plugin_name
+        self.preset_combo = None
         self.param_widgets = {}
         self.param_labels = {}
         self.param_containers = {}  # For directory type: the parent QWidget
@@ -34,6 +40,12 @@ class DynamicDialog(QDialog):
     def setup_ui(self):
         """Set up the dialog UI with widgets based on the parameter schema."""
         layout = QVBoxLayout()
+        if self.plugin_name:
+            layout.addLayout(self._build_preset_row())
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            layout.addWidget(line)
         form_layout = QFormLayout()
 
         # Create widgets based on parameter schema
@@ -156,6 +168,107 @@ class DynamicDialog(QDialog):
         layout.addWidget(button_box)
 
         self.setLayout(layout)
+
+    # ------------------------------------------------------------------ #
+    # Presets                                                            #
+    # ------------------------------------------------------------------ #
+
+    def _build_preset_row(self):
+        """Preset: [names v] [Load] [Save...] [Delete]"""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Preset:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(160)
+        self.preset_combo.setToolTip("Saved sets of these settings. Pick one and "
+                                     "press Load to fill in the settings below.")
+        row.addWidget(self.preset_combo, 1)
+        for text, tip, slot in (
+                ("Load", "Fill in the settings from the chosen preset. You can "
+                         "still change them before pressing OK.", self._load_preset),
+                ("Save...", "Save the settings shown as a preset, under a name "
+                            "you choose.", self._save_preset),
+                ("Delete", "Delete the chosen preset.", self._delete_preset)):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+        self._refresh_presets()
+        return row
+
+    def _refresh_presets(self, select=None):
+        from services.preset_service import list_presets
+        names = list_presets(self.plugin_name)
+        self.preset_combo.clear()
+        self.preset_combo.addItems(names)
+        if select in names:
+            self.preset_combo.setCurrentText(select)
+
+    def _load_preset(self):
+        from services.preset_service import load_preset
+        name = self.preset_combo.currentText()
+        if not name:
+            return
+        try:
+            self.set_parameters(load_preset(self.plugin_name, name))
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Preset Not Loaded", f"Could not read '{name}':\n{e}")
+
+    def _save_preset(self):
+        from services.preset_service import save_preset, list_presets
+        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:",
+                                        text=self.preset_combo.currentText())
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name in list_presets(self.plugin_name) and QMessageBox.question(
+                self, "Replace Preset?", f"A preset '{name}' exists. Replace it?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        try:
+            save_preset(self.plugin_name, name, dict(self.get_parameters()))
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Preset Not Saved", str(e))
+            return
+        self._refresh_presets(select=name)
+
+    def _delete_preset(self):
+        from services.preset_service import delete_preset
+        name = self.preset_combo.currentText()
+        if not name or QMessageBox.question(
+                self, "Delete Preset?", f"Delete the preset '{name}'?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        delete_preset(self.plugin_name, name)
+        self._refresh_presets()
+
+    def set_parameters(self, values: Dict[str, Any]) -> None:
+        """Show *values* in the widgets. Settings not in *values* keep what is
+        shown; names the schema does not have are ignored."""
+        for param_name, value in values.items():
+            widget = self.param_widgets.get(param_name)
+            if widget is None:
+                continue
+            param_type = self.parameter_schema[param_name].get("type", "string")
+            if param_type == "info":
+                continue
+            if param_type == "int":
+                widget.setValue(int(value))
+            elif param_type == "float":
+                widget.setValue(float(value))
+            elif param_type in ("dropdown", "colormap"):
+                index = widget.findData(value)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+            elif param_type == "choice":
+                index = widget.findData(value)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+                else:
+                    widget.setCurrentText(str(value))
+            elif param_type == "bool":
+                widget.setChecked(bool(value))
+            else:
+                widget.setText(str(value))
 
     def _setup_dependencies(self):
         """Wire up enabled_by / disabled_by dependencies between widgets.

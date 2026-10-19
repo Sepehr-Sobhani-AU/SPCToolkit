@@ -612,7 +612,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
 
                 # Create and open a dynamic dialog for parameter input
-                dialog = DynamicDialog(f"{plugin_name.title()} Parameters", parameter_schema)
+                dialog = DynamicDialog(f"{plugin_name.title()} Parameters", parameter_schema,
+                                       plugin_name=plugin_name)
                 if dialog.exec_():
                     # If the user clicked OK, get the parameters and execute
                     params = dialog.get_parameters()

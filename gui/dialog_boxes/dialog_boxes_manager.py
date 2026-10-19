@@ -100,7 +100,8 @@ class DialogBoxesManager(QObject):
         parameter_schema = self._apply_last_params(analysis_type, parameter_schema)
 
         # Open dialog for parameter input
-        dialog = DynamicDialog(f"{analysis_type.title()} Parameters", parameter_schema)
+        dialog = DynamicDialog(f"{analysis_type.title()} Parameters", parameter_schema,
+                               plugin_name=analysis_type)
         if dialog.exec_():
             params = dialog.get_parameters()
             self.store_params(analysis_type, params)
