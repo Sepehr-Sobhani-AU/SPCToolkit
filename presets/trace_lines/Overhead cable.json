@@ -7,6 +7,11 @@
     "min_bend_radius": 50.0,
     "open_air": true,
     "window": 1.0,
-    "show_lines": false
+    "step": 0.0,
+    "min_points": 3,
+    "gap_search_cone": 15.0,
+    "flexibility": 0.02,
+    "show_lines": false,
+    "show_end_cylinders": false
   }
 }

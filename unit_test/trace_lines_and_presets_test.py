@@ -28,8 +28,11 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 def test_settings_are_few_and_plain():
     schema = tl.TraceLinesPlugin().get_parameters()
-    assert set(schema) == {"max_gap", "max_kink", "min_bend_radius", "open_air",
-                           "window", "show_lines"}, set(schema)
+    assert set(schema) == {"seed_eps", "line_radius", "max_gap", "max_kink",
+                           "min_bend_radius", "open_air", "window", "step",
+                           "min_points", "gap_search_cone", "flexibility",
+                           "show_lines", "show_end_cylinders"}, set(schema)
+    assert "linearity_threshold" not in schema and "neighbor_k" not in schema
     for name, info in schema.items():
         text = f"{info.get('label', '')} {info.get('description', '')}".lower()
         assert "kalman" not in text, f"'{name}' mentions Kalman"
@@ -38,29 +41,64 @@ def test_settings_are_few_and_plain():
     print(f"Trace Lines: {len(schema)} settings, none mention Kalman")
 
 
-def test_seed_grouping_from_the_picks():
+def test_seed_grouping():
     rng = np.random.default_rng(0)
-    # sparse picks along one line, unevenly spaced
+    # Linear Region Growing works out a distance from the picks: a sparse
+    # line stays one group, two lines 1 m apart stay two.
     x = np.sort(rng.uniform(0, 6, 90))
     one = np.stack([x, rng.normal(0, 0.01, 90), rng.normal(0, 0.01, 90)], 1)
-    two = np.vstack([one, one + [0, 1.0, 0]])            # a second line 1 m away
-    eps1 = lrg._auto_seed_eps(one)
-    eps2 = lrg._auto_seed_eps(two)
+    two = np.vstack([one, one + [0, 1.0, 0]])
     from sklearn.cluster import DBSCAN
-    n1 = DBSCAN(eps=eps1, min_samples=2).fit_predict(one).max() + 1
-    n2 = DBSCAN(eps=eps2, min_samples=2).fit_predict(two).max() + 1
-    assert n1 == 1, f"one sparse line split into {n1} groups (eps {eps1:.3f})"
-    assert n2 == 2, f"two lines 1 m apart grouped into {n2} (eps {eps2:.3f})"
-    print(f"seed grouping: one line -> 1 group (eps {eps1 * 100:.0f} cm), two lines -> 2")
+    n1 = DBSCAN(eps=lrg._auto_seed_eps(one), min_samples=2).fit_predict(one).max() + 1
+    n2 = DBSCAN(eps=lrg._auto_seed_eps(two), min_samples=2).fit_predict(two).max() + 1
+    assert (n1, n2) == (1, 2), (n1, n2)
+    print("seed grouping: worked out from the picks keeps lines whole and apart")
+
+
+def test_computed_fields():
+    # Seed Group Distance and Line Radius are filled in when the dialog
+    # opens (from the picks; typical values with nothing picked) - never
+    # "0 = automatic" - and neither remembered values nor presets touch them.
+    schema = tl.TraceLinesPlugin().get_parameters()
+    for name in ("seed_eps", "line_radius"):
+        assert schema[name].get("computed") and schema[name]["default"] > 0, name
+    from gui.dialog_boxes.dialog_boxes_manager import DialogBoxesManager
+    manager = DialogBoxesManager.__new__(DialogBoxesManager)
+    manager._last_params = {"trace_lines": {"seed_eps": 9.0, "line_radius": 9.0, "max_gap": 7.0}}
+    patched = manager._apply_last_params("trace_lines", schema)
+    assert patched["max_gap"]["default"] == 7.0
+    assert patched["seed_eps"]["default"] == schema["seed_eps"]["default"]
+    assert patched["line_radius"]["default"] == schema["line_radius"]["default"]
+    from gui.dialog_boxes.dynamic_dialog import DynamicDialog
+    with tempfile.TemporaryDirectory() as root:
+        saved_root = presets.PRESETS_ROOT
+        presets.PRESETS_ROOT = root
+        try:
+            dialog = DynamicDialog("T", schema, plugin_name="trace_lines")
+            dialog.set_parameters({"line_radius": 5.0, "max_gap": 3.0})
+            assert dialog.get_parameters()["line_radius"] == schema["line_radius"]["default"]
+            assert dialog.get_parameters()["max_gap"] == 3.0
+            from unittest import mock
+            with mock.patch("PyQt5.QtWidgets.QInputDialog.getText", return_value=("p", True)):
+                dialog._save_preset()
+            saved = presets.load_preset("trace_lines", "p")
+            assert "line_radius" not in saved and "seed_eps" not in saved and saved["max_gap"] == 3.0
+        finally:
+            presets.PRESETS_ROOT = saved_root
+    print("computed fields: filled in, not overwritten by memory or presets, not saved in presets")
 
 
 def test_grows_with_the_line_tracer():
     pts = np.zeros((10, 3), dtype=np.float32)
     engine, grower = tl.TraceLinesPlugin()._make_growers(
         pts, {"window": 2.0, "max_gap": 7.0, "max_kink": 10.0,
-              "min_bend_radius": 4.0, "open_air": False}, None, None)
+              "min_bend_radius": 4.0, "open_air": False, "step": 0.0,
+              "line_radius": 0.04, "min_points": 5, "gap_search_cone": 9.0,
+              "flexibility": 0.1}, None, None)
     assert isinstance(engine, KalmanLineTracer)
     assert engine.window == 2.0 and engine.step == 1.0 and engine.max_gap == 7.0
+    assert engine.radius == 0.04 and engine.min_points == 5
+    assert engine.bridge_cone_deg == 9.0 and engine.flexibility == 0.1
     assert engine.max_turn_deg == 10.0 and abs(engine.max_curvature - 0.25) < 1e-9
     assert engine.open_air is False
     assert hasattr(grower, "unclaimed_ahead")          # extension still uses the march
@@ -110,13 +148,15 @@ def test_dialog_loads_a_preset():
 def test_shipped_overhead_cable_preset():
     shipped = presets.load_preset("trace_lines", "Overhead cable")
     schema = tl.TraceLinesPlugin().get_parameters()
-    assert set(shipped) == set(schema), set(shipped) ^ set(schema)
+    expected = {k for k, v in schema.items() if not v.get("computed")}
+    assert set(shipped) == expected, set(shipped) ^ expected
     print(f"'Overhead cable' preset: {shipped}")
 
 
 if __name__ == "__main__":
     test_settings_are_few_and_plain()
-    test_seed_grouping_from_the_picks()
+    test_seed_grouping()
+    test_computed_fields()
     test_grows_with_the_line_tracer()
     test_preset_files()
     test_dialog_loads_a_preset()

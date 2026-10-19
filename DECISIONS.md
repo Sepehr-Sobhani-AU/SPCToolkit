@@ -6,6 +6,15 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-20 — Trace Lines: its real settings back, seed values filled from the picks
+Five settings proved too few on the user's data (200 picks on 8 parallel cables: 73 seed
+groups, radius wrong), so the tracer's real settings came back - not Linear Region Growing's,
+which drive RANSAC and cylinders the tracer does not use - with Show Stop Points to see why a
+line ended. Seed Group Distance and Line Radius are filled in from the picks when the dialog
+opens rather than "0 = automatic" (the user's call: show the number), marked `computed` so
+memory and presets skip them; the radius is measured at a pick from the cloud in a shrinking
+tube, since measuring from the picks or everything near them took in neighbouring lines.
+
 ## 2026-10-20 — Trace Lines is its own tool with five settings; presets live in the parameter dialog
 After testing, the user found Linear Region Growing's one dialog for four modes (~25 settings)
 too complicated, so the Kalman tracer became its own menu item, Trace Lines (a subclass sharing

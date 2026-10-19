@@ -189,18 +189,29 @@ Points > Clustering > Trace Lines (`045_trace_lines_plugin.py`). A subclass of t
 7. **Ends.** A reading needs its window to hold enough line, so a trace stops up to half a window short of where the line really ends; an ended trace is carried on to the last point still on its course.
 8. **Claim.** The radius is measured again along the whole traced line (the seed's densest spot reads too tight further on), and the line takes the points within it. Ends where the line ended are saved as stops (`empty_space`) for Extend Traced Lines; ends where it joined another line are not stops.
 
-Settings (the dialog shows only these):
+Settings:
 
 | Setting | Default | Role |
 |---|---|---|
+| `seed_eps` | from the picks | Seed Group Distance — filled in when the dialog opens (twice the 90th percentile of each pick's distance to its third-nearest pick); editable. |
+| `line_radius` | measured at the picks | Line Radius — measured when the dialog opens at up to five picks (median); one radius for every line in the run; editable. |
 | `max_gap` | `20` m | How far a line may disappear and still be followed. |
 | `max_kink` | `30°` | Sharpest sudden turn (a support, an elbow). |
 | `min_bend_radius` | `50` m | Tightest smooth bend followed. |
 | `open_air` | on | Crowding round the line is clutter to pass through; off for lines on a surface. |
-| `window` | `1.0` m | Length looked at per step (advanced); the step is half of it. |
+| `window` | `1.0` m | Advanced: length looked at per step. |
+| `step` | `0` = half the window | Advanced: distance between looks. |
+| `min_points` | `3` | Advanced: fewest points that count as seeing the line. |
+| `gap_search_cone` | `15°` | Advanced: cone searched for the far side of a gap. |
+| `flexibility` | `0.02` | Advanced: how fast the bend may change. |
 | `show_lines` | off | Add the centerlines as a branch. |
+| `show_end_cylinders` | off | **Show Stop Points**: one branch per reason a line ended — empty space, in clutter, unrelated line ahead, joined another line, length cap. |
 
-The seed grouping distance is worked out from the picks (twice the 90th percentile of each pick's distance to its third-nearest pick), so a sparse selection stays one group per line. The gap search cone (15°) and how fast the bend may change are fixed. These are assumptions about the *kind* of feature, so they are settings rather than code; the shipped **Overhead cable** preset (`presets/trace_lines/`) holds the values tested on overhead wires. Extend Traced Lines still extends with the Axis Trace march.
+**Measuring the radius at a pick.** A pick is certainly on a line, and the cloud right round it (a quarter window) gives the direction — picks nearby can lie on lines side by side and span across them. From a tube an eighth of a window wide, the radius is measured from the points within twice the tube (median distance + 2 robust sd; within the tube alone the outer points are cut off and every round reads smaller) and the tube set to it, a few rounds; on a sparse line the stretch measured is lengthened (up to four windows) until it holds enough points. A line beside it, outside the first tube, never enters. Measuring from the picks, or from everything near them, took in neighbouring lines: 200 picks on eight cables side by side came out 25-370 cm "thick", and a line took its neighbours' picks.
+
+**Reading the line.** Each reading fits a short straight line through the window's points and judges the line's core and any crowding round it from that fit, not from the predicted line: a heading a few degrees off smears the line's own points sideways across the window and reads as clutter.
+
+The seed values (`seed_eps`, `line_radius`) are `"computed"` settings: remembered values and presets leave them alone, since they belong to the picks, not the kind of line. The shipped **Overhead cable** preset (`presets/trace_lines/`) holds the values tested on overhead wires. Extend Traced Lines still extends with the Axis Trace march.
 
 ---
 

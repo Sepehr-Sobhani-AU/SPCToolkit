@@ -531,20 +531,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                 f"Need at least {_MIN_SEEDS}.")
             return None
 
-        # --- Group the picked seeds into separate lines (DBSCAN) ---
-        seed_pts = pc_points[seed_indices]
-        eps = params.get("seed_eps")
-        if eps is None:
-            eps = _auto_seed_eps(seed_pts)
-        seed_labels = np.asarray(PointCloud(points=seed_pts).dbscan(
-            eps=eps,
-            min_points=params.get("seed_min_samples", 2),
-        ))
-        seed_groups = [
-            seed_indices[seed_labels == lbl]
-            for lbl in sorted(set(int(l) for l in seed_labels))
-            if lbl != -1 and np.count_nonzero(seed_labels == lbl) >= _MIN_SEEDS
-        ]
+        # --- Group the picked seeds into separate lines ---
+        seed_groups = self._group_seeds(seed_indices, pc_points, params)
         if not seed_groups:
             QMessageBox.warning(
                 main_window, "No Seed Groups",
@@ -553,6 +541,23 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             return None
 
         return seed_groups
+
+    def _group_seeds(self, seed_indices, pc_points, params):
+        """The picked seeds as one group per line (DBSCAN on Seed Group
+        Distance; worked out from the picks when it is not set)."""
+        seed_pts = pc_points[seed_indices]
+        eps = params.get("seed_eps")
+        if not eps:
+            eps = _auto_seed_eps(seed_pts)
+        seed_labels = np.asarray(PointCloud(points=seed_pts).dbscan(
+            eps=eps,
+            min_points=params.get("seed_min_samples", 2),
+        ))
+        return [
+            seed_indices[seed_labels == lbl]
+            for lbl in sorted(set(int(l) for l in seed_labels))
+            if lbl != -1 and np.count_nonzero(seed_labels == lbl) >= _MIN_SEEDS
+        ]
 
     def _grow_threaded(self, main_window, grower, seed_groups, blocked=None):
         """Run ``grower.grow_lines`` on a daemon thread with a status-bar progress
