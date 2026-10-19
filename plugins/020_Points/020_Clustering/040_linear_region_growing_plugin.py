@@ -28,11 +28,6 @@ controllable branches.
 Growth modes:
 - **Axis Trace** — march a search cylinder along the fitted line; best for
   isolated thin features. Needs no upstream features.
-- **Kalman Trace** — follow the line with a Kalman filter that predicts where
-  it goes, coasts through clutter and gaps, and re-finds it after a gap or a
-  kink; the line's width is measured from its own points. Each line is traced
-  once: a trace that reaches another line joins it there. See
-  ``core/services/kalman_line_tracer.py``.
 - **Linearity-Connected** / **Hybrid** — gate growth by per-point linearity;
   best for edges/kerbs embedded in a surface. These require eigenvalues on the
   selected branch (run Compute Eigenvalues first) — they are consumed, not
@@ -67,19 +62,12 @@ from core.services.linear_region_grower import (
     traces_to_lines,
     STOP_REASONS,
 )
-from core.services.kalman_line_tracer import KalmanLineTracer
 from plugins.dialogs.line_extension_window import LineExtensionWindow
 from application.selection_gate import selected_cloud_indices
 
 
-# Kalman Trace is not a LinearRegionGrower mode: its lines come from
-# KalmanLineTracer. The grower is still built (as Axis Trace) for the line
-# extension that follows a run.
-KALMAN_TRACE = "kalman_trace"
-
 _MODE_MAP = {
     "Axis Trace": AXIS_TRACE,
-    "Kalman Trace": KALMAN_TRACE,
     "Linearity-Connected": LINEARITY_CONNECTED,
     "Hybrid": HYBRID,
 }
@@ -87,7 +75,24 @@ _MODE_MAP = {
 _MIN_SEEDS = 2  # a line fit needs at least two points
 
 
+def _auto_seed_eps(seed_pts):
+    """Seed grouping distance from the picks themselves: twice the 90th
+    percentile of each pick's distance to its third-nearest pick. Along a
+    line the picks are spaced unevenly, so the TYPICAL gap would split one
+    line into many groups; the wide gaps keep it whole, and separate lines
+    are much further apart than that."""
+    from scipy.spatial import cKDTree
+    pts = np.asarray(seed_pts, dtype=float)
+    if len(pts) < 4:
+        return float(np.linalg.norm(np.ptp(pts, axis=0))) + 1e-6
+    d = cKDTree(pts).query(pts, k=4)[0][:, -1]
+    return max(2.0 * float(np.percentile(d, 90)), 1e-3)
+
+
 class LinearRegionGrowingPlugin(ActionPlugin):
+
+    # Shown in progress and messages; Trace Lines (a subclass) has its own.
+    DISPLAY_NAME = "Linear region growing"
 
     def get_name(self) -> str:
         return "linear_region_growing"
@@ -99,17 +104,13 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         return {
             "growth_mode": {
                 "type": "choice",
-                "options": ["Axis Trace", "Kalman Trace", "Linearity-Connected", "Hybrid"],
+                "options": ["Axis Trace", "Linearity-Connected", "Hybrid"],
                 "default": "Axis Trace",
                 "label": "Growth Mode",
                 "description": "Axis Trace marches a cylinder along the line "
-                               "(isolated features). Kalman Trace follows the "
-                               "line with a Kalman filter: measures its width "
-                               "from the seeds, coasts through clutter and gaps, "
-                               "traces each line once (uses the Kalman settings "
-                               "below). Linearity-Connected / Hybrid gate growth "
-                               "by per-point linearity (edges in a surface) and "
-                               "require eigenvalues on the branch.",
+                               "(isolated features). Linearity-Connected / Hybrid "
+                               "gate growth by per-point linearity (edges in a "
+                               "surface) and require eigenvalues on the branch.",
             },
             "seed_eps": {
                 "type": "float",
@@ -234,87 +235,6 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 "label": "Neighbours (k)",
                 "description": "Linearity-Connected: k-NN used to expand the region",
             },
-            "kalman_step": {
-                "type": "float",
-                "default": 0.5,
-                "min": 0.01,
-                "max": 20.0,
-                "label": "Kalman: Step (m)",
-                "description": "Kalman Trace: distance between readings of the "
-                               "line. Shorter follows tight bends; longer is faster",
-            },
-            "kalman_window": {
-                "type": "float",
-                "default": 1.0,
-                "min": 0.02,
-                "max": 50.0,
-                "label": "Kalman: Window (m)",
-                "description": "Kalman Trace: length of line each reading is "
-                               "taken from. Longer holds more points on a sparse "
-                               "line. The width is measured from the seeds, not "
-                               "set here",
-            },
-            "kalman_max_gap": {
-                "type": "float",
-                "default": 20.0,
-                "min": 0.0,
-                "max": 500.0,
-                "label": "Kalman: Max Gap (m)",
-                "description": "Kalman Trace: the longest stretch with no "
-                               "reading (a gap in the scan, through vegetation) "
-                               "crossed before the line is ended. A continuation "
-                               "is only taken if it lands where the line was "
-                               "predicted and is about as thick",
-            },
-            "kalman_max_turn": {
-                "type": "float",
-                "default": 30.0,
-                "min": 0.0,
-                "max": 90.0,
-                "label": "Kalman: Max Kink (deg)",
-                "description": "Kalman Trace: the sharpest sudden turn the line "
-                               "may take (e.g. at a support). 0 = no kinks",
-            },
-            "kalman_bridge_cone": {
-                "type": "float",
-                "default": 15.0,
-                "min": 1.0,
-                "max": 60.0,
-                "label": "Kalman: Gap Search Cone (deg)",
-                "description": "Kalman Trace: how far off its heading the line "
-                               "is looked for on the far side of a gap",
-            },
-            "kalman_min_bend_radius": {
-                "type": "float",
-                "default": 50.0,
-                "min": 0.1,
-                "max": 100000.0,
-                "label": "Kalman: Min Bend Radius (m)",
-                "description": "Kalman Trace: the tightest smooth bend the line "
-                               "may follow (kinks aside). Large for straight or "
-                               "gently sagging lines, small for curving ones",
-            },
-            "kalman_flexibility": {
-                "type": "float",
-                "default": 0.02,
-                "min": 0.0001,
-                "max": 10.0,
-                "decimals": 4,
-                "label": "Kalman: Flexibility",
-                "description": "Kalman Trace: how quickly the bend may change "
-                               "along the line. Larger follows changing curves "
-                               "faster; smaller smooths more",
-            },
-            "kalman_open_air": {
-                "type": "bool",
-                "default": True,
-                "label": "Kalman: Line in Open Air",
-                "description": "Kalman Trace: the line stands free of other "
-                               "points (cable, pipe) - points crowding round it "
-                               "are clutter (vegetation, a support) and are "
-                               "coasted through. Turn off for a line on or along "
-                               "a surface (kerb, edge)",
-            },
             "show_cylinders": {
                 "type": "bool",
                 "default": False,
@@ -361,7 +281,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         mode = _MODE_MAP.get(params.get("growth_mode", "Axis Trace"), AXIS_TRACE)
 
         # --- Validate + reconstruct the selected branch ---
-        main_window.show_progress("Linear region growing: reading the cloud...")
+        main_window.show_progress(f"{self.DISPLAY_NAME}: reading the cloud...")
         prep = self._validate_and_reconstruct(controller, viewer_widget, main_window, mode, params)
         if prep is None:
             return
@@ -369,7 +289,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         pc_points = point_cloud.points
 
         # --- Map the picked seeds and group them into separate lines ---
-        main_window.show_progress("Linear region growing: grouping the picked seeds...")
+        main_window.show_progress(f"{self.DISPLAY_NAME}: grouping the picked seeds...")
         seeds = self._resolve_seed_groups(viewer_widget, pc_points, params,
                                           main_window, node=node)
         if seeds is None:
@@ -377,37 +297,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         seed_groups = seeds
 
         # --- Grow one line per group on a background thread (progress + cancel) ---
-        # Kalman Trace grows with its own tracer; the grower is still built (as
-        # Axis Trace) for the line extension offered after the run.
-        tracer = None
-        if mode == KALMAN_TRACE:
-            tracer = KalmanLineTracer(
-                pc_points,
-                step=params.get("kalman_step", 0.5),
-                window=params.get("kalman_window", 1.0),
-                max_gap=params.get("kalman_max_gap", 20.0),
-                max_turn_deg=params.get("kalman_max_turn", 30.0),
-                bridge_cone_deg=params.get("kalman_bridge_cone", 15.0),
-                min_bend_radius=params.get("kalman_min_bend_radius", 50.0),
-                flexibility=params.get("kalman_flexibility", 0.02),
-                open_air=params.get("kalman_open_air", True),
-            )
-        grower = LinearRegionGrower(
-            all_points=pc_points,
-            mode=AXIS_TRACE if mode == KALMAN_TRACE else mode,
-            ransac_threshold=params.get("ransac_threshold", 0.03),
-            max_iterations=params.get("ransac_iterations", 100),
-            cylinder_radius=params.get("cylinder_radius", 0.03),
-            cylinder_length=params.get("cylinder_length", 0.5),
-            reach_factor=params.get("reach_factor", 3.0),
-            overlap=params.get("cylinder_overlap", 0.0) / 100.0,
-            min_points=params.get("min_points", 5),
-            max_angle_deg=params.get("max_angle", 20.0),
-            min_angle_deg=params.get("min_angle"),
-            linearity=linearity,
-            linearity_threshold=params.get("linearity_threshold", 0.4),
-            neighbor_k=params.get("neighbor_k", 16),
-        )
+        engine, grower = self._make_growers(pc_points, params, mode, linearity)
         # Every exit below frees what the grower's queries built on the GPU —
         # unless the extension window took the grower over, in which case the
         # window frees it when it closes (see LinearRegionGrower.release).
@@ -417,8 +307,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             # but are never taken from them.
             blocked = None if existing is None else is_cluster(existing.labels)
             lines, stopped_early = self._grow_threaded(
-                main_window, tracer if tracer is not None else grower,
-                seed_groups, blocked)
+                main_window, engine, seed_groups, blocked)
             if lines is None:  # error during grow — message already shown
                 return
             if not lines:
@@ -430,7 +319,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
             # --- Write the lines: a new result branch, or into the selected one ---
             main_window.show_progress(
-                f"Linear region growing: writing {len(lines)} line(s)...")
+                f"{self.DISPLAY_NAME}: writing {len(lines)} line(s)...")
             resolved = set()
             if existing is None:
                 result_uid, labels = self._build_result_branch(
@@ -448,7 +337,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                                             result_uid, all_lines, lines, params)
 
             # --- Render and clear selection ---
-            main_window.show_progress("Linear region growing: drawing...")
+            main_window.show_progress(f"{self.DISPLAY_NAME}: drawing...")
             main_window.render_visible_data(zoom_extent=False)
             viewer_widget.clear_selection()
 
@@ -461,13 +350,36 @@ class LinearRegionGrowingPlugin(ActionPlugin):
             # cheapest right now while the grower and the picks are still to hand.
             # Declining is fine: the stops are persisted on the result branch, so
             # "Extend Traced Lines" reopens this on the saved branch at any time.
-            main_window.show_progress("Linear region growing: checking line ends...")
+            main_window.show_progress(f"{self.DISPLAY_NAME}: checking line ends...")
             handed_over = self._offer_extension(
                 main_window, result_uid, pc_points, all_lines, lines, grower,
                 params, resolved)
         finally:
             if not handed_over:
                 grower.release()
+
+    def _make_growers(self, pc_points, params, mode, linearity):
+        """``(engine, grower)``: what grows the lines (anything with
+        ``grow_lines`` - see ``_grow_threaded``) and the ``LinearRegionGrower``
+        the line extension offered after the run uses. The same object here;
+        Trace Lines grows with its own tracer."""
+        grower = LinearRegionGrower(
+            all_points=pc_points,
+            mode=mode,
+            ransac_threshold=params.get("ransac_threshold", 0.03),
+            max_iterations=params.get("ransac_iterations", 100),
+            cylinder_radius=params.get("cylinder_radius", 0.03),
+            cylinder_length=params.get("cylinder_length", 0.5),
+            reach_factor=params.get("reach_factor", 3.0),
+            overlap=params.get("cylinder_overlap", 0.0) / 100.0,
+            min_points=params.get("min_points", 5),
+            max_angle_deg=params.get("max_angle", 20.0),
+            min_angle_deg=params.get("min_angle"),
+            linearity=linearity,
+            linearity_threshold=params.get("linearity_threshold", 0.4),
+            neighbor_k=params.get("neighbor_k", 16),
+        )
+        return grower, grower
 
     def _offer_extension(self, main_window, result_uid, pc_points, all_lines,
                          new_lines, grower, params, resolved):
@@ -621,8 +533,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
         # --- Group the picked seeds into separate lines (DBSCAN) ---
         seed_pts = pc_points[seed_indices]
+        eps = params.get("seed_eps")
+        if eps is None:
+            eps = _auto_seed_eps(seed_pts)
         seed_labels = np.asarray(PointCloud(points=seed_pts).dbscan(
-            eps=params.get("seed_eps", 0.10),
+            eps=eps,
             min_points=params.get("seed_min_samples", 2),
         ))
         seed_groups = [
@@ -642,7 +557,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
     def _grow_threaded(self, main_window, grower, seed_groups, blocked=None):
         """Run ``grower.grow_lines`` on a daemon thread with a status-bar progress
         bar and cancel button (matching surface_region_growing's UX). *grower*
-        is a ``LinearRegionGrower`` or a ``KalmanLineTracer`` - same contract.
+        is anything with ``LinearRegionGrower.grow_lines``'s contract.
 
         Returns ``(lines, stopped_early)``. ``lines`` is ``None`` on error (a
         QMessageBox has been shown); on cancel it holds whatever was grown before
@@ -691,7 +606,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         main_window.enable_tree()
 
         if state["error"]:
-            QMessageBox.critical(main_window, "Linear Region Growing Failed",
+            QMessageBox.critical(main_window, f"{self.DISPLAY_NAME.title()} Failed",
                                  state["error"])
             return None, stopped_early
         return state["lines"] or [], stopped_early
@@ -713,11 +628,11 @@ class LinearRegionGrowingPlugin(ActionPlugin):
         clusters.set_random_color()
 
         result_uid = controller.add_analysis_result(
-            clusters, "cluster_labels", [node.uid], node, "linear_region_growing", params
+            clusters, "cluster_labels", [node.uid], node, self.get_name(), params
         )
         tree_widget.add_branch(
             result_uid, str(node.uid),
-            "linear_region_growing", tooltip=f"linear_region_growing,{params}"
+            self.get_name(), tooltip=f"{self.get_name()},{params}"
         )
 
         # --- Hide the input branch, show the result ---
@@ -842,7 +757,7 @@ class LinearRegionGrowingPlugin(ActionPlugin):
                 feature, "vector_feature", [node.uid], result_node, name, params
             )
             tree_widget.add_branch(vf_uid, result_uid, name,
-                                   tooltip=f"linear_region_growing,{params}")
+                                   tooltip=f"{self.get_name()},{params}")
             vf_item = tree_widget.branches_dict.get(vf_uid)
             if vf_item:
                 vf_item.setCheckState(0, Qt.Checked)
@@ -929,8 +844,8 @@ class LinearRegionGrowingPlugin(ActionPlugin):
 
         QMessageBox.information(
             main_window,
-            "Linear Region Growing Cancelled" if stopped_early
-            else "Linear Region Growing Complete",
+            f"{self.DISPLAY_NAME.title()} Cancelled" if stopped_early
+            else f"{self.DISPLAY_NAME.title()} Complete",
             f"Grew {len(lines)} line(s) — {n_feature:,} feature points, "
             f"{n_rest:,} remaining." + added_note + stop_summary + cancel_note
         )

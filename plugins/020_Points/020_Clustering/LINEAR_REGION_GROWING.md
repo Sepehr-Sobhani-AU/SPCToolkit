@@ -150,7 +150,7 @@ With no picks, nothing is relaxed at all — which is what stops the workflow fr
 
 ## Growth modes
 
-Selected with the `growth_mode` parameter. All start from the picked seed points. Axis Trace, Linearity-Connected and Hybrid call the line-RANSAC engine and differ only in how the region expands; Kalman Trace follows the line with a Kalman filter instead.
+Selected with the `growth_mode` parameter. All three start from the picked seed points and call the line-RANSAC engine; they differ only in how the region expands. Following a line with a Kalman filter is its own tool, **Trace Lines** — see below.
 
 ### Axis Trace (`axis_trace`)
 Raw points only — needs no upstream features. Best for **isolated thin features** (cables, pipes, rails).
@@ -165,21 +165,6 @@ Raw points only — needs no upstream features. Best for **isolated thin feature
    - **Stop** when even the `max_angle` cone finds nothing to follow: the line turns more than `max_angle` (a bend — e.g. a pole or feature end), or fewer than `min_points` fall in the window or the band and no gap could be bridged, or nothing is ahead at all.
    - Collect the inliers, then advance the tip by `(1 − cylinder_overlap%)` of a cylinder length, **re-projecting it onto the freshly-fit local axis** so the march stays on the feature through curves. **Show Search Windows** adds two branches: `search_windows` (light green) draws each step's frustum exactly where it searched — so consecutive windows overlap and their wide ends stand off the feature — and `cylinders` (light blue) draws the band each step fitted, chained between the fitted centres. The bands are what trim, rollback and saved traces use; the windows are display only and are not saved with the project. Repeat (capped at `max_steps = 500` per direction).
 
-### Kalman Trace (`kalman_trace`)
-Raw points only. Follows the line with a Kalman filter (`core/services/kalman_line_tracer.py`, on `path_tracker`'s extended Kalman model; seeds, width, claiming and joining are shared tracer rules in `core/services/line_tracer_base.py`): a running estimate of position, direction and bend, with how sure it is of each.
-
-1. **Measure the line from its seeds.** Start at the densest spot of the seed group (a group too small to measure from — a sparse selection that seed grouping split into many — borrows the picks around it from other groups); the line's radius is the median distance of its points from the centre line plus two robust (median-absolute-deviation) standard deviations — the *apparent* width, true size plus scanner noise, measured on short pieces so a bend is not read as thickness. A 2 cm cable with 1 cm noise and a 30 cm hollow pipe both come out right. No width is set by hand.
-   The **bend** is measured too: a gentle curve fitted through the start piece gives the direction at its end and the curvature, so a tight curve is followed from the first step instead of being started straight and lost.
-2. **Predict, then read.** Each step (`kalman_step`) predicts where the line is and reads its position from the points in a window (`kalman_window`) round the prediction, picking the cluster that is both dense and close to the prediction.
-3. **Coast through clutter and gaps.** With `kalman_open_air` on, a window crowded by other points (vegetation, a support) is not trusted: the trace coasts on the prediction, and after clutter a reading counts only if the next ones agree. Turn it off for lines on a surface.
-4. **Find the far side.** After a gap, rays from the last good point search for a continuation. It is taken only if it **lands where the line was predicted, within the prediction's own uncertainty** (which grows with the gap) and is **about as thick** as the line. Otherwise, after `kalman_max_gap`, the line **ends** — it does not reach across empty space onto whatever is nearest.
-5. **Kinks.** Where readings stop in open space, a short search from points along the predicted bend finds where the line leaves, up to `kalman_max_turn`.
-6. **Each line once.** Points already on a line — this run's or the result branch's — are seen but never taken. A trace that runs onto another line **stops and joins it** there; two of this run's lines that join end to end are merged into one; a join onto the middle of a line is a junction and stays two lines. A seed group that holds more than one line (lines touching inside the selection) is traced again from its seeds the first line did not cover.
-7. **Ends.** A reading needs its window to hold enough line, so a trace stops up to half a window short of where the line really ends; an ended trace is carried on to the last point still on its course.
-8. **Claim.** The radius is measured again along the whole traced line (the seed's densest spot reads too tight further on), and the line takes the points within it. Ends where the line ended are saved as stops (`empty_space`) for Extend Traced Lines; ends where it joined another line are not stops.
-
-The assumptions about a *kind* of feature are settings, not code: `kalman_open_air`, `kalman_max_gap`, `kalman_max_turn`, `kalman_bridge_cone`, `kalman_min_bend_radius`, `kalman_flexibility`. Their defaults came from overhead-wire test data; presets for particular features belong on top of them. Extend Traced Lines still extends with the Axis Trace march.
-
 ### Linearity-Connected (`linearity_connected`)
 Requires precomputed linearity. Best for **edges/kerbs embedded in a surface**, where an axis cylinder would leak into the surrounding plane.
 
@@ -190,11 +175,40 @@ The Axis-Trace march with the linearity gate additionally applied to candidate p
 
 ---
 
+## Trace Lines (`trace_lines`, its own menu item)
+
+Points > Clustering > Trace Lines (`045_trace_lines_plugin.py`). A subclass of this plugin: it reads the picks, writes and expands the same result branch and offers the same extension afterwards; only how the lines are grown differs. Either tool can add lines to the other's result. Raw points only. Follows the line with a Kalman filter (`core/services/kalman_line_tracer.py`, on `path_tracker`'s extended Kalman model; seeds, width, claiming and joining are shared tracer rules in `core/services/line_tracer_base.py`): a running estimate of position, direction and bend, with how sure it is of each.
+
+1. **Measure the line from its seeds.** Start at the densest spot of the seed group (a group too small to measure from — a sparse selection that seed grouping split into many — borrows the picks around it from other groups); the line's radius is the median distance of its points from the centre line plus two robust (median-absolute-deviation) standard deviations — the *apparent* width, true size plus scanner noise, measured on short pieces so a bend is not read as thickness. A 2 cm cable with 1 cm noise and a 30 cm hollow pipe both come out right. No width is set by hand.
+   The **bend** is measured too: a gentle curve fitted through the start piece gives the direction at its end and the curvature, so a tight curve is followed from the first step instead of being started straight and lost.
+2. **Predict, then read.** Each step (half the `window`) predicts where the line is and reads its position from the points in a window (`window`) round the prediction, picking the cluster that is both dense and close to the prediction.
+3. **Coast through clutter and gaps.** With `open_air` (*Line in Open Air*) on, a window crowded by other points (vegetation, a support) is not trusted: the trace coasts on the prediction, and after clutter a reading counts only if the next ones agree. Turn it off for lines on a surface.
+4. **Find the far side.** After a gap, rays from the last good point search for a continuation. It is taken only if it **lands where the line was predicted, within the prediction's own uncertainty** (which grows with the gap) and is **about as thick** as the line. Otherwise, after `max_gap`, the line **ends** — it does not reach across empty space onto whatever is nearest.
+5. **Kinks.** Where readings stop in open space, a short search from points along the predicted bend finds where the line leaves, up to `max_kink`.
+6. **Each line once.** Points already on a line — this run's or the result branch's — are seen but never taken. A trace that runs onto another line **stops and joins it** there; two of this run's lines that join end to end are merged into one; a join onto the middle of a line is a junction and stays two lines. A seed group that holds more than one line (lines touching inside the selection) is traced again from its seeds the first line did not cover.
+7. **Ends.** A reading needs its window to hold enough line, so a trace stops up to half a window short of where the line really ends; an ended trace is carried on to the last point still on its course.
+8. **Claim.** The radius is measured again along the whole traced line (the seed's densest spot reads too tight further on), and the line takes the points within it. Ends where the line ended are saved as stops (`empty_space`) for Extend Traced Lines; ends where it joined another line are not stops.
+
+Settings (the dialog shows only these):
+
+| Setting | Default | Role |
+|---|---|---|
+| `max_gap` | `20` m | How far a line may disappear and still be followed. |
+| `max_kink` | `30°` | Sharpest sudden turn (a support, an elbow). |
+| `min_bend_radius` | `50` m | Tightest smooth bend followed. |
+| `open_air` | on | Crowding round the line is clutter to pass through; off for lines on a surface. |
+| `window` | `1.0` m | Length looked at per step (advanced); the step is half of it. |
+| `show_lines` | off | Add the centerlines as a branch. |
+
+The seed grouping distance is worked out from the picks (twice the 90th percentile of each pick's distance to its third-nearest pick), so a sparse selection stays one group per line. The gap search cone (15°) and how fast the bend may change are fixed. These are assumptions about the *kind* of feature, so they are settings rather than code; the shipped **Overhead cable** preset (`presets/trace_lines/`) holds the values tested on overhead wires. Extend Traced Lines still extends with the Axis Trace march.
+
+---
+
 ## Parameters
 
 | Parameter             | Default | Role                                                                 |
 |-----------------------|---------|----------------------------------------------------------------------|
-| `growth_mode`         | Axis Trace | Axis Trace / Kalman Trace / Linearity-Connected / Hybrid (see above). |
+| `growth_mode`         | Axis Trace | Axis Trace / Linearity-Connected / Hybrid (see above).            |
 | `ransac_threshold`    | `0.03`  | Line-RANSAC inlier distance threshold (m).                          |
 | `ransac_iterations`   | `100`   | Max candidate lines tried per fit — at the seed and at each march step (higher = more robust, slower). |
 | `cylinder_radius`     | `0.03`  | **Tip Radius**: fit-window radius at the tip (m); also the band width fitted around the chosen line. |
@@ -205,14 +219,6 @@ The Axis-Trace march with the linearity gate additionally applied to candidate p
 | `max_angle`           | `20°`   | Widest the cone opens when the narrow one loses the line, and the largest turn per step before the march stops (cone capped at 80°). |
 | `linearity_threshold` | `0.4`   | Linearity / Hybrid: accept a point only above this linearity.        |
 | `neighbor_k`          | `16`    | Linearity-Connected: k-NN used to expand the region.                |
-| `kalman_step`         | `0.5`   | Kalman Trace: metres between readings.                               |
-| `kalman_window`       | `1.0`   | Kalman Trace: length of line each reading is taken from (m).         |
-| `kalman_max_gap`      | `20`    | Kalman Trace: longest stretch with no reading before the line ends (m). |
-| `kalman_max_turn`     | `30°`   | Kalman Trace: sharpest kink the line may take.                       |
-| `kalman_bridge_cone`  | `15°`   | Kalman Trace: cone searched for the far side of a gap.               |
-| `kalman_min_bend_radius` | `50` | Kalman Trace: tightest smooth bend followed (m).                     |
-| `kalman_flexibility`  | `0.02`  | Kalman Trace: how fast the bend may change.                          |
-| `kalman_open_air`     | `on`    | Kalman Trace: crowding round the line is clutter to coast through (off for lines on a surface). |
 | `show_cylinders`      | `off`   | Add the axis-trace search cylinders as a controllable wireframe branch (debug). |
 | `show_lines`          | `off`   | Add the traced centerline as a controllable wireframe branch (debug). |
 

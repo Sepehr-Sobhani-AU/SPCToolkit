@@ -6,6 +6,15 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-20 — Trace Lines is its own tool with five settings; presets live in the parameter dialog
+After testing, the user found Linear Region Growing's one dialog for four modes (~25 settings)
+too complicated, so the Kalman tracer became its own menu item, Trace Lines (a subclass sharing
+the result branch, expansion and extension), showing only max gap, max kink, min bend radius,
+open air and window; the seed grouping distance is worked out from the picks and the rest are
+fixed, since the robustness sweeps found them safe at default and harmful when changed. Settings
+presets were added to the shared parameter dialog (`presets/<plugin>/`) rather than to this tool,
+so every plugin gets them; "Overhead cable" ships as the first, holding the Test1 values.
+
 ## 2026-10-19 — Particle filter tried for linear growing and dropped; Kalman kept
 A particle filter was built on the shared tracer rules, alone and as a recovery helper inside
 the Kalman tracer at kinks and gaps. It beat Kalman on general synthetic scenes (97% vs 92%) but

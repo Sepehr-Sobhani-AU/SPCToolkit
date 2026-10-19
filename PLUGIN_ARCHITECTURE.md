@@ -162,6 +162,16 @@ All types support:
 
 `DialogBoxesManager._last_params` stores `{plugin_name: {param_name: value}}` in memory. When a dialog opens, `_apply_last_params()` patches the schema defaults with previously used values. Values persist for the application session (not saved to disk).
 
+
+### Presets
+
+When the dialog knows which plugin it is for (`DynamicDialog(..., plugin_name=...)`, which both
+the analysis and the action paths pass), it shows a **Preset** row: a dropdown of saved presets
+with *Load*, *Save…* and *Delete*. A preset is a named set of the plugin's setting values, one
+JSON file per preset in `presets/<plugin name>/` (`services/preset_service.py`), so presets travel
+with the project. Loading fills the form — settings the preset lacks keep what is shown, keys the
+plugin no longer has are ignored — and the user can still edit before OK. Presets that ship with
+the project live in the same folder (e.g. `presets/trace_lines/Overhead cable.json`).
 ## 5. Execution Flows
 
 ### The Selection Gate (runs first, for both plugin types)
@@ -536,10 +546,11 @@ Generated from the source tree. **100 plugins** (69 Action, 31 Analysis) across 
 | Points > Clustering | `cluster_size_filter` | Analysis | `ClusterSizeFilterPlugin` |
 | Points > Clustering | `surface_region_growing` | Action | `SurfaceRegionGrowingPlugin` |
 | Points > Clustering | `linear_region_growing` | Action | `LinearRegionGrowingPlugin` |
+| Points > Clustering | `trace_lines` | Action | `TraceLinesPlugin` (subclass of `LinearRegionGrowingPlugin`) |
 | Points > Clustering | `crease_edge` | Action | `CreaseEdgePlugin` |
 | Points > Clustering | `contour_growing` | Action | `ContourGrowingPlugin` |
 | Points > Clustering | `extend_traced_lines` | Action | `ExtendLinesPlugin` |
-| Points > Clustering | `kalman_line_preview` | Action | `KalmanLinePreviewPlugin` |
+| Points > Clustering | `line_preview` | Action | `LinePreviewPlugin` |
 | Points > Analysis | `compute_eigenvalues` | Analysis | `ComputeEigenvaluesPlugin` |
 | Points > Analysis | `knn_analysis` | Analysis | `KNNAnalysisPlugin` |
 | Points > Analysis | `geometric_classification` | Analysis | `GeometricClassificationPlugin` |
