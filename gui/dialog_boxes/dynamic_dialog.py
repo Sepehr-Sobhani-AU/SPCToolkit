@@ -225,7 +225,11 @@ class DynamicDialog(QDialog):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         try:
-            save_preset(self.plugin_name, name, dict(self.get_parameters()))
+            # Computed settings depend on the current selection, not on the
+            # kind of job a preset is for: not saved.
+            values = {k: v for k, v in self.get_parameters().items()
+                      if not self.parameter_schema.get(k, {}).get("computed")}
+            save_preset(self.plugin_name, name, values)
         except (OSError, ValueError) as e:
             QMessageBox.warning(self, "Preset Not Saved", str(e))
             return
@@ -243,10 +247,11 @@ class DynamicDialog(QDialog):
 
     def set_parameters(self, values: Dict[str, Any]) -> None:
         """Show *values* in the widgets. Settings not in *values* keep what is
-        shown; names the schema does not have are ignored."""
+        shown; names the schema does not have, and computed settings, are
+        ignored."""
         for param_name, value in values.items():
             widget = self.param_widgets.get(param_name)
-            if widget is None:
+            if widget is None or self.parameter_schema[param_name].get("computed"):
                 continue
             param_type = self.parameter_schema[param_name].get("type", "string")
             if param_type == "info":

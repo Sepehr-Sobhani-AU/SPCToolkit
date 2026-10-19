@@ -43,7 +43,9 @@ class DialogBoxesManager(QObject):
         last = self._last_params[plugin_name]
         patched = {}
         for param_name, param_info in schema.items():
-            if param_name in last:
+            # A "computed" default is worked out when the dialog opens (e.g.
+            # from the current selection) - last time's value would be stale.
+            if param_name in last and not param_info.get("computed"):
                 patched[param_name] = {**param_info, "default": last[param_name]}
             else:
                 patched[param_name] = param_info

@@ -157,6 +157,7 @@ All types support:
 - **`default`** — initial value
 - **`label`** — display label in the form (defaults to param name)
 - **`description`** — tooltip text
+- **`computed`** — `True` when the default is worked out as the dialog opens (e.g. from the current selection): remembered values and presets leave such a setting alone, and presets do not save it
 
 ### Last-Used Value Persistence
 
