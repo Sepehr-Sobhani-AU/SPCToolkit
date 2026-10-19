@@ -73,3 +73,6 @@ debug_*.py
 diagnose_*.py
 convert_*.py
 train_*.py
+
+# Local experiment scripts and data - not part of the project
+experiments/
