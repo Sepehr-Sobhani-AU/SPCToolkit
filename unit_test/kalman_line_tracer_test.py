@@ -99,6 +99,36 @@ def test_ends_instead_of_reaching_an_unrelated_line():
     print(f"ends at x = {reached:.1f} m, not on the unrelated line at x = 32")
 
 
+def test_sparse_picks_in_tiny_groups_still_trace():
+    # A sparse selection that grouping split into groups of 2-4 picks, each
+    # too few to measure a line from: the picks around them are borrowed.
+    line = _wire(0, 30, per_m=15)
+    pts = line.astype(np.float32)
+    picks = _seed(line, 2, 6)
+    groups = [picks[i:i + 3] for i in range(0, len(picks), 3)]
+    tracer = KalmanLineTracer(pts)
+    lines = tracer.grow_lines(groups)
+    tracer.release()
+    assert len(lines) == 1, f"{len(lines)} lines from {len(groups)} tiny groups"
+    c = lines[0].centerline
+    assert c[:, 0].max() > 29 and c[:, 0].min() < 1, (c[:, 0].min(), c[:, 0].max())
+    print(f"{len(groups)} groups of <= 3 picks -> 1 line, {c[:, 0].min():.1f}..{c[:, 0].max():.1f} m")
+
+
+def test_starts_on_a_tight_curve():
+    # A quarter circle of radius 4 m: started straight, a tracer loses it
+    # within a window; the bend is measured from the seed.
+    th = np.sort(RNG.uniform(0, np.pi / 2, 1500))
+    arc = np.stack([4 * np.sin(th), 4 - 4 * np.cos(th), np.zeros_like(th)], 1) \
+        + RNG.normal(0, 0.008, (len(th), 3))
+    tracer = KalmanLineTracer(arc.astype(np.float32), min_bend_radius=2.0)
+    lines = tracer.grow_lines([np.flatnonzero(th < 0.25)])
+    tracer.release()
+    end = np.linalg.norm(lines[0].centerline - [4, 4, 0], axis=1).min()
+    assert end < 1.0, f"stopped {end:.1f} m short of the curve's end"
+    print(f"tight curve R=4 m: traced to {end * 100:.0f} cm of its end")
+
+
 def test_existing_line_is_seen_not_taken():
     line = _wire(0, 40)
     pts = line.astype(np.float32)
@@ -118,5 +148,7 @@ if __name__ == "__main__":
     test_follows_gap_and_clutter_not_neighbour()
     test_one_line_from_many_seed_groups()
     test_ends_instead_of_reaching_an_unrelated_line()
+    test_sparse_picks_in_tiny_groups_still_trace()
+    test_starts_on_a_tight_curve()
     test_existing_line_is_seen_not_taken()
     print("\nAll Kalman line tracer tests passed.")
