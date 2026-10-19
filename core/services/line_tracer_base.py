@@ -31,6 +31,7 @@ from core.services.linear_region_grower import (
     GrownLine,
     MarchStop,
     STOP_EMPTY_SPACE,
+    STOP_JOINED_LINE,
     _default_shape_query,
 )
 
@@ -77,9 +78,13 @@ _RESTART_DIR_SIGMA = 0.03      # rad
 # by it - also the few just outside its 96% radius, which would otherwise be
 # traced again as a second line.
 _COVER_RADII = 2.0
-# With few picks, the start piece takes in cloud points within this many
-# seed spacings of a pick.
-_START_PICK_GAPS = 1.5
+# Measured again along the traced line, the radius may grow at most to this
+# many times the one measured at the pick.
+_MAX_WIDEN = 2.0
+# Points wanted to measure a line's radius from at a pick.
+_MEASURE_POINTS = 40
+# Rounds of measuring the radius at a pick and shrinking the tube to it.
+_HOMING_ROUNDS = 6
 # Resampling step (m) for comparing and claiming along centerlines.
 _SAMPLE = 0.1
 # Finer resampling for distances to traced lines: a point's distance to the
@@ -109,12 +114,15 @@ class LineTracerBase:
             pipe): points crowding round it are clutter, coasted through. False
             for a line on or along a surface (kerb, edge).
         max_length: cap (m) on one direction of one trace.
+        radius: the line's radius (m), when set; otherwise (None or 0) it
+            is measured from the cloud at a pick.
+        min_points: fewest points a reading of the line needs.
     """
 
     def __init__(self, all_points, shape_query=None, step=0.5, window=1.0,
                  max_gap=20.0, max_turn_deg=30.0, bridge_cone_deg=15.0,
                  min_bend_radius=50.0, flexibility=0.02, open_air=True,
-                 max_length=5000.0):
+                 max_length=5000.0, radius=None, min_points=_MIN_READ_POINTS):
         self.all_points = np.asarray(all_points)
         self.shape_query = shape_query if shape_query is not None \
             else _default_shape_query()
@@ -127,6 +135,11 @@ class LineTracerBase:
         self.flexibility = float(flexibility)
         self.open_air = bool(open_air)
         self.max_length = float(max_length)
+        # A set line radius (m) instead of measuring one; None/0 = measure.
+        self.radius = float(radius) if radius else None
+        # Fewest points a reading of the line needs (twice that just after
+        # clutter, before the reading is trusted again).
+        self.min_points = max(2, int(min_points))
         self._owner = None
         self._cancel_event = None
         # Fine samples of the lines traced so far, for distances to them.
@@ -165,9 +178,6 @@ class LineTracerBase:
         self._line_of_sample = None
         groups = sorted((np.asarray(g, dtype=np.intp) for g in seed_groups
                          if np.asarray(g).size >= 2), key=len, reverse=True)
-        # Every pick, across groups: a group too small to measure from borrows
-        # the picks around it (DBSCAN splits a sparse selection into many).
-        self._picks = np.unique(np.concatenate(groups)) if groups else np.empty(0, np.intp)
         lines = []          # dicts: centerline, radius, ends
         try:
             for gi, group in enumerate(groups):
@@ -188,6 +198,27 @@ class LineTracerBase:
             self._line_tree = None
             self._line_of_sample = None
 
+    def measure_radius(self, picks, samples=5):
+        """The line radius at the picks: measured at up to *samples* of them,
+        spread through the selection, as a line's start is - the middle
+        value. None when it could not be measured at any."""
+        picks = np.asarray(picks, dtype=np.intp)
+        if len(picks) == 0:
+            return None
+        saved = (self._owner, self.radius)
+        self._owner = np.full(len(self.all_points), -1, dtype=np.int32)
+        self.radius = None
+        try:
+            chosen = picks[np.linspace(0, len(picks) - 1, min(samples, len(picks))).astype(int)]
+            radii = []
+            for pick in chosen:
+                start = self._start_piece(np.array([pick]))
+                if start is not None:
+                    radii.append(start[3])
+            return float(np.median(radii)) if radii else None
+        finally:
+            self._owner, self.radius = saved
+
     def release(self) -> None:
         """Free the shape query service's GPU state for this cloud."""
         self.shape_query.release_all()
@@ -201,10 +232,14 @@ class LineTracerBase:
         new of it, and return the seeds still uncovered."""
         owner = self._owner
         mini = self._dense_start(remaining)
-        piece = self._start_piece(mini, remaining)
+        start = self._start_piece(mini)
+        if start is None:                # too few points here to measure
+            return self._set_aside(remaining, mini)
+        piece, anchor, axis, r_start = start
         prof = line_profile(self.all_points[piece])
-        if prof is None:                 # too few points here to measure
-            return remaining[~np.isin(remaining, mini)]
+        if prof is None:
+            return self._set_aside(remaining, mini)
+        prof["radius"] = r_start
         cfg = self._cfg(prof)
         centerline, ends = self._trace_both_ways(piece, cfg)
         pieces = self._cut_same_line(centerline, prof["radius"], lines)
@@ -217,18 +252,32 @@ class LineTracerBase:
                 continue
             owner[members] = len(lines)
             lines.append(dict(centerline=piece, radius=radius,
-                              ends=ends if len(pieces) == 1 else [_END, _END]))
+                              ends=ends if len(pieces) == 1 else [_ON_LINE, _ON_LINE]))
             self._index_lines(lines)
             took += len(members)
         covered = owner[remaining] >= 0
         if lines:
             covered |= self._near_lines(self.all_points[remaining], lines)
         if took == 0 or not covered.any():
-            # Nothing traced from this spot: set its neighbourhood aside.
-            covered |= np.linalg.norm(self.all_points[remaining]
-                                      - self.all_points[mini].mean(0), axis=1) \
-                < 2 * self.window
+            # Nothing traced from this spot: set aside the picks on the line
+            # tried here - near its axis - not those of lines beside it.
+            rel = self.all_points[remaining].astype(float) - anchor
+            a = rel @ axis
+            off = np.linalg.norm(rel - np.outer(a, axis), axis=1)
+            covered |= (np.abs(a) < 2 * self.window) & (off < _COVER_RADII * r_start)
+            covered |= remaining == remaining[np.argmin(np.linalg.norm(rel, axis=1))]
         return remaining[~covered & (owner[remaining] < 0)]
+
+    def _set_aside(self, remaining, mini):
+        """Drop the picks at the spot that could not be traced - within an
+        eighth of a window of the pick tried - not the picks of lines beside
+        it."""
+        pts = self.all_points[mini].astype(float)
+        anchor = pts[int(np.argmin(np.linalg.norm(pts - pts.mean(0), axis=1)))]
+        d = np.linalg.norm(self.all_points[remaining] - anchor, axis=1)
+        drop = d < self.window / 8
+        drop[int(np.argmin(d))] = True
+        return remaining[~drop]
 
     def _dense_start(self, idx):
         """The seeds within two windows of the densest spot of *idx*: a short
@@ -242,36 +291,83 @@ class LineTracerBase:
         centre = pts[sub[int(np.argmax(counts))]]
         return idx[np.linalg.norm(pts - centre, axis=1) <= reach]
 
-    def _start_piece(self, mini, seeds):
-        """The points to measure and start the line from. The picks
-        themselves when there are enough; with few, first the user's other
-        picks within two windows (DBSCAN splits a sparse selection into many
-        small groups), then the cloud's points within a few pick spacings of
-        them - as the axis march takes its first heading from the cloud near
-        its seeds."""
-        if len(mini) >= 2 * _MIN_PROFILE_POINTS:
-            return mini
-        # The user's other picks nearby, from any group.
-        picks = self._picks[self._owner[self._picks] < 0]
-        centre = self.all_points[mini].astype(float).mean(0)
-        nearby = picks[np.linalg.norm(self.all_points[picks] - centre, axis=1) <= 2 * self.window]
-        mini = np.union1d(mini, nearby)
-        if len(mini) >= 2 * _MIN_PROFILE_POINTS:
-            return mini
-        seeds = mini
-        pts = self.all_points[seeds].astype(float)
-        gap = (float(np.median(cKDTree(pts).query(pts, k=2)[0][:, 1]))
-               if len(seeds) > 2 else float(np.linalg.norm(np.ptp(pts, axis=0))))
-        reach = max(_START_PICK_GAPS * gap, 1e-3)
-        mine = self.all_points[mini].astype(float)
-        centre = mine.mean(0)
-        extent = float(np.linalg.norm(mine - centre, axis=1).max())
-        idx = self._ball(centre, extent + reach)
-        if len(idx) == 0:
-            return mini
-        d = cKDTree(mine).query(self.all_points[idx])[0]
-        near = idx[(d <= reach) & (self._owner[idx] < 0)]
-        return np.union1d(mini, near)
+    def _start_piece(self, mini):
+        """Where to start, and the line's radius there, measured at one pick.
+
+        A pick is certainly on a line, and the cloud right round it gives its
+        direction. Starting from a narrow tube round that axis - an eighth of
+        a window - the radius is measured from the cloud's points within
+        twice the tube (median distance + 2 robust sd) and the tube set to
+        it, a few times, re-centring on the points in it. A line beside it, outside the
+        first tube, never enters the measurement - measuring from the picks
+        or from everything near them took in neighbouring lines.
+
+        Returns ``(piece rows, anchor point, axis, radius)`` or None.
+        """
+        pts = self.all_points[mini].astype(float)
+        centre = pts.mean(0)
+        anchor = pts[int(np.argmin(np.linalg.norm(pts - centre, axis=1)))]
+        half = self.window / 2
+        # Direction: the cloud right round the pick, where only its own line
+        # is - picks nearby can lie on lines side by side and span ACROSS them.
+        # The picks only when the cloud there is too thin to say.
+        near = self._ball(anchor, half / 2)
+        if len(near) >= _MIN_PROFILE_POINTS:
+            q = self.all_points[near].astype(float)
+            c = q - q.mean(0)
+        elif len(pts) >= 2:
+            c = pts - centre
+        else:
+            return None
+        axis = np.linalg.eigh(c.T @ c)[1][:, -1]
+        r = self.radius or self.window / 8
+        # Enough points to measure from: on a sparse line, look along a
+        # longer stretch (up to four windows) rather than measure from a few.
+        for _ in range(3):
+            idx = self._ball(anchor, np.hypot(half, 4 * r))
+            rel = self.all_points[idx].astype(float) - anchor
+            a = rel @ axis
+            n = np.sum(np.linalg.norm(rel - np.outer(a, axis), axis=1)[np.abs(a) < half] < r)
+            if n >= _MEASURE_POINTS or half >= 2 * self.window:
+                break
+            half *= 2
+        if len(idx) < _MIN_PROFILE_POINTS:
+            return None
+        q = self.all_points[idx].astype(float)
+        origin = anchor
+        for _ in range(_HOMING_ROUNDS):
+            rel = q - origin
+            a = rel @ axis
+            off = np.linalg.norm(rel - np.outer(a, axis), axis=1)
+            inside = (np.abs(a) < half) & (off < r)
+            if inside.sum() < _MIN_PROFILE_POINTS:
+                break
+            sel = q[inside]
+            c = sel - sel.mean(0)
+            new_axis = np.linalg.eigh(c.T @ c)[1][:, -1]
+            axis = new_axis if new_axis @ axis > 0 else -new_axis
+            origin = sel.mean(0) + axis * float((anchor - sel.mean(0)) @ axis)
+            if self.radius:
+                continue
+            # Measured from points within TWICE the tube: inside the tube only,
+            # the line's outer points are cut off and every round reads
+            # smaller than the last.
+            rel = q - origin
+            a = rel @ axis
+            d = np.linalg.norm(rel - np.outer(a, axis), axis=1)
+            d = d[(np.abs(a) < half) & (d < 2 * r)]
+            r_new = float(np.median(d) + _RADIUS_SDS * _robust_sd(d))
+            if abs(r_new - r) < 0.05 * r:
+                r = r_new
+                break
+            r = max(r_new, 1e-3)
+        rel = q - origin
+        a = rel @ axis
+        off = np.linalg.norm(rel - np.outer(a, axis), axis=1)
+        piece = idx[(np.abs(a) < half) & (off < r) & (self._owner[idx] < 0)]
+        if len(piece) < _MIN_PROFILE_POINTS:
+            return None
+        return piece, origin, axis, r
 
     def _cfg(self, prof):
         r = prof["radius"]
@@ -290,9 +386,9 @@ class LineTracerBase:
         start, ax, bend = self._start_frame(self.all_points[mini].astype(float))
         fwd, end_f = self._track(start, ax, cfg, bend)
         back, end_b = self._track(start, -ax, cfg, bend)
-        if end_f == _END:
+        if end_f[0] == "end":
             fwd = self._extend_tail(fwd, cfg)
-        if end_b == _END:
+        if end_b[0] == "end":
             back = self._extend_tail(back, cfg)
         line = np.vstack([back[::-1], fwd[1:]]) if len(back) > 1 else fwd
         return line, [end_b, end_f]
@@ -354,7 +450,7 @@ class LineTracerBase:
         """Trace one way from *start* along *heading*, starting with the
         curvature vector *bend* (1/m, towards the centre of the bend; None =
         straight). Returns the centerline
-        vertices (from *start*) and how it ended: ``_END`` or
+        vertices (from *start*) and how it ended: ``("end", STOP reason)`` or
         ``("joined", line id)``. Supplied by each tracer."""
         raise NotImplementedError
 
@@ -380,28 +476,37 @@ class LineTracerBase:
         half = self.window / 2
         ring = r * _RING_OUTER
         idx = self._ball(p, np.hypot(half, g + ring))
-        if len(idx) < _MIN_READ_POINTS:
+        if len(idx) < self.min_points:
             return None, "none"
         a, lat = _lateral(self.all_points[idx].astype(float) - p, t)
         lat = lat - 0.5 * np.outer(a ** 2, k)          # follow the predicted bend
         keep = np.abs(a) < half
-        idx, lat = idx[keep], lat[keep]
+        idx, lat, a = idx[keep], lat[keep], a[keep]
         cand = lat[np.linalg.norm(lat, axis=1) < g]
-        if len(cand) < _MIN_READ_POINTS:
+        if len(cand) < self.min_points:
             return None, "none"
         sub = cand if len(cand) <= 1500 else \
             cand[np.random.default_rng(0).choice(len(cand), 1500, replace=False)]
         dens = (((sub[:, None] - sub[None]) ** 2).sum(-1) < r * r).sum(1)
         s = max(sig, r)
         centre = sub[int(np.argmax(dens * np.exp(-0.5 * (sub ** 2).sum(1) / s ** 2)))]
-        for _ in range(3):              # re-centre on the line's axis
-            core = lat[np.linalg.norm(lat - centre, axis=1) < r]
-            if len(core) == 0:
-                break
-            centre = core.mean(0)
-        dist = np.linalg.norm(lat - centre, axis=1)
+        # Re-centre on the line: a straight line FITTED through the window's
+        # points (sideways offset against distance along), refitted a few
+        # times. Measured from the predicted line instead, a heading a few
+        # degrees off smears the line's own points sideways across the window
+        # - into the clutter ring, and the reading off to one side.
+        A = np.stack([np.ones_like(a), a], 1)
+        near = np.linalg.norm(lat - centre, axis=1) < 2 * r
+        coef = np.array([centre, np.zeros_like(centre)])
+        for _ in range(3):
+            if near.sum() >= 3 and np.ptp(a[near]) > 1e-6:
+                coef = np.linalg.lstsq(A[near], lat[near], rcond=None)[0]
+            elif near.any():
+                coef = np.array([lat[near].mean(0), np.zeros_like(centre)])
+            dist = np.linalg.norm(lat - A @ coef, axis=1)
+            near = dist < r
         in_core = dist < r
-        if in_core.sum() < (_STRICT_READ_POINTS if strict else _MIN_READ_POINTS):
+        if in_core.sum() < (2 * self.min_points if strict else self.min_points):
             return None, "sparse"
         taken = self._owner[idx[in_core]] >= 0
         if taken.mean() > 0.5:
@@ -413,7 +518,7 @@ class LineTracerBase:
             ratio = _STRICT_CLUTTER_RATIO if strict else _CLUTTER_RATIO
             if n_ring > ratio * in_core.sum():
                 return None, "clutter"
-        return p + lat[in_core].mean(0), "ok"
+        return p + coef[0], "ok"            # the fitted line, where the prediction is
 
     def _continues(self, state, other, cfg):
         """Whether line *other*, met at *state*, continues the traced line:
@@ -449,7 +554,7 @@ class LineTracerBase:
         tan = np.tan(np.radians(cone_deg))
         mid = anchor + t * (a_from + length / 2)
         idx = self._ball(mid, np.hypot(length / 2, (a_from + length) * tan + r))
-        if len(idx) < _MIN_READ_POINTS:
+        if len(idx) < self.min_points:
             return None
         rel = self.all_points[idx].astype(float) - anchor
         a = rel @ t
@@ -458,7 +563,7 @@ class LineTracerBase:
         if not may_join:
             keep &= self._owner[idx] < 0
         idx, rel = idx[keep], rel[keep]
-        if len(rel) < _MIN_READ_POINTS:
+        if len(rel) < self.min_points:
             return None
         pick = rel if len(rel) <= _BRIDGE_RAYS else \
             rel[np.random.default_rng(0).choice(len(rel), _BRIDGE_RAYS, replace=False)]
@@ -507,15 +612,21 @@ class LineTracerBase:
     # ------------------------------------------------------------------ #
 
     def _line_radius(self, line, seed_radius):
-        """The traced line's radius along all of it: the seed's densest spot
-        (often nearest the scanner, least noisy) reads too tight further on.
+        """The traced line's radius along all of it: the pick's spot (often
+        nearest the scanner, least noisy) reads too tight further on.
         Distances of the points within three seed radii of the centerline,
-        median + 2 robust sd; never below the seed's own."""
+        median + 2 robust sd; never below the seed's own nor above twice it."""
+        if self.radius:
+            return self.radius
         idx = self._points_near(line, 3 * seed_radius)
         if len(idx) < _MIN_PROFILE_POINTS:
             return seed_radius
         d = cKDTree(_densify(line, _FINE_SAMPLE)).query(self.all_points[idx])[0]
-        return max(seed_radius, float(np.median(d) + _RADIUS_SDS * _robust_sd(d)))
+        measured = float(np.median(d) + _RADIUS_SDS * _robust_sd(d))
+        # Allowed to widen for more scanner noise further on, not without
+        # limit: near supports and other lines the points within three radii
+        # include other things, and a radius that kept growing took them in.
+        return min(max(seed_radius, measured), _MAX_WIDEN * seed_radius)
 
     def _points_near(self, line, radius):
         """Rows within *radius* of the polyline *line*."""
@@ -625,17 +736,21 @@ class LineTracerBase:
         line is a junction, not a stop."""
         c = np.asarray(line["centerline"], dtype=float)
         stops, end_cylinders = [], []
-        for side, (kind, _j) in enumerate(line["ends"]):
-            if kind != "end" or len(c) < 2:
+        for side, (kind, detail) in enumerate(line["ends"]):
+            if len(c) < 2:
                 continue
             tip = c[0] if side == 0 else c[-1]
             prev = c[1] if side == 0 else c[-2]
             direction = tip - prev
             norm = float(np.linalg.norm(direction))
             direction = direction / norm if norm > 1e-9 else np.array([1.0, 0.0, 0.0])
-            stops.append(MarchStop(tip.copy(), direction, STOP_EMPTY_SPACE))
-            end_cylinders.append((STOP_EMPTY_SPACE,
-                                  (tip.copy(), direction, line["radius"], self.window)))
+            marker = (tip.copy(), direction, line["radius"], self.window)
+            if kind == "end":
+                reason = detail if isinstance(detail, str) else STOP_EMPTY_SPACE
+                stops.append(MarchStop(tip.copy(), direction, reason))
+                end_cylinders.append((reason, marker))
+            else:                        # met another line: shown, not a stop
+                end_cylinders.append((STOP_JOINED_LINE, marker))
         return GrownLine(np.flatnonzero(self._owner == label).astype(np.intp),
                          c, [], end_cylinders, stops, [])
 
@@ -652,7 +767,9 @@ class LineTracerBase:
 # Measuring a line                                                            #
 # --------------------------------------------------------------------------- #
 
-_END = ("end", None)
+_END = ("end", STOP_EMPTY_SPACE)
+# A piece cut where it ran onto a line already traced: it meets that line.
+_ON_LINE = ("joined", None)
 
 
 def line_profile(pts, chunk=None):

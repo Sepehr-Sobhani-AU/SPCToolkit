@@ -1749,6 +1749,13 @@ STOP_STEP_CAP = "step_cap"
 # growth could not carry on by itself. It marks the frontier to keep picking
 # from, so it reads differently in the review window from a march that failed.
 STOP_PICKED_END = "picked_end"
+# Line tracer (Trace Lines) outcomes, alongside the march's.
+#   clutter:        ended while crowded by other points (vegetation, a support)
+#   unrelated_line: the gap ended on a line that does not continue this one
+#   joined_line:    met a traced line and joined it - a junction, not a stop
+STOP_CLUTTER = "clutter"
+STOP_UNRELATED_LINE = "unrelated_line"
+STOP_JOINED_LINE = "joined_line"
 
 STOP_REASONS = {
     STOP_TOO_FEW_POINTS: ("too few points", np.array([1.0, 0.1, 0.1], dtype=np.float32)),   # red
@@ -1756,6 +1763,9 @@ STOP_REASONS = {
     STOP_EMPTY_SPACE:    ("empty space",     np.array([1.0, 0.0, 1.0], dtype=np.float32)),   # magenta
     STOP_STEP_CAP:       ("step cap",        np.array([1.0, 1.0, 1.0], dtype=np.float32)),   # white
     STOP_PICKED_END:     ("end of your picks", np.array([0.0, 1.0, 1.0], dtype=np.float32)), # cyan
+    STOP_CLUTTER:        ("in clutter",      np.array([0.2, 0.8, 0.2], dtype=np.float32)),   # green
+    STOP_UNRELATED_LINE: ("unrelated line ahead", np.array([1.0, 0.85, 0.0], dtype=np.float32)),  # yellow
+    STOP_JOINED_LINE:    ("joined another line", np.array([0.3, 0.5, 1.0], dtype=np.float32)),    # blue
 }
 
 

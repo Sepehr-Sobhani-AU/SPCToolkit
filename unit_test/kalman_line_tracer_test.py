@@ -129,6 +129,35 @@ def test_starts_on_a_tight_curve():
     print(f"tight curve R=4 m: traced to {end * 100:.0f} cm of its end")
 
 
+def test_scattered_picks_on_lines_side_by_side():
+    # Picks scattered along 5 lines 0.3 m apart, all in one pool: each line
+    # traced once, as its own line - no line taking its neighbours' picks
+    # (measuring the width from picks or from everything near them took in
+    # the neighbours).
+    lines, picks, which = [], [], []
+    for i in range(5):
+        pts = _wire(0, 40, y=0.3 * i, per_m=30)
+        lines.append(pts)
+    offset = 0
+    for i, pts in enumerate(lines):
+        for x0 in RNG.uniform(10, 28, 8):
+            j = offset + int(np.argmin(np.abs(pts[:, 0] - x0)))
+            picks.append(j); which.append(i)
+        offset += len(pts)
+    cloud = np.vstack(lines).astype(np.float32)
+    picks, which = np.array(picks), np.array(which)
+    tracer = KalmanLineTracer(cloud)
+    traced = tracer.grow_lines([picks])
+    tracer.release()
+    for i in range(5):
+        owners = {k for k, l in enumerate(traced) if np.isin(picks[which == i], l.indices).mean() > 0.5}
+        assert len(owners) == 1, f"line {i}: picks on {len(owners)} traced lines"
+        l = traced[owners.pop()]
+        others = np.isin(picks[which != i], l.indices).sum()
+        assert others == 0, f"line {i}'s trace took {others} picks of other lines"
+    print(f"5 lines 0.3 m apart, 40 scattered picks in one pool -> each traced once, apart")
+
+
 def test_existing_line_is_seen_not_taken():
     line = _wire(0, 40)
     pts = line.astype(np.float32)
@@ -150,5 +179,6 @@ if __name__ == "__main__":
     test_ends_instead_of_reaching_an_unrelated_line()
     test_sparse_picks_in_tiny_groups_still_trace()
     test_starts_on_a_tight_curve()
+    test_scattered_picks_on_lines_side_by_side()
     test_existing_line_is_seen_not_taken()
     print("\nAll Kalman line tracer tests passed.")

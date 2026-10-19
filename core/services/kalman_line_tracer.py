@@ -46,10 +46,15 @@ import copy
 import numpy as np
 
 from core.services.path_tracker import PathTracker, CURVED
+from core.services.linear_region_grower import (
+    STOP_CLUTTER,
+    STOP_EMPTY_SPACE,
+    STOP_STEP_CAP,
+    STOP_UNRELATED_LINE,
+)
 from core.services.line_tracer_base import (
     LineTracerBase,
     line_profile,
-    _END,
     _GATE_SIGMAS,
     _CONFIRM_STEPS,
     _BRIDGE_WINDOWS,
@@ -108,7 +113,7 @@ class KalmanLineTracer(LineTracerBase):
                 if gaps <= self.window or self._continues(kt.state, other, cfg):
                     path.append(kt.state.position)
                     return np.array(path), ("joined", other)
-                return np.array(path), _END
+                return np.array(path), ("end", STOP_UNRELATED_LINE)
             gaps += self.step
             clutter_seen |= why == "clutter"
             if gaps >= 2 * self.step and not retried and why != "clutter":
@@ -139,8 +144,10 @@ class KalmanLineTracer(LineTracerBase):
                     gaps, retried, clutter_seen = 0.0, False, False
                     continue
             if gaps > self.max_gap:
-                break          # nothing matching within reach: the line ends
-        return np.array(path), _END
+                # Nothing matching within reach: the line ends - in clutter
+                # or in open space.
+                return np.array(path), ("end", STOP_CLUTTER if clutter_seen else STOP_EMPTY_SPACE)
+        return np.array(path), ("end", STOP_STEP_CAP)
 
     def _coast_after(self):
         return 3 * self.window
