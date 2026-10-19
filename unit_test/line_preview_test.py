@@ -1,6 +1,6 @@
-# kalman_line_preview_test.py
+# line_preview_test.py
 #
-# The Kalman preview reads a Linear Region Growing result and draws, next to
+# Line Preview reads a Linear Region Growing result and draws, next to
 # the original, the tracker's smoothed lines and predictions. No Qt widgets:
 # this checks it reads a saved result the way Extend Traced Lines does, refuses
 # anything else, and builds uncertainty cones that widen with the prediction.
@@ -17,8 +17,8 @@ from core.services.linear_region_grower import GrownLine, MarchStop, lines_to_tr
 from core.services.path_tracker import track_polyline
 
 module = importlib.import_module(
-    "plugins.020_Points.020_Clustering.080_kalman_line_preview_plugin")
-Plugin = module.KalmanLinePreviewPlugin
+    "plugins.020_Points.020_Clustering.080_line_preview_plugin")
+Plugin = module.LinePreviewPlugin
 
 
 def _result_node(n_points=200):
@@ -86,4 +86,4 @@ if __name__ == "__main__":
     test_reads_a_linear_result()
     test_refuses_other_branches()
     test_uncertainty_cones_widen_ahead()
-    print("\nAll Kalman preview tests passed.")
+    print("\nAll Line Preview tests passed.")

@@ -1,15 +1,16 @@
 """
-Preview Kalman tracking on traced lines — without changing them.
+Line Preview - smooth traced lines and predict where they continue, without changing them.
 
 Select a Linear Region Growing result and this runs every line's saved
-centerline through ``core.services.path_tracker`` (Kalman or extended Kalman),
+centerline through ``core.services.path_tracker`` (a Kalman / extended Kalman
+filter),
 then adds branches to compare on screen against the original:
 
-- ``kalman_centerlines`` — each line smoothed by the tracker (forward pass +
+- ``smoothed_centerlines`` — each line smoothed by the tracker (forward pass +
   backward smoothing pass).
-- ``kalman_predictions`` — where the tracker expects each line to continue
+- ``predicted_paths`` — where the tracker expects each line to continue
   beyond both of its ends, e.g. across a gap.
-- ``kalman_uncertainty`` — optional: a cone around each prediction, two sigma
+- ``prediction_uncertainty`` — optional: a cone around each prediction, two sigma
   wide, showing how sure the tracker is as it reaches further.
 
 Read-only: the result branch, its labels and its traces are not touched, and
@@ -35,8 +36,8 @@ from core.services.linear_region_grower import (
 
 
 _MODEL_MAP = {
-    "Curved (Extended Kalman)": CURVED,
-    "Straight (Kalman)": STRAIGHT,
+    "Curved": CURVED,
+    "Straight": STRAIGHT,
 }
 
 _SMOOTHED_COLOR = np.array([1.0, 0.2, 0.8], dtype=np.float32)      # magenta
@@ -50,10 +51,10 @@ _CONE_SIGMAS = 2.0
 _PREDICTION_STEP = 0.1
 
 
-class KalmanLinePreviewPlugin(ActionPlugin):
+class LinePreviewPlugin(ActionPlugin):
 
     def get_name(self) -> str:
-        return "kalman_line_preview"
+        return "line_preview"
 
     def requires_selection(self) -> str:
         return "branches"
@@ -63,12 +64,13 @@ class KalmanLinePreviewPlugin(ActionPlugin):
             "model": {
                 "type": "choice",
                 "options": list(_MODEL_MAP),
-                "default": "Curved (Extended Kalman)",
+                "default": "Curved",
                 "label": "Model",
-                "description": "Curved tracks position, direction and bend "
-                               "(extended Kalman) and carries a bend across a "
-                               "gap. Straight tracks position and direction "
-                               "only (plain Kalman).",
+                "description": "Curved follows the line's direction and its "
+                               "bend, and carries a bend on across a gap - for "
+                               "sagging or curving lines.\n"
+                               "Straight follows direction only - for straight "
+                               "lines.",
             },
             "point_sigma": {
                 "type": "float",
@@ -124,7 +126,7 @@ class KalmanLinePreviewPlugin(ActionPlugin):
             return
         result_uid, result_node, lines = prepared
 
-        main_window.show_progress(f"Kalman preview: tracking {len(lines)} line(s)...")
+        main_window.show_progress(f"Line preview: tracking {len(lines)} line(s)...")
         model = _MODEL_MAP.get(params.get("model"), CURVED)
         settings = {"point_sigma": params.get("point_sigma", 0.01)}
         flexibility = params.get("flexibility", 0.05)
@@ -158,14 +160,14 @@ class KalmanLinePreviewPlugin(ActionPlugin):
                 "more vertices to track.")
             return
 
-        main_window.show_progress("Kalman preview: drawing...")
-        features = [("kalman_centerlines",
+        main_window.show_progress("Line preview: drawing...")
+        features = [("smoothed_centerlines",
                      centerlines_to_vector_feature(smoothed, color=_SMOOTHED_COLOR))]
         if predictions:
-            features.append(("kalman_predictions", centerlines_to_vector_feature(
+            features.append(("predicted_paths", centerlines_to_vector_feature(
                 predictions, color=_PREDICTION_COLOR)))
         if cones and params.get("show_uncertainty", True):
-            features.append(("kalman_uncertainty", frustums_to_vector_feature(
+            features.append(("prediction_uncertainty", frustums_to_vector_feature(
                 cones, color=_UNCERTAINTY_COLOR,
                 symbol_type="Prediction Uncertainty")))
         self._show_branches(controller, tree_widget, result_uid, result_node,
@@ -174,12 +176,12 @@ class KalmanLinePreviewPlugin(ActionPlugin):
         main_window.clear_progress()
 
         QMessageBox.information(
-            main_window, "Kalman Preview",
+            main_window, "Line Preview",
             f"Tracked {len(smoothed)} line(s) with the "
-            f"{'curved (extended Kalman)' if model == CURVED else 'straight (Kalman)'} "
+            f"{'curved' if model == CURVED else 'straight'} "
             f"model.\n\nSmoothing moved the centerline vertices "
             f"{np.mean(shifts) * 1000:.1f} mm on average from the forward "
-            f"estimate.\n\nThe original lines are unchanged; toggle the kalman_* "
+            f"estimate.\n\nThe original lines are unchanged; toggle the smoothed_centerlines / predicted_paths "
             f"branches to compare.")
 
     # ------------------------------------------------------------------ #
@@ -228,12 +230,12 @@ class KalmanLinePreviewPlugin(ActionPlugin):
                 feature, "vector_feature", [result_node.uid], result_node,
                 name, params)
             tree_widget.add_branch(uid, result_uid, name,
-                                   tooltip=f"kalman_line_preview,{params}")
+                                   tooltip=f"line_preview,{params}")
             item = tree_widget.branches_dict.get(uid)
             if item:
                 item.setCheckState(0, Qt.Checked)
             tree_widget.visibility_status[uid] = True
-        for name in ("kalman_predictions", "kalman_uncertainty"):
+        for name in ("predicted_paths", "prediction_uncertainty"):
             if name in children and name not in drawn:
                 uid = str(children[name])
                 tree_widget.remove_branch(uid)
