@@ -6,6 +6,13 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-19 — Particle filter tried for linear growing and dropped; Kalman kept
+A particle filter was built on the shared tracer rules, alone and as a recovery helper inside
+the Kalman tracer at kinks and gaps. It beat Kalman on general synthetic scenes (97% vs 92%) but
+gave no gain on the real test lines (50 vs 49 of 64), over-reached more on the full seed cloud
+(13 vs 2 reaches onto other lines, 327 vs 121 lines) and ran ~6x slower, so the user chose
+Kalman only; the code was deleted, not archived.
+
 ## 2026-10-19 — Kalman Trace joins linear growing; general engine, measured width, each line once
 The Kalman tracker became a fourth growth mode (`core/services/kalman_line_tracer.py`), leaving
 the axis march untouched so both can be compared on the same data. Three rules came from real
