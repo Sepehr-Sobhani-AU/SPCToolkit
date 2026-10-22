@@ -484,7 +484,7 @@ Typical workflow: user adds a new `.py` file to `plugins/SomeMenu/`, clicks "Sca
 
 ## 10. Complete Plugin Inventory
 
-Generated from the source tree. **100 plugins** (69 Action, 31 Analysis) across **15 top-level menus** and 25 menu paths, listed in menu order. No system (root-level) plugins are currently registered.
+Generated from the source tree. **101 plugins** (70 Action, 31 Analysis) across **15 top-level menus** and 25 menu paths, listed in menu order. No system (root-level) plugins are currently registered.
 
 ### File
 
@@ -548,6 +548,7 @@ Generated from the source tree. **100 plugins** (69 Action, 31 Analysis) across 
 | Points > Clustering | `surface_region_growing` | Action | `SurfaceRegionGrowingPlugin` |
 | Points > Clustering | `linear_region_growing` | Action | `LinearRegionGrowingPlugin` |
 | Points > Clustering | `trace_lines` | Action | `TraceLinesPlugin` (subclass of `LinearRegionGrowingPlugin`) |
+| Points > Clustering | `trace_edges` | Action | `TraceEdgesPlugin` (subclass of `LinearRegionGrowingPlugin`) |
 | Points > Clustering | `crease_edge` | Action | `CreaseEdgePlugin` |
 | Points > Clustering | `contour_growing` | Action | `ContourGrowingPlugin` |
 | Points > Clustering | `extend_traced_lines` | Action | `ExtendLinesPlugin` |
