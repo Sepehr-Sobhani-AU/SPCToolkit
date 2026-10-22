@@ -27,8 +27,12 @@ Trace Lines.
 import importlib
 from typing import Dict, Any
 
-from core.services.edge_line_tracer import EdgeLineTracer
-from core.services.linear_region_grower import LinearRegionGrower, AXIS_TRACE
+import numpy as np
+
+from core.services.edge_line_tracer import EdgeLineTracer, MARK_LOWERED, MARK_BRIDGED
+from core.services.kalman_line_tracer import KalmanLineTracer
+from core.services.linear_region_grower import (
+    LinearRegionGrower, AXIS_TRACE, centerlines_to_vector_feature)
 
 # The module, not the class (PLUGIN_ARCHITECTURE.md §2, "Gotcha").
 _lrg = importlib.import_module(
@@ -36,6 +40,15 @@ _lrg = importlib.import_module(
 
 # Shown when nothing is picked yet.
 _DEFAULT_SEED_EPS = 0.5
+
+TRACER_EDGE = "Edge - where two surfaces meet"
+TRACER_LINE = "Line - as Trace Lines"
+
+# Colours of the marked stretches.
+_MARK_COLORS = {
+    MARK_LOWERED: np.array([1.0, 0.55, 0.0], dtype=np.float32),   # orange
+    MARK_BRIDGED: np.array([1.0, 0.0, 1.0], dtype=np.float32),    # magenta
+}
 
 
 class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
@@ -48,6 +61,30 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
     def get_parameters(self) -> Dict[str, Any]:
         return {
             # --- Basic ----------------------------------------------------
+            "tracer": {
+                "type": "dropdown",
+                "options": {TRACER_EDGE: TRACER_EDGE, TRACER_LINE: TRACER_LINE},
+                "default": TRACER_EDGE,
+                "label": "Tracer",
+                "description": "Edge: reads where two surfaces meet (kerb top "
+                               "or bottom, building corner, wall on floor).\n"
+                               "Line: reads a thin line of points as Trace Lines "
+                               "does (cable, pipe, rail), with Line Radius - "
+                               "Look Across, Min Edge Angle and Follow Lowered "
+                               "Edges are not used.",
+            },
+            "line_radius": {
+                "type": "float",
+                "default": 0.03,
+                "min": 0.001,
+                "max": 10.0,
+                "decimals": 3,
+                "label": "Line Radius (m) - Line tracer",
+                "description": "Only for Tracer = Line: how thick the line is "
+                               "(as in Trace Lines). Not measured here: on a "
+                               "surface the whole surface reads as one wide "
+                               "line and the trace crawls.",
+            },
             "seed_eps": {
                 "type": "float",
                 "default": self._from_selection(),
@@ -90,6 +127,20 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
                                "bends.\n"
                                "Raise it if the trace follows faint folds in a "
                                "surface (a road's camber, a gutter).",
+            },
+            "follow_lowered": {
+                "type": "bool",
+                "default": False,
+                "label": "Follow Lowered Edges",
+                "description": "Where a kerb is lowered (a driveway, a pram "
+                               "ramp) its face shrinks to nothing. On: the "
+                               "BOTTOM edge follows the gentle fold where the "
+                               "ramp meets the road (shown orange). Off: it "
+                               "coasts across and picks the kerb up past the "
+                               "ramp (shown magenta when it does).\n"
+                               "A top edge always coasts across.\n"
+                               "Check the orange stretches: on a ramp gentle "
+                               "folds are everywhere.",
             },
             "max_gap": {
                 "type": "float",
@@ -142,14 +193,16 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
             },
             "flexibility": {
                 "type": "float",
-                "default": 0.02,
+                "default": 0.3,
                 "min": 0.0001,
                 "max": 10.0,
                 "decimals": 4,
                 "label": "Bend Flexibility - advanced",
                 "description": "How quickly an edge's curve may change along "
-                               "it.\n"
-                               "Raise it for edges whose bend keeps changing.\n"
+                               "it - a kerb goes from straight into a corner "
+                               "and out again within a few metres.\n"
+                               "Raise it if edges run off where a curve starts "
+                               "or ends.\n"
                                "Lower it to keep straight edges straight "
                                "through noise.",
             },
@@ -159,7 +212,9 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
                 "default": True,
                 "label": "Show Edge Lines",
                 "description": "Add the traced edge lines as a branch you can "
-                               "show and hide.",
+                               "show and hide, and the stretches not read as a "
+                               "normal edge: lowered (orange) and bridged across "
+                               "a gap (magenta).",
             },
             "show_end_cylinders": {
                 "type": "bool",
@@ -199,19 +254,45 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
     def _make_growers(self, pc_points, params, mode, linearity):
         window = float(params.get("window", 1.0))
         step = float(params.get("step", 0.0)) or window / 2
-        tracer = EdgeLineTracer(
-            pc_points,
-            reach=params.get("reach", 0.5),
-            min_angle_deg=params.get("min_angle", 15.0),
+        common = dict(
             step=step,
             window=window,
             max_gap=params.get("max_gap", 5.0),
             min_bend_radius=params.get("min_bend_radius", 3.0),
-            flexibility=params.get("flexibility", 0.02),
+            flexibility=params.get("flexibility", 0.3),
         )
+        if params.get("tracer", TRACER_EDGE) == TRACER_LINE:
+            # Trace Lines' engine, for a line along a surface; its other
+            # settings at Trace Lines' defaults.
+            tracer = KalmanLineTracer(pc_points, open_air=False,
+                                      radius=params.get("line_radius", 0.03), **common)
+        else:
+            tracer = EdgeLineTracer(
+                pc_points,
+                reach=params.get("reach", 0.5),
+                min_angle_deg=params.get("min_angle", 15.0),
+                follow_lowered=params.get("follow_lowered", False),
+                **common,
+            )
         # Not used for edges (see _offer_extension); the shared run frees it.
         grower = LinearRegionGrower(all_points=pc_points, mode=AXIS_TRACE)
         return tracer, grower
+
+    def _build_debug_branches(self, controller, tree_widget, node, result_uid, lines, params):
+        super()._build_debug_branches(controller, tree_widget, node, result_uid,
+                                      lines, params)
+        if not params.get("show_lines"):
+            return
+        extras = []
+        for kind, name in ((MARK_LOWERED, "lowered_stretches"),
+                           (MARK_BRIDGED, "bridged_gaps")):
+            pieces = [v for line in lines for k, v in getattr(line, "marks", ()) if k == kind]
+            vf = centerlines_to_vector_feature(pieces, color=_MARK_COLORS[kind])
+            if vf is not None:
+                vf.cluster_reference = result_uid
+                extras.append((name, vf))
+        self._add_debug_branches(controller, tree_widget, node, result_uid,
+                                 extras, params)
 
     def _offer_extension(self, main_window, result_uid, pc_points, all_lines,
                          new_lines, grower, params, resolved):
