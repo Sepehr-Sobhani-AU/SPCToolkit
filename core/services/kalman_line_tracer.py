@@ -99,7 +99,7 @@ class KalmanLineTracer(LineTracerBase):
             if z is not None and clutter_seen and not self._confirmed(kt, z, cfg):
                 z, why = None, "unconfirmed"
             if z is not None:
-                kt.update(z)
+                kt.update(z, self._measured_direction())
                 self._clamp(kt)
                 last_good = kt.state
                 gaps, retried, clutter_seen = 0.0, False, False
@@ -151,6 +151,12 @@ class KalmanLineTracer(LineTracerBase):
                 # or in open space.
                 return np.array(path), ("end", STOP_CLUTTER if clutter_seen else STOP_EMPTY_SPACE)
         return np.array(path), ("end", STOP_STEP_CAP)
+
+    def _measured_direction(self):
+        """The line's direction as the last reading measured it, for the
+        tracker to correct its heading with - or None (the thin-line reading
+        measures only where the line is)."""
+        return None
 
     def _coast_after(self):
         return 3 * self.window
