@@ -143,7 +143,10 @@ class KalmanLineTracer(LineTracerBase):
                     last_good = kt.state
                     gaps, retried, clutter_seen = 0.0, False, False
                     continue
-            if gaps > self.max_gap:
+            # A coast keeps the last bend; on a tight curve that carries it
+            # round in a circle and back over its own line. A line does not
+            # turn back across a gap: past a right angle it has ended.
+            if gaps > self.max_gap or kt.state.tangent @ last_good.tangent < 0:
                 # Nothing matching within reach: the line ends - in clutter
                 # or in open space.
                 return np.array(path), ("end", STOP_CLUTTER if clutter_seen else STOP_EMPTY_SPACE)
