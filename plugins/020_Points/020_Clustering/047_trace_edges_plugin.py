@@ -1,11 +1,13 @@
 """
 Trace Edges - follow an edge where two surfaces meet, from picked points.
 
-Pick a few points on an edge - a kerb's top or bottom, a building corner, a
-wall on a floor, a roof ridge, a window head - and run this: the edge is
-followed in both directions until it ends. Picks closer than Seed Group
-Distance are one edge; pick several edges at once by picking each in its own
-spot. Each group of picks is one edge.
+Shift+click once near an edge - a kerb's top or bottom, a building corner,
+a wall on a floor, a roof ridge, a window head - and run this: the edge is
+followed in both directions until it ends. Each click is one edge, so
+several clicks trace several edges in one run (Picking = One click per
+edge; click on the side of the edge you mean, within about 10 cm). Or pick
+points along each edge (Picking = Points along each edge): picks closer than
+Seed Group Distance are one edge.
 
 At each step the surfaces round the edge are fitted as planes, the slice is
 cut square to where they cross, and the edge is read where the right two
@@ -40,6 +42,7 @@ import importlib
 from typing import Dict, Any
 
 import numpy as np
+from PyQt5.QtWidgets import QMessageBox
 
 from core.services.edge_line_tracer import EdgeLineTracer, MARK_LOWERED, MARK_BRIDGED
 from core.services.kalman_line_tracer import KalmanLineTracer
@@ -52,6 +55,9 @@ _lrg = importlib.import_module(
 
 # Shown when nothing is picked yet.
 _DEFAULT_SEED_EPS = 0.5
+
+PICK_CLICKS = "One click per edge"
+PICK_ALONG = "Points along each edge"
 
 TRACER_EDGE = "Edge - where two surfaces meet"
 TRACER_LINE = "Line - as Trace Lines"
@@ -97,6 +103,23 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
                                "surface the whole surface reads as one wide "
                                "line and the trace crawls.",
             },
+            "picking": {
+                "type": "dropdown",
+                "options": {PICK_CLICKS: PICK_CLICKS, PICK_ALONG: PICK_ALONG},
+                "default": PICK_CLICKS,
+                "label": "Picking",
+                "description": "One click per edge: Shift+click once near "
+                               "each edge you want - on the side of it you mean, "
+                               "within about 10 cm (a kerb's top and bottom are "
+                               "close: click nearer the one you want). Each click "
+                               "is one edge; several clicks trace several edges "
+                               "in one run.\n"
+                               "Points along each edge: select several points "
+                               "along an edge (a lasso or clicks); picks closer "
+                               "than Seed Group Distance are one edge.\n"
+                               "Edge tracer only - the Line tracer needs points "
+                               "along each line.",
+            },
             "seed_eps": {
                 "type": "float",
                 "default": self._from_selection(),
@@ -105,7 +128,8 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
                 "max": 100.0,
                 "decimals": 3,
                 "label": "Seed Group Distance (m)",
-                "description": "Picks closer than this belong to one edge. "
+                "description": "Points along each edge only. "
+                               "Picks closer than this belong to one edge. "
                                "Filled in from your picks when this opens - "
                                "change it if you like.\n"
                                "Lower it if picks on two edges close together "
@@ -274,6 +298,32 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
         except Exception as e:           # never block the dialog on this
             print(f"Trace Edges: could not work out settings from the picks: {e}")
             return _DEFAULT_SEED_EPS
+
+    def _resolve_seed_groups(self, viewer_widget, pc_points, params, main_window,
+                             node=None):
+        """One click per edge: each Shift+click on the branch is its own
+        seed group, in click order. Points along each edge: as Trace Lines."""
+        if params.get("picking", PICK_CLICKS) != PICK_CLICKS:
+            return super()._resolve_seed_groups(viewer_widget, pc_points, params,
+                                                main_window, node=node)
+        if params.get("tracer", TRACER_EDGE) == TRACER_LINE:
+            QMessageBox.warning(
+                main_window, "Trace Edges",
+                "The Line tracer needs points along each line.\n"
+                "Set Picking to 'Points along each edge', or Tracer to 'Edge'.")
+            return None
+        rows = [row for uid, row in viewer_widget.picked_points
+                if node is not None and uid == str(node.uid)]
+        rows = [r for r in dict.fromkeys(rows) if 0 <= r < len(pc_points)]
+        if not rows:
+            QMessageBox.warning(
+                main_window, "No Clicks",
+                "One click per edge: Shift+click once near each edge you want "
+                "to trace, then run Trace Edges.\n\n"
+                "(A lasso selects many points without naming one: for a lasso "
+                "set Picking to 'Points along each edge'.)")
+            return None
+        return [np.array([r], dtype=np.intp) for r in rows]
 
     def _make_growers(self, pc_points, params, mode, linearity):
         window = float(params.get("window", 1.0))
