@@ -55,6 +55,13 @@ class GrownEdge(GrownLine):
     marks = ()
 
 _RANSAC_TRIES = 200
+# RANSAC guesses are scored in batches, all at once, against at most
+# _RANSAC_SCORE_POINTS of the points; it stops once the best so far would be
+# found with _RANSAC_CONFIDENCE (the usual adaptive rule). The chosen surface
+# is then refitted to all the points.
+_RANSAC_BATCH = 40
+_RANSAC_SCORE_POINTS = 512
+_RANSAC_CONFIDENCE = 0.999
 _MAX_SURFACES = 4
 # A fitted surface needs this share of the window's points (and at least
 # _MIN_SURFACE_POINTS).
@@ -109,6 +116,10 @@ class EdgeLineTracer(KalmanLineTracer):
         dynamic_step: shorten the step where the edge turns (and after a
             reading off its prediction) - ``step`` is then the longest.
     """
+
+    # One click near an edge is enough: the surfaces round it give the
+    # edge's direction, and the corner nearest the click is the edge.
+    MIN_GROUP_PICKS = 1
 
     def __init__(self, all_points, reach=None, min_angle_deg=15.0,
                  follow_lowered=False, dynamic_step=True, **settings):
@@ -212,10 +223,14 @@ class EdgeLineTracer(KalmanLineTracer):
                    surface_sigma=max(sigma, 1e-3),
                    gate_min=max(3 * sigma, 0.005), gate_max=self.reach / 2,
                    gate_max_coast=self.reach, shape=None, axis=heading.copy())
-        reading = self._section(anchor, heading, np.zeros(3), cfg, gate=self.reach / 2)
+        # Cut square to the edge as every reading is: a start a few cm off
+        # the edge (one click beside it) with the planes' direction a little
+        # off smears a sparse surface into bands.
+        reading = self._aligned_section(anchor, heading, np.zeros(3), cfg, gate=self.reach / 2)
         if reading is None:
             return None
-        point, shape, sigma2, _d = reading
+        point, shape, sigma2, d = reading
+        heading = d if d @ heading > 0 else -d
         cfg["shape"] = shape
         aligned = self._aligned_section(point, heading, np.zeros(3), cfg, gate=self.reach / 2)
         if aligned is not None:
@@ -639,21 +654,14 @@ def _fit_lines(uv, tol, rng):
     for _ in range(_MAX_SURFACES):
         if len(rest) < need:
             break
-        n = len(rest)
-        i = rng.integers(0, n, _RANSAC_TRIES)
-        j = rng.integers(0, n, _RANSAC_TRIES)
-        best, best_in = None, None
-        for a, b in zip(i, j):
-            d = rest[b] - rest[a]
-            norm = np.linalg.norm(d)
-            if norm < 2 * tol:
-                continue
-            nrm = np.array([-d[1], d[0]]) / norm
-            inl = np.abs((rest - rest[a]) @ nrm) < tol
-            if best_in is None or inl.sum() > best_in.sum():
-                best, best_in = (rest[a], d / norm), inl
-        if best_in is None or best_in.sum() < need:
+        found = _ransac(rest, tol, rng, 2)
+        if found is None:
             break
+        base, nrm = found
+        best_in = np.abs((rest - base) @ nrm) < tol
+        if best_in.sum() < need:
+            break
+        best = (base, np.array([nrm[1], -nrm[0]]))
         # Refit on one unbroken run of the inliers. Where a step is only a
         # few tolerances high (a low kerb), the most inliers lie on a slanted
         # line across it - a piece of the top, a piece of the bottom; the
@@ -661,13 +669,18 @@ def _fit_lines(uv, tol, rng):
         # surface.
         inl = best_in
         for _r in range(3):
-            pts = rest[_largest_run(rest, inl, best[1], tol)]
+            run = _largest_run(rest, inl, best[1], tol)
+            pts = rest[run]
             if len(pts) < need:
                 break
             c = pts.mean(0)
             v = np.linalg.eigh((pts - c).T @ (pts - c))[1][:, -1]
             best = (c, v)
-            inl = np.abs((rest - c) @ np.array([-v[1], v[0]])) < tol
+            new = np.abs((rest - c) @ np.array([-v[1], v[0]])) < tol
+            settled = np.array_equal(new, inl)
+            inl = new
+            if settled:                  # refitting again changes nothing
+                break
         c, v = best
         inl = _largest_run(rest, inl, v, tol)
         if inl.sum() < need:
@@ -676,6 +689,45 @@ def _fit_lines(uv, tol, rng):
         out.append((c, v, rest[inl], res[inl], ids[inl]))
         rest, ids = rest[~inl], ids[~inl]
     return out
+
+
+def _ransac(pts, tol, rng, m):
+    """The best line (m=2, 2-D points) or plane (m=3, 3-D) through *m* random
+    points: guesses scored in batches against a sample of the points,
+    stopping once the best so far would have been drawn with
+    _RANSAC_CONFIDENCE, or at _RANSAC_TRIES. Returns (a point on it, unit
+    normal) or None."""
+    n = len(pts)
+    sub = pts if n <= _RANSAC_SCORE_POINTS else pts[rng.choice(n, _RANSAC_SCORE_POINTS, replace=False)]
+    best, best_count, tries = None, -1, 0
+    while tries < _RANSAC_TRIES:
+        pick = rng.integers(0, n, (_RANSAC_BATCH, m))
+        tries += _RANSAC_BATCH
+        if m == 2:
+            d = pts[pick[:, 1]] - pts[pick[:, 0]]
+            size = np.linalg.norm(d, axis=1)
+            ok = size >= 2 * tol
+            nrm = np.stack([-d[:, 1], d[:, 0]], 1)
+        else:
+            nrm = np.cross(pts[pick[:, 1]] - pts[pick[:, 0]], pts[pick[:, 2]] - pts[pick[:, 0]])
+            size = np.linalg.norm(nrm, axis=1)
+            ok = size > 1e-9
+        if not ok.any():
+            continue
+        nrm = nrm[ok] / size[ok, None]
+        base = pts[pick[ok, 0]]
+        counts = (np.abs(sub @ nrm.T - np.einsum("ij,ij->i", base, nrm)) < tol).sum(0)
+        k = int(np.argmax(counts))
+        if counts[k] > best_count:
+            best, best_count = (base[k], nrm[k]), int(counts[k])
+        share = best_count / len(sub)
+        if share >= 1.0:
+            break
+        if share > 0:
+            enough = np.log(1 - _RANSAC_CONFIDENCE) / np.log(1 - share ** m)
+            if tries >= enough:
+                break
+    return best
 
 
 def _largest_run(uv, inl, v, tol):
@@ -796,25 +848,23 @@ def _fit_planes(xyz, tol, rng, t, most=_MAX_SURFACES):
     for _ in range(most):
         if len(rest) < need:
             break
-        tri = rng.integers(0, len(rest), (_RANSAC_TRIES, 3))
-        nrm = np.cross(rest[tri[:, 1]] - rest[tri[:, 0]], rest[tri[:, 2]] - rest[tri[:, 0]])
-        size = np.linalg.norm(nrm, axis=1)
-        ok = size > 1e-9
-        if not ok.any():
+        found = _ransac(rest, tol, rng, 3)
+        if found is None:
             break
-        nrm, base = nrm[ok] / size[ok, None], rest[tri[ok, 0]]
-        counts = [int(np.sum(np.abs((rest - b) @ n) < tol)) for n, b in zip(nrm, base)]
-        k = int(np.argmax(counts))
-        if counts[k] < need:
-            break
-        n, c = nrm[k], base[k]
+        c, n = found
         inl = np.abs((rest - c) @ n) < tol
+        if inl.sum() < need:
+            break
         for _r in range(3):
             run = _plane_run(rest, inl, n, t, tol)
             if run.sum() < need:
                 break
             n, c = _plane(rest[run])
-            inl = np.abs((rest - c) @ n) < tol
+            new = np.abs((rest - c) @ n) < tol
+            settled = np.array_equal(new, inl)
+            inl = new
+            if settled:                  # refitting again changes nothing
+                break
         inl = _plane_run(rest, inl, n, t, tol)
         if inl.sum() < need:
             break

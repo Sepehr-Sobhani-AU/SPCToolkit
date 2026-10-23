@@ -119,6 +119,10 @@ class LineTracerBase:
         min_points: fewest points a reading of the line needs.
     """
 
+    # Fewest picks a group needs to start a line from: a thin line's
+    # direction and radius come from two picks or more.
+    MIN_GROUP_PICKS = 2
+
     def __init__(self, all_points, shape_query=None, step=0.5, window=1.0,
                  max_gap=20.0, max_turn_deg=30.0, bridge_cone_deg=15.0,
                  min_bend_radius=50.0, flexibility=0.02, open_air=True,
@@ -177,12 +181,12 @@ class LineTracerBase:
         self._line_tree = None
         self._line_of_sample = None
         groups = sorted((np.asarray(g, dtype=np.intp) for g in seed_groups
-                         if np.asarray(g).size >= 2), key=len, reverse=True)
+                         if np.asarray(g).size >= self.MIN_GROUP_PICKS), key=len, reverse=True)
         lines = []          # dicts: centerline, radius, ends
         try:
             for gi, group in enumerate(groups):
                 remaining = group[owner[group] < 0]
-                while len(remaining) >= 2 and not self._cancelled():
+                while len(remaining) >= self.MIN_GROUP_PICKS and not self._cancelled():
                     remaining = self._trace_from(remaining, lines)
                 if progress_cb is not None:
                     progress_cb(gi + 1, len(groups),
