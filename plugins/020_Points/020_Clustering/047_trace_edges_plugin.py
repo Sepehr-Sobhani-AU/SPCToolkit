@@ -14,9 +14,21 @@ edge) matches the one learned at the picks. So on a kerb the top and the
 bottom are told apart by where you pick. Where a surface is hidden (a car,
 a tree) the trace coasts on and picks the edge up again past the gap.
 
+On curves (a kerb round a corner): steps get shorter where the edge turns
+(Dynamic Step), and a reading that fails is tried again on a half and then a
+quarter of the window, which hardly bends - so tight kerb returns are
+followed without a preset. Where a kerb's face is hidden in a scan shadow,
+its top edge is read where the footpath ends. Where a kerb is lowered (a
+driveway, a pram ramp) the top edge is bridged across; with Follow Lowered
+Edges the bottom edge follows the gentle fold of the ramp.
+
+Tracer = Line runs Trace Lines' thin-line engine instead, with Line Radius.
+
 Writes the same result branch as Trace Lines (one label per edge, the rest
 unassigned, the traced edge lines carried on it); Show Edge Lines adds them
-as a branch to see and export.
+as a branch to see and export, with the stretches not read as a normal edge
+- lowered (orange) and bridged across a gap (magenta) - as their own
+branches.
 
 The engine is ``core/services/edge_line_tracer.py``; everything around it -
 reading the cloud and the picks, writing and expanding the result - is
@@ -187,9 +199,21 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
                 "max": 25.0,
                 "label": "Step (m) - advanced",
                 "description": "How far the trace moves between readings. "
-                               "0 = half the window.\n"
+                               "0 = half the window. With Dynamic Step on, "
+                               "this is the longest step.\n"
                                "Smaller follows bends more closely but is "
                                "slower.",
+            },
+            "dynamic_step": {
+                "type": "bool",
+                "default": True,
+                "label": "Dynamic Step - advanced",
+                "description": "Shorter steps where the edge turns - down to a "
+                               "fifth of Step on a tight curve - and after a "
+                               "reading that came in off where it was expected; "
+                               "full steps on straights. Follows curves more "
+                               "closely at nearly the same speed.\n"
+                               "Off: the same step everywhere.",
             },
             "flexibility": {
                 "type": "float",
@@ -272,6 +296,7 @@ class TraceEdgesPlugin(_lrg.LinearRegionGrowingPlugin):
                 reach=params.get("reach", 0.5),
                 min_angle_deg=params.get("min_angle", 15.0),
                 follow_lowered=params.get("follow_lowered", False),
+                dynamic_step=params.get("dynamic_step", True),
                 **common,
             )
         # Not used for edges (see _offer_extension); the shared run frees it.
