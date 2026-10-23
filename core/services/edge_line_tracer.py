@@ -80,6 +80,13 @@ _START_STEPS = 3
 # prediction (as a share of Look Across), and for at most Max Gap.
 _WEAK_MIN_ANGLE_DEG = 2.0
 _WEAK_GATE = 0.25
+# Dynamic step: a prediction one step ahead may miss a curve by about
+# step^2 * bend / 2; the step is shortened to keep that under _STEP_MISS (m),
+# down to step / _STEP_SHRINK at most. After a reading that came in further
+# than _STEP_SURPRISE gates from its prediction, half a step.
+_STEP_MISS = 0.01
+_STEP_SHRINK = 5.0
+_STEP_SURPRISE = 0.5
 # Kinds of stretch on a traced edge (``line["marks"]``).
 MARK_LOWERED = "lowered"        # read from a weak fold: the edge fades out
 MARK_BRIDGED = "bridged"        # nothing read: coasted across and found again
@@ -99,14 +106,19 @@ class EdgeLineTracer(KalmanLineTracer):
             fades out - a driveway, a pram ramp - follow the gentle fold
             that carries it on, instead of coasting across. Marked
             ``MARK_LOWERED`` on the line.
+        dynamic_step: shorten the step where the edge turns (and after a
+            reading off its prediction) - ``step`` is then the longest.
     """
 
     def __init__(self, all_points, reach=None, min_angle_deg=15.0,
-                 follow_lowered=False, **settings):
+                 follow_lowered=False, dynamic_step=True, **settings):
         super().__init__(all_points, **settings)
         self.reach = float(reach) if reach else self.window / 2
         self.min_angle_deg = float(min_angle_deg)
         self.follow_lowered = bool(follow_lowered)
+        self.dynamic_step = bool(dynamic_step)
+        self._surprised = False
+        self._last_step = self.step
         self._rng = np.random.default_rng(0)
         self._last_direction = None
         self._kinds = []                 # per accepted reading: "ok" / MARK_LOWERED
@@ -278,6 +290,7 @@ class EdgeLineTracer(KalmanLineTracer):
         if reading is None:
             return None, "none"
         point, _shape, _s, self._last_direction = reading
+        self._surprised = float(np.linalg.norm(point - p)) > _STEP_SURPRISE * g
         # Ran onto an edge already traced: join it, never trace it twice.
         near = self._ball(point, cfg["radius"])
         if len(near):
@@ -286,7 +299,7 @@ class EdgeLineTracer(KalmanLineTracer):
                 ids = self._owner[near][taken]
                 return None, f"joined:{int(np.bincount(np.minimum(ids, 2**20)).argmax())}"
         if kind == MARK_LOWERED:
-            self._weak_run += self.step
+            self._weak_run += self._last_step
             # a weak fold gives no reliable direction
             self._last_direction = None
         else:
@@ -308,8 +321,27 @@ class EdgeLineTracer(KalmanLineTracer):
         return None if r is None else (r[0], r[1], r[2], t)
 
     def _track(self, start, heading, cfg, bend=None):
-        self._kinds, self._weak_run = [], 0.0
+        self._kinds, self._weak_run, self._surprised = [], 0.0, False
         return super()._track(start, heading, cfg, bend)
+
+    def _next_step(self, kt, gaps):
+        """The step for the next reading: shorter where the edge turns (a
+        prediction one step ahead would miss the curve by about
+        step^2 x bend / 2 - kept under _STEP_MISS), and half after a reading
+        that came in off its prediction. Coasting keeps the full step."""
+        ds = self.step
+        if self.dynamic_step and gaps == 0:
+            bend = float(np.linalg.norm(kt.state.curvature))
+            if bend > 1e-9:
+                ds = min(ds, float(np.sqrt(2 * _STEP_MISS / bend)))
+            if self._surprised:
+                ds = min(ds, self.step / 2)
+            ds = max(ds, self._min_step())
+        self._last_step = ds
+        return ds
+
+    def _min_step(self):
+        return self.step / _STEP_SHRINK if self.dynamic_step else self.step
 
     def _vertex_kinds(self, n):
         """Kind of each vertex of the path ``_track`` just returned: the
@@ -343,6 +375,18 @@ class EdgeLineTracer(KalmanLineTracer):
         return grown
 
     def _aligned_section(self, p, t, k, cfg, gate):
+        """``_aligned_once`` over the full window - and, when that fails,
+        over a half and then a quarter of it. On a tight curve whose bend is
+        not known yet (a start on a kerb return) or is changing, a long
+        slice cut along the predicted bend smears the edge; a short one
+        hardly bends. The full window first: on a straight it reads best."""
+        for half in (self.window / 2, self.window / 4, self.window / 8):
+            r = self._aligned_once(p, t, k, cfg, gate, half)
+            if r is not None:
+                return r
+        return None
+
+    def _aligned_once(self, p, t, k, cfg, gate, half):
         """A reading cut square to the edge. Cut at an angle - a few degrees
         off on a curve, after coasting - the slice smears each surface into
         a band, the fitted lines take a part of it, and the corner is read
@@ -351,24 +395,24 @@ class EdgeLineTracer(KalmanLineTracer):
         angle smears; where the right two cross is the edge's direction, and
         the reading is cut square to that. Returns ``(point, shape, sigma,
         direction)``."""
-        d = self._edge_heading(p, t, k, cfg, gate)
+        d = self._edge_heading(p, t, k, cfg, gate, half)
         if d is None:
             # No two planes cross here: perhaps a step whose face is hidden.
-            r = self._section(p, t, k, cfg, gate, step_only=True)
+            r = self._section(p, t, k, cfg, gate, step_only=True, half=half)
             return None if r is None else (r[0], r[1], r[2], r[3])
         for _ in range(_REALIGN_ROUNDS):
-            r = self._section(p, d, k - (k @ d) * d, cfg, gate)
+            r = self._section(p, d, k - (k @ d) * d, cfg, gate, half=half)
             if r is None or float(r[3] @ d) > np.cos(np.radians(_REALIGN_MIN_DEG)):
                 break
             d = r[3]
         return None if r is None else (r[0], r[1], r[2], r[3])
 
-    def _edge_heading(self, p, t, k, cfg, gate):
+    def _edge_heading(self, p, t, k, cfg, gate, half=None):
         """The edge's direction near *p*: up to four planes fitted to the
         window's points (bend taken out) and, of the pairs that cross within
         _REALIGN_MAX_DEG of *t* and *gate* of *p*, the one nearest that
         matches the edge's shape. None if no pair does."""
-        half = self.window / 2
+        half = self.window / 2 if half is None else half
         span = self.reach + gate
         idx = self._ball(p, np.hypot(half, span))
         if len(idx) < 2 * _MIN_SURFACE_POINTS:
@@ -422,15 +466,15 @@ class EdgeLineTracer(KalmanLineTracer):
                     best = (key, d)
         return None if best is None else best[1]
 
-    def _section(self, p, t, k, cfg, gate, step_only=False, weak=False):
+    def _section(self, p, t, k, cfg, gate, step_only=False, weak=False, half=None):
         """The edge in the cross-section at *p* looking along *t*: fit up to
         four surfaces, read where the right two meet - or, where none meet,
         where the upper of two parallel surfaces ends at a step whose face is
         hidden (``_step_edge``; only that when *step_only*). With *weak*, a
         fold of a few degrees where the edge fades out (``_weak_reading``).
         Returns ``(3-D edge point, shape, noise sigma, edge direction)`` or
-        None."""
-        half = self.window / 2
+        None. *half*: the slice's half-length (default half the window)."""
+        half = self.window / 2 if half is None else half
         span = self.reach + gate
         idx = self._ball(p, np.hypot(half, span))
         if len(idx) < 2 * _MIN_SURFACE_POINTS:
@@ -477,6 +521,10 @@ class EdgeLineTracer(KalmanLineTracer):
                     sig = np.sqrt(np.mean(np.concatenate([surfaces[i][3], surfaces[j][3]]) ** 2))
                     best = (key, x, (d1, d2), sig, pair)
         if best is None:
+            # A hidden face hides an upward-opening edge's foot: only a top
+            # (downward-opening) edge is read from a step.
+            if _opens_upward(cfg.get("shape")):
+                return None
             step = _step_edge(surfaces, a, tol, gate, cfg.get("shape"),
                               self.min_angle_deg, self.reach)
             if step is None:

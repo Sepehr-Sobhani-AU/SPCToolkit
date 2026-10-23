@@ -88,12 +88,13 @@ class KalmanLineTracer(LineTracerBase):
         gaps = travelled = 0.0
         retried = clutter_seen = False
         next_bridge = self._coast_after()
-        for _ in range(int(3 * self.max_length / self.step)):
+        for _ in range(int(3 * self.max_length / self._min_step())):
             if travelled >= self.max_length or self._cancelled():
                 break
-            kt.predict(self.step)
+            ds = self._next_step(kt, gaps)
+            kt.predict(ds)
             self._clamp(kt)
-            travelled += self.step
+            travelled += ds
             z, why = self._read(kt.state, cfg, coasting=gaps >= self._coast_after(),
                                 strict=clutter_seen)
             if z is not None and clutter_seen and not self._confirmed(kt, z, cfg):
@@ -114,7 +115,7 @@ class KalmanLineTracer(LineTracerBase):
                     path.append(kt.state.position)
                     return np.array(path), ("joined", other)
                 return np.array(path), ("end", STOP_UNRELATED_LINE)
-            gaps += self.step
+            gaps += ds
             clutter_seen |= why == "clutter"
             if gaps >= 2 * self.step and not retried and why != "clutter":
                 retried = True
@@ -151,6 +152,15 @@ class KalmanLineTracer(LineTracerBase):
                 # or in open space.
                 return np.array(path), ("end", STOP_CLUTTER if clutter_seen else STOP_EMPTY_SPACE)
         return np.array(path), ("end", STOP_STEP_CAP)
+
+    def _next_step(self, kt, gaps):
+        """How far to move before the next reading. A fixed step here; a
+        tracer may shorten it where a prediction that far ahead would miss."""
+        return self.step
+
+    def _min_step(self):
+        """The shortest step ``_next_step`` returns (bounds the loop)."""
+        return self.step
 
     def _measured_direction(self):
         """The line's direction as the last reading measured it, for the
