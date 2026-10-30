@@ -19,6 +19,14 @@ KEYBOARD_SECTIONS = [
         ("Ctrl + R", "Reset the camera to its default view."),
         ("Z", "Toggle zoom window mode, then drag a rectangle to zoom into it."),
     ]),
+    ("Isolation box — 3D viewer", [
+        ("I", "Toggle isolation: hide everything outside a box around the centre of "
+              "rotation (3 m to start). Nothing is copied or cut."),
+        ("S", "Toggle slab mode: the box becomes a thin slab through its centre, facing "
+              "you. Press again to get the box back as it was."),
+        ("[ or ]", "Step the slab towards or away from you by half its thickness."),
+        ("{ or }", "Make the slab thinner or thicker (x1.25)."),
+    ]),
     ("Selection — 3D viewer", [
         ("P", "Toggle polygon mode. Double Left click closes it and selects; "
               "double Right click closes it and deselects."),

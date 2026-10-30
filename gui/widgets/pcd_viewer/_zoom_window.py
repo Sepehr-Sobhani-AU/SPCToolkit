@@ -106,6 +106,9 @@ class ZoomWindowMixin:
             pts_3d, (rect_left, rect_top, rect_right, rect_bottom),
             mv, proj, self.viewport,
         )
+        box = self.active_clip_box()
+        if box is not None:
+            inside &= box.contains(pts_3d)
 
         if not np.any(inside):
             self.exit_zoom_window_mode()

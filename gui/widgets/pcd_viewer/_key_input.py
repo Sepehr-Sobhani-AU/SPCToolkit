@@ -67,6 +67,19 @@ class KeyInputEventHandler:
                     self.point_size = min(self._point_size * self._POINT_SIZE_FACTOR, self._POINT_SIZE_MAX)
                 else:
                     self.point_size = max(self._point_size / self._POINT_SIZE_FACTOR, self._POINT_SIZE_MIN)
+        elif event.key() == Qt.Key_I and not (event.modifiers() & Qt.ControlModifier):
+            # I: hide everything outside the isolation box, or show it again
+            self.toggle_isolation()
+        elif event.key() == Qt.Key_S and not (event.modifiers() & Qt.ControlModifier):
+            # S: squash the box into a slab facing you, or give the box back
+            self.toggle_slab()
+        elif event.key() in (Qt.Key_BracketLeft, Qt.Key_BracketRight):
+            # [ / ]: step the slab towards / away from you
+            self.step_slab(1 if event.key() == Qt.Key_BracketRight else -1)
+        elif event.key() in (Qt.Key_BraceLeft, Qt.Key_BraceRight):
+            # { / }: thinner / thicker slab
+            factor = self._SLAB_THICKNESS_FACTOR
+            self.scale_slab_thickness(factor if event.key() == Qt.Key_BraceRight else 1.0 / factor)
         elif event.key() == Qt.Key_C:
             main_window = global_variables.global_main_window
             if main_window:

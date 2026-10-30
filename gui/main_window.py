@@ -751,7 +751,8 @@ class MainWindow(QtWidgets.QMainWindow):
             sample_rate=self._current_sample_rate,
             camera_distance=self.pcd_viewer_widget.camera_distance,
             zoom_factor=self.pcd_viewer_widget.zoom_factor,
-            max_extent=self.pcd_viewer_widget.max_extent or 1.0
+            max_extent=self.pcd_viewer_widget.max_extent or 1.0,
+            focus_box=self.pcd_viewer_widget.lod_focus_box(),
         )
 
         # Sync LOD state

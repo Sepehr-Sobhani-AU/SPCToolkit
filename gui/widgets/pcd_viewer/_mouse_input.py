@@ -59,6 +59,14 @@ class MouseInputEventHandler:
         self.last_mouse_pos = event.pos()
         modifiers = event.modifiers()
 
+        # Isolation box handles come before the camera: with the cursor on a
+        # handle, a left drag moves the handle, and Ctrl moves one face only.
+        if (event.button() == Qt.LeftButton and not (modifiers & Qt.ShiftModifier)
+                and self.begin_handle_drag(event.pos(),
+                                           one_sided=bool(modifiers & Qt.ControlModifier))):
+            self.setCursor(Qt.SizeAllCursor)
+            return
+
         if (modifiers & Qt.ShiftModifier) and (modifiers & Qt.ControlModifier):
             if event.button() == Qt.LeftButton:
                 # Ctrl + Shift + Left Click: Select cluster by label
@@ -134,8 +142,10 @@ class MouseInputEventHandler:
             return
 
         if event.button() == Qt.LeftButton:
-            # Update the rotation center on double left-click
+            # Update the rotation center on double left-click. A new centre
+            # outside the isolation box resets the box to its default.
             self.update_rotation_center(event.pos())
+            self.forget_box_if_outside(self.center)
 
     def mouseReleaseEvent(self, event):
         """
@@ -157,6 +167,11 @@ class MouseInputEventHandler:
 
         # Suppress release events in polygon mode
         if self._polygon_mode:
+            return
+
+        if self._handle_drag is not None:
+            self.end_handle_drag()
+            self.setCursor(Qt.ArrowCursor)
             return
 
         if event.button() == Qt.LeftButton:
@@ -192,6 +207,10 @@ class MouseInputEventHandler:
 
         # Suppress drag in polygon mode
         if self._polygon_mode:
+            return
+
+        if self._handle_drag is not None:
+            self.drag_handle(event.pos())
             return
 
         if self.last_mouse_pos is None:

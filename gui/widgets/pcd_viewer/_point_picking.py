@@ -126,9 +126,15 @@ class PointPickingMixin:
             int row index, or None.
         """
         ready, index = self._nearest_via_coarse_indexes(target, radius)
-        if ready:
+        if not ready:
+            index = self._nearest_by_scan(target, radius)
+
+        # The isolation box hides points without removing them, so the nearest
+        # one may be hidden. Then look again among the shown ones only.
+        box = self.active_clip_box()
+        if box is None or index is None or box.contains_point(self.points[index, :3]):
             return index
-        return self._nearest_by_scan(target, radius)
+        return self._nearest_by_scan(target, radius, box)
 
     def _nearest_via_coarse_indexes(self, target, radius):
         """``(ready, index)`` from the per-branch coarse spatial indexes.
@@ -165,11 +171,12 @@ class PointPickingMixin:
 
         return (True, best_index) if ready else (False, None)
 
-    def _nearest_by_scan(self, target, radius):
+    def _nearest_by_scan(self, target, radius, box=None):
         """Row of ``self.points`` closest to *target* by straight scan.
 
         The fallback for while a coarse spatial index is still being built. Chunked so the
-        intermediate masks stay bounded on a very large buffer.
+        intermediate masks stay bounded on a very large buffer. With a *box*,
+        only points inside it are candidates.
         """
         pts = self.points
         if pts is None or len(pts) == 0:
@@ -186,6 +193,8 @@ class PointPickingMixin:
             np.logical_and(near, np.abs(block[:, 1] - ty) < radius, out=near)
             np.logical_and(near, np.abs(block[:, 2] - tz) < radius, out=near)
             rows = np.flatnonzero(near)
+            if box is not None and rows.size:
+                rows = rows[box.contains(block[rows])]
             if rows.size == 0:
                 continue
 
@@ -289,8 +298,12 @@ class PointPickingMixin:
             if slc is None:
                 continue
 
+            drawn = slc[rows, :3]
             screen_x, screen_y, valid = self._project_points_to_screen(
-                slc[rows, :3].astype(np.float64), mv, proj, self.viewport)
+                drawn.astype(np.float64), mv, proj, self.viewport)
+            box = self.active_clip_box()
+            if box is not None:
+                valid &= box.contains(drawn)
 
             # _project_points_to_screen reports Qt widget coordinates (top-left
             # origin, Y down), which is what mouse_pos already is — no Y flip.

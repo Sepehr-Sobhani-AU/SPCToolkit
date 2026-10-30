@@ -48,7 +48,13 @@ class RenderingCoordinator:
         # visibility toggles so a toggle becomes O(toggled branch) instead
         # of O(all visible points). Cleared on sample-rate change.
         self._branch_vertex_cache: Dict[str, np.ndarray] = {}
-        self._branch_cache_sample_rate: Optional[float] = None
+        # What the cached slices were built for: (sample rate, focus box key).
+        self._branch_cache_key: Optional[tuple] = None
+
+        # Last prepare with a focus box: points inside it, and whether there
+        # were more than the budget so they had to be thinned too.
+        self.focus_points_inside: int = 0
+        self.focus_thinned: bool = False
 
         # Which point of the source cloud each rendered point came from, per
         # branch — the LOD subsample indices, or None when the branch is drawn
@@ -68,7 +74,7 @@ class RenderingCoordinator:
         """Drop all cached vertex slices."""
         self._branch_vertex_cache.clear()
         self._branch_sample_indices.clear()
-        self._branch_cache_sample_rate = None
+        self._branch_cache_key = None
 
     @property
     def branch_sample_indices(self) -> Dict[str, Optional[np.ndarray]]:
@@ -87,7 +93,8 @@ class RenderingCoordinator:
                          sample_rate: float = 1.0,
                          camera_distance: float = 1.0,
                          zoom_factor: float = 1.0,
-                         max_extent: float = 1.0):
+                         max_extent: float = 1.0,
+                         focus_box=None):
         """Prepare per-branch vertex slices for all visible nodes.
 
         Handles reconstruction, caching, and LOD subsampling. Does NOT
@@ -100,6 +107,11 @@ class RenderingCoordinator:
             camera_distance: Current camera distance (for LOD).
             zoom_factor: Current zoom factor (for LOD).
             max_extent: Max extent of visible point cloud (for LOD).
+            focus_box: The viewer's isolation box (a ``IsolationBox``), or None.
+                When LOD has to thin the cloud, every point inside the box is
+                drawn anyway and the thinning is taken from the rest — which
+                the box hides. Only if the box alone holds more than the
+                budget is it thinned too, and ``focus_thinned`` says so.
 
         Returns:
             (slices_by_uid, visible_order) where:
@@ -163,11 +175,19 @@ class RenderingCoordinator:
 
         self._current_sample_rate = sample_rate
 
-        # LOD change invalidates per-branch vertex cache (subsample bound to rate).
-        if self._branch_cache_sample_rate != sample_rate:
+        # A box only changes anything when LOD is thinning.
+        if sample_rate >= 1.0:
+            focus_box = None
+        focus_rows = (self._focus_rows(uids_to_show, focus_box, sample_rate)
+                      if focus_box is not None else None)
+
+        # LOD change invalidates per-branch vertex cache (subsample bound to
+        # rate, and to the box when there is one).
+        cache_key = (sample_rate, focus_box.key() if focus_box is not None else None)
+        if self._branch_cache_key != cache_key:
             self._branch_vertex_cache.clear()
             self._branch_sample_indices.clear()
-            self._branch_cache_sample_rate = sample_rate
+            self._branch_cache_key = cache_key
 
         # Debug memory estimate
         points_to_check = int(total_points * sample_rate) if sample_rate < 1.0 else total_points
@@ -241,7 +261,10 @@ class RenderingCoordinator:
                 # Apply per-node subsampling if LOD is active
                 sample_indices = None
                 if sample_rate < 1.0:
-                    indices = LODManager.subsample_indices(n, sample_rate)
+                    if focus_rows is not None:
+                        indices = self._focus_indices(n, *focus_rows.get(uid, (None, 0.0)))
+                    else:
+                        indices = LODManager.subsample_indices(n, sample_rate)
                     if indices is not None:
                         pts = point_cloud.points[indices]
                         clrs = point_cloud.colors[indices] if point_cloud.colors is not None else None
@@ -284,6 +307,59 @@ class RenderingCoordinator:
         logger.info(f"Rendering {total_rendered:,} points across "
                     f"{len(visible_order)} branches (LOD: {sample_rate:.1%})")
         return slices_by_uid, visible_order
+
+    def _focus_rows(self, uids, focus_box, sample_rate):
+        """Per branch, the rows inside *focus_box* and the rate for the rest.
+
+        Returns ``{uid: (inside_rows, outside_rate)}``. The box gets the budget
+        first; whatever is left, up to the normal rate, goes to the points
+        outside it. Those are hidden while the box is on, but keeping some of
+        them means a box dragged bigger shows thinned points straight away
+        instead of nothing until the drag ends.
+        """
+        inside = {}
+        for uid in uids:
+            try:
+                node = self.data_nodes.get_node(uuid.UUID(uid))
+                if node is None or node.data_type in _VECTOR_FEATURE_TYPES:
+                    continue
+                pts = self._reconstruction_service.reconstruct(uid).points
+                inside[uid] = np.flatnonzero(focus_box.contains(pts))
+            except Exception:
+                logger.error(f"Isolation box: could not read branch {uid}:\n"
+                             f"{traceback.format_exc()}")
+
+        n_inside = int(sum(len(r) for r in inside.values()))
+        self.focus_points_inside = n_inside
+        self.focus_thinned = n_inside > self._point_budget
+        if self.focus_thinned:
+            keep = self._point_budget / n_inside
+            rng = np.random.default_rng()
+            inside = {uid: np.sort(rng.choice(r, size=int(len(r) * keep), replace=False))
+                      for uid, r in inside.items()}
+            n_inside = int(sum(len(r) for r in inside.values()))
+
+        total = max(self._total_visible_points, 1)
+        outside_rate = min(sample_rate, max(0, self._point_budget - n_inside) / total)
+        logger.info(f"Isolation box: {self.focus_points_inside:,} points inside"
+                    f"{' (thinned)' if self.focus_thinned else ''}, "
+                    f"{outside_rate:.1%} of the rest")
+        return {uid: (rows, outside_rate) for uid, rows in inside.items()}
+
+    @staticmethod
+    def _focus_indices(n, inside_rows, outside_rate):
+        """Sorted source rows to draw: the box's rows plus a thin sample of
+        the branch."""
+        sample = None
+        if outside_rate > 0.0:
+            sample = LODManager.subsample_indices(n, outside_rate)
+            if sample is None:          # the rate keeps the whole branch
+                return None
+        if inside_rows is None:
+            return sample if sample is not None else np.empty(0, dtype=np.int64)
+        if sample is None:
+            return np.asarray(inside_rows, dtype=np.int64)
+        return np.union1d(inside_rows, sample)
 
     def get_node_metadata(self) -> dict:
         """Get per-node metadata from the last prepare_branches() call."""

@@ -32,6 +32,10 @@ class ViewerPropertiesMixin:
         self._pan_sensitivity = 1
         self._rotate_sensitivity = 1
         self._pixel_threshold = 5
+        # Isolation box (see IsolationBoxMixin): size of a new box and of a new
+        # slab, in metres.
+        self._isolation_box_size = 3.0
+        self._slab_thickness = 0.5
 
         # Properties for the attributes
         self._default_camera_distance = 100
@@ -55,6 +59,10 @@ class ViewerPropertiesMixin:
         # Rows per pass when scanning the combined buffer for the nearest point
         # to a pick. Keeps the intermediate masks bounded on a 50M-point buffer.
         self._PICK_SCAN_CHUNK = 2_000_000
+        # Isolation box grip handles: drawn size and how close a click must be.
+        self._HANDLE_SIZE_PX = 10.0
+        self._HANDLE_PICK_RADIUS_PX = 10
+        self._SLAB_THICKNESS_FACTOR = 1.25
 
     @property
     def point_size(self):
@@ -95,6 +103,30 @@ class ViewerPropertiesMixin:
         if 0.0 <= value <= 1.0:
             self._faded_opacity = value
             self.update()
+
+    @property
+    def isolation_box_size(self):
+        """
+        float: Side, in metres, of a new isolation box (the I key).
+        """
+        return self._isolation_box_size
+
+    @isolation_box_size.setter
+    def isolation_box_size(self, value):
+        if value > 0:
+            self._isolation_box_size = value
+
+    @property
+    def slab_thickness(self):
+        """
+        float: Thickness, in metres, of a new slab (the S key).
+        """
+        return self._slab_thickness
+
+    @slab_thickness.setter
+    def slab_thickness(self, value):
+        if value > 0:
+            self._slab_thickness = value
 
     @property
     def line_width(self):

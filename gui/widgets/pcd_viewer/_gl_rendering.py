@@ -106,16 +106,26 @@ class GLRenderingMixin:
         # Translate back from the center
         glTranslatef(-self.center[0], -self.center[1], -self.center[2])
 
+        # The isolation box hides everything outside it, points and lines
+        # alike. Planes are given in world space, so this comes after the
+        # model-view matrix is complete.
+        self._enable_clip_planes()
+
         # Render the point cloud
         self.render_point_cloud()
 
         # Render line geometry (e.g. mesh wireframes)
         self.render_lines()
 
+        self._disable_clip_planes()
+
         # Store matrices for picking
         self.model_view_matrix = glGetDoublev(GL_MODELVIEW_MATRIX).copy()
         self.projection_matrix = glGetDoublev(GL_PROJECTION_MATRIX).copy()
         self.viewport = glGetIntegerv(GL_VIEWPORT).copy()
+
+        # Isolation box outline and grip handles
+        self.render_clip_box_overlay()
 
         # Draw the point of view (POV) sphere
         if self.show_axis:

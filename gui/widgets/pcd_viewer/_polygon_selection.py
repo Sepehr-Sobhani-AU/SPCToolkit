@@ -112,14 +112,19 @@ class PolygonSelectionMixin:
         if not uids:
             return
 
-        self._start_selection_build(uids, polygon, mv, proj, viewport, op, invert)
+        # Points hidden by the isolation box are never selected or deselected.
+        # A copy, so a handle dragged meanwhile cannot change the build.
+        box = self.active_clip_box()
+        box = box.copy() if box is not None else None
+
+        self._start_selection_build(uids, polygon, mv, proj, viewport, op, invert, box)
 
     # ------------------------------------------------------------------
     # Background mask building
     # ------------------------------------------------------------------
 
     def _start_selection_build(self, uids, polygon, mv, proj, viewport, op,
-                               invert=False):
+                               invert=False, box=None):
         """Apply a closed lasso to *uids* on a worker thread.
 
         Fire-and-forget, in the shape ``_build_coarse_index`` already uses: the
@@ -137,7 +142,7 @@ class PolygonSelectionMixin:
 
         threading.Thread(
             target=self._build_selection,
-            args=(uids, polygon, mv, proj, viewport, op, invert),
+            args=(uids, polygon, mv, proj, viewport, op, invert, box),
             name="selection-mask", daemon=True,
         ).start()
 
@@ -159,7 +164,8 @@ class PolygonSelectionMixin:
         self.refresh_selection_readout()
         self.update()
 
-    def _build_selection(self, uids, polygon, mv, proj, viewport, op, invert):
+    def _build_selection(self, uids, polygon, mv, proj, viewport, op, invert,
+                         box=None):
         """Worker: test each branch's full cloud against the lasso."""
         controller = global_variables.global_application_controller
         try:
@@ -167,7 +173,7 @@ class PolygonSelectionMixin:
                 try:
                     self._apply_polygon_to_branch(
                         controller, uid, polygon, mv, proj, viewport, op,
-                        invert)
+                        invert, box)
                 except Exception:
                     logger.error(
                         f"Failed to apply the selection polygon to {uid[:8]}:\n"
@@ -182,7 +188,7 @@ class PolygonSelectionMixin:
                 self._selection_building.discard(uid)
 
     def _apply_polygon_to_branch(self, controller, uid, polygon, mv, proj,
-                                 viewport, op, invert=False):
+                                 viewport, op, invert=False, box=None):
         """Combine one branch's lasso result into its selection mask."""
         if controller is None:
             return
@@ -200,6 +206,10 @@ class PolygonSelectionMixin:
             # The click landed outside the shape, so the gesture names
             # everything the shape does NOT enclose.
             inside = ~inside
+        if box is not None:
+            # After the inversion: "everything else" still means everything
+            # else that is shown.
+            inside &= box.contains(pts)
 
         if op == "or":
             # The gate belongs on what is being ADDED. Applying it to a deselect

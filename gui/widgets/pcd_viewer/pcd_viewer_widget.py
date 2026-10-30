@@ -12,6 +12,7 @@ from ._branch_helpers import BranchSelectionMixin
 from ._polygon_selection import PolygonSelectionMixin
 from ._zoom_window import ZoomWindowMixin
 from ._overlay_rendering import OverlayRenderingMixin
+from ._isolation_box import IsolationBoxMixin
 
 
 class PCDViewerWidget(
@@ -26,6 +27,7 @@ class PCDViewerWidget(
     PolygonSelectionMixin,
     ZoomWindowMixin,
     OverlayRenderingMixin,
+    IsolationBoxMixin,
     QOpenGLWidget,
 ):
     """
@@ -59,6 +61,11 @@ class PCDViewerWidget(
         - C: Split the selected clusters (runs the "split_clusters" action plugin).
         - M: Merge the selected clusters (runs the "merge_clusters" action plugin).
         - Delete: Remove the selected clusters (runs the "remove_clusters" action plugin).
+        - I: Toggle isolation (hide everything outside the isolation box). Drag a face handle to
+          resize the whole box, Ctrl + drag a face handle to move that face only, drag the centre to move it.
+        - S: Toggle slab mode (the box squashed thin, facing the camera).
+        - [ / ]: Step the slab towards / away from the camera by half its thickness.
+        - { / }: Make the slab thinner / thicker.
 
     Attributes:
     -----------
@@ -110,3 +117,4 @@ class PCDViewerWidget(
         self._init_branch_state()
         self._init_polygon_state()
         self._init_zoom_window_state()
+        self._init_clip_state()

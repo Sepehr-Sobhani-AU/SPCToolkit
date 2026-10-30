@@ -30,6 +30,14 @@ MOUSE_SECTIONS = [
         ("Ctrl + Shift + Right click", "Deselect the whole cluster under the cursor "
                                        "(matched by cluster label)."),
     ]),
+    ("Isolation box (press I)", [
+        ("Left drag a face handle", "Grow or shrink the whole box in every direction, keeping its centre and shape. A slab keeps its thickness."),
+        ("Ctrl + Left drag a face handle", "Move that face only; the opposite face stays put."),
+        ("Left drag the centre handle", "Move the whole box without changing its size."),
+        ("Double Left click", "Outside the box, while all points are shown, resets the "
+                              "box to the default at the new centre. Inside, keeps it."),
+        ("", "Clicks, the polygon and the zoom window never pick a hidden point."),
+    ]),
     ("Zoom window mode (press Z)", [
         ("Left drag", "Draw the zoom rectangle; releasing zooms to it."),
         ("Right click", "Cancel zoom window mode."),
