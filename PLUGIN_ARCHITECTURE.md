@@ -484,7 +484,7 @@ Typical workflow: user adds a new `.py` file to `plugins/SomeMenu/`, clicks "Sca
 
 ## 10. Complete Plugin Inventory
 
-Generated from the source tree. **101 plugins** (70 Action, 31 Analysis) across **15 top-level menus** and 25 menu paths, listed in menu order. No system (root-level) plugins are currently registered.
+Generated from the source tree. **105 plugins** (72 Action, 33 Analysis) across **15 top-level menus** and 26 menu paths, listed in menu order. No system (root-level) plugins are currently registered.
 
 ### File
 
@@ -641,8 +641,16 @@ Generated from the source tree. **101 plugins** (70 Action, 31 Analysis) across 
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
 | CAD > Boundary | `convex_hull` | Analysis | `ConvexHullPlugin` |
+| CAD > Boundary | `grid_outline` | Analysis | `GridOutlinePlugin` |
 | CAD > Boundary | `concave_hull` | Analysis | `ConcaveHullPlugin` |
 | CAD > Boundary | `alpha_shape` | Analysis | `AlphaShapePlugin` |
+| CAD > Boundary | `knn_concave_hull` | Analysis | `KNNConcaveHullPlugin` |
+| CAD > Polyline | `weed_vertices` | Action | `WeedVerticesPlugin` |
+
+The five CAD > Boundary plugins only trace a raw outline; the shared clean-up in
+`core/services/outline_cleanup.py` turns it into a closed 3D polyline (straight
+segments, 3D weeding, plane-fit heights) — see DECISIONS.md 2026-10-24.
+`weed_vertices` reuses that 3D weeding on any existing polyline branch.
 
 ### Tools
 

@@ -1026,3 +1026,59 @@ general index plugins and analysis will use to filter points. It is now always
 called the **coarse spatial index**: `COARSE_SPATIAL_INDEX_SHAPE`, built with
 `SpatialGrid.build_coarse_spatial_index()`. `_SHAPE` stays on the constant
 because the constant is the cell counts, not the index itself.
+
+## 2026-10-24 — Cluster outlines: one clean-up for every method, 3D weeding, plane-fit heights
+Drawing the closed outline of a cluster (an island, a roof eave, a wall) now goes
+through five methods — grid outline, convex hull, concave hull, alpha shape,
+k-nearest concave hull — that only trace a *raw* ring in the cluster's plane,
+and one shared clean-up (`core/services/outline_cleanup.py`) that turns any raw
+ring into a closed 3D polyline with straight segments only. A separate Weed
+Vertices tool reuses the same 3D weeding on any existing polyline. Settled in a
+synthetic experiment (22 rounds, `experiments/cluster_outline/`, git-ignored;
+its report is the long version of this entry).
+
+**The outline is the cluster's edge**, through its outermost points. A step that
+pushed each side out to the estimated true surface edge (the outermost points
+sit ~0.4 point gaps inside it) worked, and was dropped on purpose.
+
+**Projection is the cluster's best-fit plane**, so a wall is outlined on the
+wall, not squashed into plan. Height is the offset off that plane — for anything
+lying roughly flat, the points' Z.
+
+**Weeding is 3D and comes after heights.** Heights are taken on the dense,
+smoothed ring first, and a vertex stays if dropping it would move the line by
+more than the tolerance in plan *or* in height. Weeding in 2D first collapsed a
+pitched roof to its four eave corners and lost both gable peaks (1.7 m error).
+
+**A vertex's height is a plane fitted through its 16 nearest points, read at
+the vertex — not their median.** A vertex sits on the edge, so every neighbour
+lies on the inner side; on a slope their median is biased uphill at an eave
+(3 cm RMS on a 30 deg roof at 400 pts/m2, judged too much). The plane carries
+the slope out to the edge: 1 cm, and 0.4 cm at 2000 pts/m2.
+
+**Grid outline is the main method.** As accurate as the Delaunay methods and the
+only one that stays fast: 1.5 s on a 2M-point cluster against 38-59 s for concave
+hull / alpha shape (CPU Delaunay) and the k-nearest walk.
+
+**2D neighbour search uses its own GPU grid KNN (`core/services/grid_knn.py`),
+not the cuML KNN backend.** cuML's search suits high dimensions; on 2M 2D points
+it took 6 s, slower than a CPU KD-tree (2.2 s). An exact CuPy grid search takes
+0.14 s. GPU-only like `shape_query`: no CPU fallback.
+
+Clean-up choices worth knowing before changing them: smoothing over two raw
+steps, a robust "one line explains both sides" merge that averages *signed*
+offsets (noise cancels, a curve's bulge does not), and corners rebuilt only
+between sides straight for 8 smoothing lengths — so a tight curve is never
+turned into a corner, at the cost of slightly rounded corners between short
+sides. Strongly curved clusters (tanks) are out of scope: no good plane.
+
+**Strays are judged against a wide neighbourhood, and rescued when
+surrounded.** A point is a stray when its 3rd-neighbour distance is over 2.5x
+the median of that distance among its 32 nearest points. Judged only against
+its closest few, a stray 10-30 cm outside an edge passed — edge points look
+sparse too, and strays vouch for each other — and the grid joined it to the
+outline (6-56 cm errors over ten seeds; the experiment had scored one seed).
+A flagged point is kept when the unflagged points round it (thinned to even
+out density) leave no gap over 180 deg — a sparse point at a density step is
+surrounded, a stray outside an edge is not. Cost: about 1 real point in
+2000-8000 dropped, which moves no outline.
