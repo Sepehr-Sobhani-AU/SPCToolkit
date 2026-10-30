@@ -36,6 +36,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menus = {}  # Dictionary to store menu/submenu references
         self.actions = {}  # Dictionary to store action references
         self._last_plugin_name = None  # Last plugin opened from a menu (Space re-runs it)
+        # Mask branches made for runs on the isolation box's points (reused
+        # while the box is unchanged).
+        from application.isolated_run import IsolatedRun
+        self._isolated_run = IsolatedRun()
 
         # Standard components as before
         self.setWindowTitle("SPCToolkit")
@@ -459,7 +463,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.plugin_manager.is_action_plugin(plugin_name):
             # Action plugin: collects its own params inside execute_action_plugin.
             self._gate_selection_then(
-                plugin_name, lambda: self.execute_action_plugin(plugin_name)
+                plugin_name,
+                lambda: self._isolation_then(
+                    plugin_name, lambda: self.execute_action_plugin(plugin_name))
             )
         else:
             def _proceed():
@@ -468,7 +474,74 @@ class MainWindow(QtWidgets.QMainWindow):
                 if params is not None:
                     self._start_analysis(plugin_name, params)
 
-            self._gate_selection_then(plugin_name, _proceed)
+            self._gate_selection_then(
+                plugin_name, lambda: self._isolation_then(plugin_name, _proceed))
+
+    def _isolation_then(self, plugin_name, proceed):
+        """Run ``proceed`` on the isolated points or on all of them.
+
+        Only asks when the viewer's isolation box is on and the plugin is one
+        that processes points (see application.isolated_run). For the isolated
+        points, the selected branches are swapped for mask branches of the
+        points inside the box — selected in the tree too, so what the tree
+        shows and what runs agree — and the plugin runs on those.
+
+        Runs after the selection gate, so a selection made for the run is
+        carried into the mask branches.
+        """
+        from application.isolated_run import processes_points
+
+        box = self.pcd_viewer_widget.active_clip_box()
+        _cls, menu_path, _type = self.plugin_manager.plugins.get(
+            plugin_name, (None, None, None))
+        uids = list(self.controller.selected_branches)
+        if box is None or not uids or not processes_points(menu_path):
+            proceed()
+            return
+
+        box_choice = QtWidgets.QMessageBox(self)
+        box_choice.setWindowTitle("Isolation Is On")
+        box_choice.setText(f"Run “{plugin_name}” on the isolated points only, "
+                           f"or on all points?")
+        isolated = box_choice.addButton("Isolated Points", QtWidgets.QMessageBox.AcceptRole)
+        everything = box_choice.addButton("All Points", QtWidgets.QMessageBox.AcceptRole)
+        box_choice.addButton(QtWidgets.QMessageBox.Cancel)
+        box_choice.setDefaultButton(isolated)
+        box_choice.exec_()
+
+        clicked = box_choice.clickedButton()
+        if clicked is everything:
+            proceed()
+            return
+        if clicked is not isolated:
+            return
+
+        try:
+            run_uids = self._isolated_run.branches_for(uids, box)
+        except ValueError as e:
+            QtWidgets.QMessageBox.information(self, "Nothing Isolated", str(e))
+            return
+        except Exception as e:
+            logger.error(f"Isolated run failed: {e}\n{traceback.format_exc()}")
+            QtWidgets.QMessageBox.warning(
+                self, "Isolated Run Failed",
+                f"Could not prepare the isolated points.\n\nDetails: {e}")
+            return
+
+        self._select_tree_branches(run_uids)
+        proceed()
+
+    def _select_tree_branches(self, uids):
+        """Select exactly *uids* in the tree and tell the controller."""
+        tree = self.tree_widget
+        tree.blockSignals(True)
+        tree.clearSelection()
+        for uid in uids:
+            item = tree.branches_dict.get(uid)
+            if item is not None:
+                item.setSelected(True)
+        tree.blockSignals(False)
+        self.controller.set_selected_branches(list(uids))
 
     def repeat_last_plugin(self):
         """Open the last plugin run from a menu again (Space shortcut).

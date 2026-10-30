@@ -191,6 +191,29 @@ def test_focus_rows_budget():
     print("  focus rows within budget: OK")
 
 
+def test_isolated_run_helpers():
+    """Which menus are offered an isolated run; selection and clicks carried
+    into the mask branch's rows."""
+    from application.isolated_run import processes_points, child_selection, child_picks
+
+    assert processes_points("020_Points/020_Clustering")
+    assert processes_points("080_CAD/000_Boundary")
+    assert processes_points("050_Processing")
+    for menu in ("010_View", "040_Clusters", "030_Selection", "015_Branch", None, ""):
+        assert not processes_points(menu), menu
+
+    inside = np.array([False, True, True, False, True])
+    parent = np.array([True, True, False, True, False])
+    assert np.array_equal(child_selection(parent, inside), [True, False, False])
+    assert child_selection(np.array([True, False, False, True, False]), inside) is None
+    assert child_selection(None, inside) is None
+    assert child_selection(parent[:3], inside) is None          # wrong cloud
+
+    picks = [("a", 4), ("b", 1), ("a", 0), ("a", 2), ("a", 99)]
+    assert child_picks(picks, "a", inside) == [2, 1]           # click order kept
+    print("  isolated run helpers: OK")
+
+
 if __name__ == "__main__":
     print("isolation_box_test")
     test_planes_agree_with_contains()
@@ -200,4 +223,5 @@ if __name__ == "__main__":
     test_slab_steps_cover_every_point()
     test_focus_indices()
     test_focus_rows_budget()
+    test_isolated_run_helpers()
     print("All isolation box tests passed.")
