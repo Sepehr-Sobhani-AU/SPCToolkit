@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 # Viewing, measuring, branch bookkeeping, selection and cluster editing are not
 # offered an isolated run: they either act on the view or edit a branch in
 # place, and the selection is already limited to what the box shows.
-PROCESSING_MENUS = ("Points", "Processing", "Infrastructure", "ML_Models", "CAD")
+PROCESSING_MENUS = ("Points", "Features", "Classify", "Segmentation", "Vectorise",
+                    "Machine Learning")
 
 # Node types that are not point data and so cannot be masked.
 _NOT_POINTS = ("vector_feature", "cad_object", "container")
@@ -43,7 +44,7 @@ BRANCH_NAME = "Isolated Points"
 
 
 def processes_points(menu_path: Optional[str]) -> bool:
-    """Whether a plugin in *menu_path* (e.g. "020_Points/020_Clustering")
+    """Whether a plugin in *menu_path* (e.g. "060_Segmentation/020_Lines")
     processes points, and so should be offered an isolated run."""
     if not menu_path:
         return False

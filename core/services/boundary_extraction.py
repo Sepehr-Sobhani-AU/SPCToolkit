@@ -1,5 +1,5 @@
 """
-Boundary extraction — the outline methods behind the CAD > Boundary plugins.
+Boundary extraction — the outline methods behind the Vectorise > Outline plugins.
 
 Each method traces a cluster's *raw* outline: a closed 2D ring in the
 cluster's plane, at whatever detail the method naturally gives. The shared

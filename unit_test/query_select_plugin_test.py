@@ -27,7 +27,7 @@ from core.entities.masks import Masks
 from services.attribute_query import evaluate_query, evaluate_clause
 
 _PLUGIN_PATH = os.path.join(
-    REPO, "plugins", "030_Selection", "020_query_select_plugin.py")
+    REPO, "plugins", "020_Select", "020_query_select_plugin.py")
 _spec = importlib.util.spec_from_file_location("query_select_plugin_mod", _PLUGIN_PATH)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)

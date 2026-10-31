@@ -26,7 +26,7 @@ from core.services.ransac import fit
 def _load_plugin_module():
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "plugins", "060_Infrastructure", "040_fit_cylinder_cone_plugin.py",
+        "plugins", "080_Vectorise", "010_Shapes and Surfaces", "050_fit_cylinder_cone_plugin.py",
     )
     spec = importlib.util.spec_from_file_location("fit_cylinder_cone_plugin", path)
     mod = importlib.util.module_from_spec(spec)

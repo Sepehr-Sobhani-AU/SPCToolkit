@@ -17,7 +17,7 @@ from core.services.linear_region_grower import GrownLine, MarchStop, lines_to_tr
 from core.services.path_tracker import track_polyline
 
 module = importlib.import_module(
-    "plugins.020_Points.020_Clustering.080_line_preview_plugin")
+    "plugins.060_Segmentation.020_Lines.080_line_preview_plugin")
 Plugin = module.LinePreviewPlugin
 
 

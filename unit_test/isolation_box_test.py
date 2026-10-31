@@ -196,10 +196,11 @@ def test_isolated_run_helpers():
     into the mask branch's rows."""
     from application.isolated_run import processes_points, child_selection, child_picks
 
-    assert processes_points("020_Points/020_Clustering")
-    assert processes_points("080_CAD/000_Boundary")
-    assert processes_points("050_Processing")
-    for menu in ("010_View", "040_Clusters", "030_Selection", "015_Branch", None, ""):
+    assert processes_points("060_Segmentation/020_Lines")
+    assert processes_points("080_Vectorise/000_Outline")
+    assert processes_points("040_Features")
+    assert processes_points("090_Machine Learning/010_PointNet Segmentation")
+    for menu in ("010_View", "070_Clusters", "020_Select", "005_Branch", None, ""):
         assert not processes_points(menu), menu
 
     inside = np.array([False, True, True, False, True])

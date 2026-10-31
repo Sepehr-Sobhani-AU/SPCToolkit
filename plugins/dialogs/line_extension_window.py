@@ -16,7 +16,7 @@ Growth is never loosened to reach further on its own — the picks are the evide
 that the feature continues, and for the same reason the picks are always adopted
 whether or not growth could follow them. See
 ``LinearRegionGrower.extend_from_stop`` and
-``plugins/020_Points/020_Clustering/LINEAR_REGION_GROWING.md``.
+``docs/algorithms/LINEAR_REGION_GROWING.md``.
 
 An extension leaves the user ON the line it just extended, and leaves the camera
 where they put it: the end it reached becomes the new marker, in the same place

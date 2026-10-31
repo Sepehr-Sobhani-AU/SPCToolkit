@@ -1,1 +1,0 @@
-# PointNet++ plugin package

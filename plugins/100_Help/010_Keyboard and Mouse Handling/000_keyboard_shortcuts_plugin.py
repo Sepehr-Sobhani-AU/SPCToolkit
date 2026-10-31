@@ -26,8 +26,8 @@ KEYBOARD_SECTIONS = [
               "you. Press again to get the box back as it was."),
         ("[ or ]", "Step the slab towards or away from you by half its thickness."),
         ("{ or }", "Make the slab thinner or thicker (x1.25)."),
-        ("", "While isolation is on, a Points, Processing, Infrastructure, ML Models or "
-             "CAD process asks whether to run on the isolated points or on all points. "
+        ("", "While isolation is on, a Points, Features, Classify, Segmentation, Vectorise "
+             "or Machine Learning process asks whether to run on the isolated points or on all points. "
              "Isolated points first become an \"Isolated Points\" mask branch, reused "
              "while the box is unchanged."),
     ]),

@@ -25,7 +25,7 @@ from core.services.linear_region_grower import (
 )
 
 _plugin_module = importlib.import_module(
-    "plugins.020_Points.020_Clustering.040_linear_region_growing_plugin")
+    "plugins.060_Segmentation.020_Lines.040_linear_region_growing_plugin")
 Plugin = _plugin_module.LinearRegionGrowingPlugin
 
 N = 30

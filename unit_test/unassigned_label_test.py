@@ -98,7 +98,7 @@ def test_unassigned_is_selectable_noise_is_not():
 def test_cluster_size_filter_passes_unassigned_through():
     """Unassigned is the rest of the cloud, not one huge cluster to judge."""
     module = importlib.import_module(
-        "plugins.020_Points.020_Clustering.020_cluster_size_filter_plugin")
+        "plugins.070_Clusters.020_cluster_size_filter_plugin")
     plugin_cls = next(obj for name, obj in vars(module).items()
                       if name.endswith("Plugin") and hasattr(obj, "execute")
                       and obj.__module__ == module.__name__)

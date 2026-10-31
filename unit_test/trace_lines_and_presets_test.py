@@ -20,8 +20,8 @@ from PyQt5.QtWidgets import QApplication
 import services.preset_service as presets
 from core.services.kalman_line_tracer import KalmanLineTracer
 
-lrg = importlib.import_module("plugins.020_Points.020_Clustering.040_linear_region_growing_plugin")
-tl = importlib.import_module("plugins.020_Points.020_Clustering.045_trace_lines_plugin")
+lrg = importlib.import_module("plugins.060_Segmentation.020_Lines.040_linear_region_growing_plugin")
+tl = importlib.import_module("plugins.060_Segmentation.020_Lines.045_trace_lines_plugin")
 
 app = QApplication.instance() or QApplication(sys.argv)
 
