@@ -105,18 +105,29 @@ plugins/
 │   │   └── 020_ply_plugin.py      →   Import Ply
 │   ├── 010_load_project_plugin.py → File > Load Project
 │   └── 040_Export Point Cloud/    → File > Export Point Cloud (submenu)
-├── 020_Points/
-│   ├── 000_Subsampling/           → Points > Subsampling (submenu)
-│   └── 020_Clustering/            → Points > Clustering (submenu)
+├── 030_Points/
+│   ├── 000_Subsample/             → Points > Subsample (submenu)
+│   └── 010_Filter/                → Points > Filter (submenu)
+├── 060_Segmentation/
+│   └── 020_Lines/                 → Segmentation > Lines (submenu)
 └── ...
 ```
+
+The top menus follow the scan-to-CAD workflow, left to right: File, Branch,
+View, Select, Measure, Points, Features, Classify, Segmentation, Clusters,
+Vectorise, Machine Learning, Tools, Help. Each menu has one job: Points changes
+the points themselves, Features adds a value to every point, Classify gives every
+point a class, Segmentation divides the cloud into parts, Clusters fixes those
+parts by hand, and Vectorise turns points into drawing objects. Branch holds only
+logical operations on branches and never changes point data. See DECISIONS.md
+(2026-10-31).
 
 ### Numeric Prefix Convention
 
 Folders and files use **3-digit + underscore** prefixes (`000_`, `010_`, `085_`) to control ordering. Prefixes are stripped for display only via `PluginManager._strip_prefix()` (regex: `^\d{3}_`). The raw prefixed names remain in `menu_path` keys and file names.
 
-> **Note:** `_create_menu_hierarchy()` strips the prefix but does **not** replace underscores, so a
-> folder named `070_ML_Models` renders in the menubar as `ML_Models`. Underscore→space
+> **Note:** `_create_menu_hierarchy()` strips the prefix but does **not** replace underscores, so
+> name folders with spaces (`090_Machine Learning`), not underscores. Underscore→space
 > conversion happens only for plugin *names*, via `_format_plugin_name()` below.
 
 ### Display Name Formatting
@@ -126,7 +137,10 @@ Folders and files use **3-digit + underscore** prefixes (`000_`, `010_`, `085_`)
 1. Strip numeric prefix if present (defensive — `get_name()` values typically don't have them)
 2. Replace underscores with spaces
 3. Title Case each word
-4. Keep known acronyms uppercase: **DBSCAN**, **HDBSCAN**, **SOR**, **MLS**, **PCA**, **ICP**
+4. Keep known acronyms uppercase: **DBSCAN**, **HDBSCAN**, **SOR**, **MLS**, **PCA**, **ICP**, **RGB**
+5. Keep short joining words lowercase after the first word: to, into, by, of, and, or, from (`classes_into_branches` → "Classes into Branches")
+
+So the menu label comes from `get_name()`. To rename a menu item, rename `get_name()` (and the class and file to match).
 
 Menu building: `MainWindow.populate_menus_from_plugins()` iterates sorted menu paths, creates the hierarchy via `_create_menu_hierarchy()`, and adds actions. `rebuild_plugin_menus()` clears and rebuilds all menus from current PluginManager state.
 
@@ -484,7 +498,7 @@ Typical workflow: user adds a new `.py` file to `plugins/SomeMenu/`, clicks "Sca
 
 ## 10. Complete Plugin Inventory
 
-Generated from the source tree. **105 plugins** (72 Action, 33 Analysis) across **15 top-level menus** and 26 menu paths, listed in menu order. No system (root-level) plugins are currently registered.
+Generated from the source tree. **101 plugins** (69 Action, 32 Analysis) across **14 top-level menus** and 33 menu paths, listed in menu order. No system (root-level) plugins are currently registered.
 
 ### File
 
@@ -502,6 +516,16 @@ Generated from the source tree. **105 plugins** (72 Action, 33 Analysis) across 
 | File > Export Point Cloud | `export_las` | Action | `ExportLASPlugin` |
 | File > Export Point Cloud | `export_ply` | Action | `ExportPointCloudPlugin` |
 
+### Branch
+
+| Menu Path | Plugin Name | Type | Class |
+|-----------|-------------|------|-------|
+| Branch | `delete_branch` | Action | `DeleteBranchPlugin` |
+| Branch | `duplicate_to_root` | Action | `DuplicateToRootPlugin` |
+| Branch > Combine Branches | `union_branches` | Action | `UnionBranchesPlugin` |
+| Branch > Combine Branches | `subtract` | Analysis | `SubtractPlugin` |
+| Branch > Combine Branches | `intersect` | Analysis | `IntersectPlugin` |
+
 ### View
 
 | Menu Path | Plugin Name | Type | Class |
@@ -509,11 +533,21 @@ Generated from the source tree. **105 plugins** (72 Action, 33 Analysis) across 
 | View | `reset_view` | Action | `ResetViewPlugin` |
 | View | `zoom_to_extent` | Action | `ZoomToExtentPlugin` |
 | View | `zoom_window` | Action | `ZoomWindowPlugin` |
-| View | `point_size` | Action | `PointSizePlugin` |
-| View | `point_snap_tolerance` | Action | `PointSnapTolerancePlugin` |
-| View | `vector_feature_thickness` | Action | `VectorFeatureThicknessPlugin` |
 | View | `flythrough` | Action | `FlythroughPlugin` |
-| View | `preview_data` | Action | `PreviewDataPlugin` |
+| View > Colour By | `color_by_branch` | Analysis | `ColorByBranchPlugin` |
+| View > Colour By | `rgb_color` | Analysis | `RGBColorPlugin` |
+| View > Colour By | `color_by_value` | Analysis | `ColorByValuePlugin` |
+| View > Display Settings | `point_size` | Action | `PointSizePlugin` |
+| View > Display Settings | `point_snap_tolerance` | Action | `PointSnapTolerancePlugin` |
+| View > Display Settings | `vector_feature_thickness` | Action | `VectorFeatureThicknessPlugin` |
+
+### Select
+
+| Menu Path | Plugin Name | Type | Class |
+|-----------|-------------|------|-------|
+| Select | `separate_selected_points` | Analysis | `SeparateSelectedPointsPlugin` |
+| Select | `separate_selected_clusters` | Analysis | `SeparateSelectedClustersPlugin` |
+| Select | `query_select` | Analysis | `QuerySelectPlugin` |
 
 ### Measure
 
@@ -522,75 +556,64 @@ Generated from the source tree. **105 plugins** (72 Action, 33 Analysis) across 
 | Measure | `identify_point` | Action | `IdentifyPointPlugin` |
 | Measure | `distance_measurement` | Action | `DistanceMeasurementPlugin` |
 
-### Branch
-
-| Menu Path | Plugin Name | Type | Class |
-|-----------|-------------|------|-------|
-| Branch | `delete_branch` | Action | `DeleteBranchPlugin` |
-| Branch | `merge_branches` | Action | `MergeBranchesPlugin` |
-| Branch | `union_branches` | Action | `UnionBranchesPlugin` |
-| Branch | `subtract` | Analysis | `SubtractPlugin` |
-| Branch | `intersect` | Analysis | `IntersectPlugin` |
-| Branch | `duplicate_to_root` | Action | `DuplicateToRootPlugin` |
-
 ### Points
 
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
-| Points > Subsampling | `subsampling` | Analysis | `SubsamplingPlugin` |
-| Points > Subsampling | `density_subsampling` | Analysis | `DensitySubsamplingPlugin` |
-| Points > Subsampling | `voxel_subsample` | Analysis | `VoxelSubsamplePlugin` |
-| Points > Filtering | `filtering` | Analysis | `FilteringPlugin` |
-| Points > Filtering | `sor` | Analysis | `SORPlugin` |
-| Points > Clustering | `dbscan` | Analysis | `DBSCANPlugin` |
-| Points > Clustering | `hdbscan` | Analysis | `HDBSCANPlugin` |
-| Points > Clustering | `cluster_size_filter` | Analysis | `ClusterSizeFilterPlugin` |
-| Points > Clustering | `surface_region_growing` | Action | `SurfaceRegionGrowingPlugin` |
-| Points > Clustering | `linear_region_growing` | Action | `LinearRegionGrowingPlugin` |
-| Points > Clustering | `trace_lines` | Action | `TraceLinesPlugin` (subclass of `LinearRegionGrowingPlugin`) |
-| Points > Clustering | `trace_edges` | Action | `TraceEdgesPlugin` (subclass of `LinearRegionGrowingPlugin`) |
-| Points > Clustering | `crease_edge` | Action | `CreaseEdgePlugin` |
-| Points > Clustering | `contour_growing` | Action | `ContourGrowingPlugin` |
-| Points > Clustering | `extend_traced_lines` | Action | `ExtendLinesPlugin` |
-| Points > Clustering | `line_preview` | Action | `LinePreviewPlugin` |
-| Points > Analysis | `compute_eigenvalues` | Analysis | `ComputeEigenvaluesPlugin` |
-| Points > Analysis | `knn_analysis` | Analysis | `KNNAnalysisPlugin` |
-| Points > Analysis | `geometric_classification` | Analysis | `GeometricClassificationPlugin` |
-| Points > Analysis | `planar_classification` | Analysis | `PlanarClassificationPlugin` |
-| Points > Analysis | `linear_classification` | Analysis | `LinearClassificationPlugin` |
-| Points > Analysis | `scatter_classification` | Analysis | `ScatterClassificationPlugin` |
-| Points > Analysis | `cylindrical_classification` | Analysis | `CylindricalClassificationPlugin` |
-| Points > Analysis | `sparse_classification` | Analysis | `SparseClassificationPlugin` |
-| Points > Analysis | `vegetation_classification` | Analysis | `VegetationClassificationPlugin` |
-| Points > Analysis | `curvature_edge_filter` | Analysis | `CurvatureEdgeFilterPlugin` |
-| Points > Analysis | `split_geometric_classes` | Action | `SplitGeometricClassesPlugin` |
-| Points > Analysis | `estimate_normals` | Action | `NormalEstimationPlugin` |
-| Points > Analysis | `surface_fit` | Action | `SurfaceFitPlugin` |
-| Points > Analysis | `mesh_drape` | Action | `MeshDrapePlugin` |
-| Points > Analysis | `projected_distance` | Analysis | `ProjectedDistancePlugin` |
-| Points > Color | `color_by_branch` | Analysis | `ColorByBranchPlugin` |
-| Points > Color | `rgb_color` | Analysis | `RGBColorPlugin` |
-| Points > Color | `color_by_value` | Analysis | `ColorByValuePlugin` |
+| Points > Subsample | `subsampling` | Analysis | `SubsamplingPlugin` |
+| Points > Subsample | `density_subsampling` | Analysis | `DensitySubsamplingPlugin` |
+| Points > Subsample | `voxel_subsample` | Analysis | `VoxelSubsamplePlugin` |
+| Points > Filter | `filtering` | Analysis | `FilteringPlugin` |
+| Points > Filter | `sor` | Analysis | `SORPlugin` |
+| Points > Filter | `curvature_edge_filter` | Analysis | `CurvatureEdgeFilterPlugin` |
 | Points > Transform | `scale` | Action | `ScalePlugin` |
 
-### Selection
+### Features
 
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
-| Selection | `separate_selected_points` | Analysis | `SeparateSelectedPointsPlugin` |
-| Selection | `separate_selected_clusters` | Analysis | `SeparateSelectedClustersPlugin` |
-| Selection | `query_select` | Analysis | `QuerySelectPlugin` |
+| Features | `compute_eigenvalues` | Analysis | `ComputeEigenvaluesPlugin` |
+| Features | `knn_analysis` | Analysis | `KNNAnalysisPlugin` |
+| Features | `estimate_normals` | Action | `NormalEstimationPlugin` |
+| Features | `height_above_reference` | Analysis | `HeightAboveReferencePlugin` |
+
+### Classify
+
+| Menu Path | Plugin Name | Type | Class |
+|-----------|-------------|------|-------|
+| Classify | `classes_into_branches` | Action | `ClassesIntoBranchesPlugin` |
+| Classify | `branches_to_classes` | Action | `BranchesToClassesPlugin` |
+| Classify > Geometric | `geometric_classification` | Analysis | `GeometricClassificationPlugin` |
+| Classify > Geometric | `planar_classification` | Analysis | `PlanarClassificationPlugin` |
+| Classify > Geometric | `linear_classification` | Analysis | `LinearClassificationPlugin` |
+| Classify > Geometric | `scatter_classification` | Analysis | `ScatterClassificationPlugin` |
+| Classify > Geometric | `cylindrical_classification` | Analysis | `CylindricalClassificationPlugin` |
+| Classify > Geometric | `sparse_classification` | Analysis | `SparseClassificationPlugin` |
+| Classify > Geometric | `vegetation_classification` | Analysis | `VegetationClassificationPlugin` |
+
+### Segmentation
+
+| Menu Path | Plugin Name | Type | Class |
+|-----------|-------------|------|-------|
+| Segmentation > Clustering | `dbscan` | Analysis | `DBSCANPlugin` |
+| Segmentation > Clustering | `hdbscan` | Analysis | `HDBSCANPlugin` |
+| Segmentation > Clustering | `cluster_by_class` | Action | `ClusterByClassPlugin` |
+| Segmentation > Clustering | `cluster_by_value` | Action | `ClusterByValuePlugin` |
+| Segmentation > Surfaces | `surface_region_growing` | Action | `SurfaceRegionGrowingPlugin` |
+| Segmentation > Lines | `linear_region_growing` | Action | `LinearRegionGrowingPlugin` |
+| Segmentation > Lines | `trace_lines` | Action | `TraceLinesPlugin` |
+| Segmentation > Lines | `extend_traced_lines` | Action | `ExtendLinesPlugin` |
+| Segmentation > Lines | `line_preview` | Action | `LinePreviewPlugin` |
+| Segmentation > Edges | `trace_edges` | Action | `TraceEdgesPlugin` |
+| Segmentation > Edges | `crease_edge` | Action | `CreaseEdgePlugin` |
+| Segmentation > Edges | `contour_growing` | Action | `ContourGrowingPlugin` |
 
 ### Clusters
 
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
-| Clusters | `classify_cluster` | Action | `ClassifyClusterPlugin` |
-| Clusters | `merge_classified_layers` | Action | `MergeClassifiedLayersPlugin` |
-| Clusters | `export_classified_clusters` | Action | `ExportClassifiedClustersPlugin` |
-| Clusters | `split_classes` | Action | `SplitClassesPlugin` |
-| Clusters | `cluster_by_class` | Action | `ClusterByClassPlugin` |
-| Clusters | `cluster_by_value` | Action | `ClusterByValuePlugin` |
+| Clusters | `name_clusters` | Action | `NameClustersPlugin` |
+| Clusters | `cluster_size_filter` | Analysis | `ClusterSizeFilterPlugin` |
 | Clusters | `undo_cluster_edit` | Action | `UndoClusterEditPlugin` |
 | Clusters | `lock_unlock_clusters` | Action | `LockUnlockClustersPlugin` |
 | Clusters | `color_clusters` | Action | `ColorClustersPlugin` |
@@ -598,71 +621,47 @@ Generated from the source tree. **105 plugins** (72 Action, 33 Analysis) across 
 | Clusters | `merge_clusters` | Action | `MergeClustersPlugin` |
 | Clusters | `remove_clusters` | Action | `RemoveClustersPlugin` |
 
-### Processing
+### Vectorise
 
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
-| Processing | `average_distance` | Analysis | `AverageDistancePlugin` |
+| Vectorise | `batch_vectorise` | Action | `BatchVectorisePlugin` |
+| Vectorise > Outline | `convex_hull` | Analysis | `ConvexHullPlugin` |
+| Vectorise > Outline | `grid_outline` | Analysis | `GridOutlinePlugin` |
+| Vectorise > Outline | `concave_hull` | Analysis | `ConcaveHullPlugin` |
+| Vectorise > Outline | `alpha_shape` | Analysis | `AlphaShapePlugin` |
+| Vectorise > Outline | `knn_concave_hull` | Analysis | `KNNConcaveHullPlugin` |
+| Vectorise > Outline | `cluster_outline` | Action | `ClusterOutlinePlugin` |
+| Vectorise > Shapes and Surfaces | `surface_fit` | Action | `SurfaceFitPlugin` |
+| Vectorise > Shapes and Surfaces | `mesh_drape` | Action | `MeshDrapePlugin` |
+| Vectorise > Shapes and Surfaces | `fit_cylinder_cone` | Action | `FitCylinderConePlugin` |
+| Vectorise > Polyline | `weed_vertices` | Action | `WeedVerticesPlugin` |
 
-### Pipeline
-
-| Menu Path | Plugin Name | Type | Class |
-|-----------|-------------|------|-------|
-| Pipeline | `save_pipeline` | Action | `SavePipelinePlugin` |
-| Pipeline | `run_pipeline` | Action | `RunPipelinePlugin` |
-
-### Infrastructure
-
-| Menu Path | Plugin Name | Type | Class |
-|-----------|-------------|------|-------|
-| Infrastructure | `power_line_detection` | Action | `PowerLineDetectionPlugin` |
-| Infrastructure | `generate_vector_features` | Action | `GenerateVectorFeaturesPlugin` |
-| Infrastructure | `cluster_boundary` | Action | `ClusterBoundaryPlugin` |
-| Infrastructure | `fit_cylinder_cone` | Action | `FitCylinderConePlugin` |
-
-### ML Models
+### Machine Learning
 
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
-| ML Models > PointNet > Classification | `generate_training_data` | Action | `GenerateTrainingDataPlugin` |
-| ML Models > PointNet > Classification | `analyze_classes` | Action | `AnalyzeClassesPlugin` |
-| ML Models > PointNet > Classification | `train_pointnet_model` | Action | `TrainPointNetPlugin` |
-| ML Models > PointNet > Classification | `classify_clusters` | Action | `ClassifyClustersMLPlugin` |
-| ML Models > PointNet > Segmentation | `generate_seg_training_data` | Action | `GenerateSegTrainingDataPlugin` |
-| ML Models > PointNet > Segmentation | `import_external_dataset` | Action | `ImportExternalDatasetPlugin` |
-| ML Models > PointNet > Segmentation | `annotate_points` | Action | `AnnotatePointsPlugin` |
-| ML Models > PointNet > Segmentation | `train_seg_model` | Action | `TrainSegModelPlugin` |
-| ML Models > PointNet > Segmentation | `segment_point_cloud` | Action | `SegmentPointCloudPlugin` |
-| ML Models > PointNet2 > Segmentation | `train_pointnet2_seg_model` | Action | `TrainPointNet2SegPlugin` |
-| ML Models > PointNet2 > Segmentation | `segment_point_cloud_pp` | Action | `SegmentPointCloudPP` |
-
-### CAD
-
-| Menu Path | Plugin Name | Type | Class |
-|-----------|-------------|------|-------|
-| CAD > Boundary | `convex_hull` | Analysis | `ConvexHullPlugin` |
-| CAD > Boundary | `grid_outline` | Analysis | `GridOutlinePlugin` |
-| CAD > Boundary | `concave_hull` | Analysis | `ConcaveHullPlugin` |
-| CAD > Boundary | `alpha_shape` | Analysis | `AlphaShapePlugin` |
-| CAD > Boundary | `knn_concave_hull` | Analysis | `KNNConcaveHullPlugin` |
-| CAD > Polyline | `weed_vertices` | Action | `WeedVerticesPlugin` |
-
-The five CAD > Boundary plugins only trace a raw outline; the shared clean-up in
-`core/services/outline_cleanup.py` turns it into a closed 3D polyline (straight
-segments, 3D weeding, plane-fit heights) — see DECISIONS.md 2026-10-24.
-`weed_vertices` reuses that 3D weeding on any existing polyline branch.
+| Machine Learning | `preview_data` | Action | `PreviewDataPlugin` |
+| Machine Learning > PointNet Classification | `generate_training_data` | Action | `GenerateTrainingDataPlugin` |
+| Machine Learning > PointNet Classification | `export_classified_clusters` | Action | `ExportClassifiedClustersPlugin` |
+| Machine Learning > PointNet Classification | `analyze_classes` | Action | `AnalyzeClassesPlugin` |
+| Machine Learning > PointNet Classification | `train_pointnet_model` | Action | `TrainPointNetPlugin` |
+| Machine Learning > PointNet Classification | `classify_clusters` | Action | `ClassifyClustersMLPlugin` |
+| Machine Learning > PointNet Segmentation | `generate_seg_training_data` | Action | `GenerateSegTrainingDataPlugin` |
+| Machine Learning > PointNet Segmentation | `import_external_dataset` | Action | `ImportExternalDatasetPlugin` |
+| Machine Learning > PointNet Segmentation | `annotate_points` | Action | `AnnotatePointsPlugin` |
+| Machine Learning > PointNet Segmentation | `train_seg_model` | Action | `TrainSegModelPlugin` |
+| Machine Learning > PointNet Segmentation | `segment_point_cloud` | Action | `SegmentPointCloudPlugin` |
+| Machine Learning > PointNet++ Segmentation | `train_pointnet2_seg_model` | Action | `TrainPointNet2SegPlugin` |
+| Machine Learning > PointNet++ Segmentation | `segment_point_cloud_pp` | Action | `SegmentPointCloudPP` |
 
 ### Tools
 
 | Menu Path | Plugin Name | Type | Class |
 |-----------|-------------|------|-------|
-| Tools | `dbscan_benchmark` | Action | `DBSCANBenchmarkPlugin` |
-
-### Plugins
-
-| Menu Path | Plugin Name | Type | Class |
-|-----------|-------------|------|-------|
-| Plugins | `manage_plugins` | Action | `ManagePluginsPlugin` |
+| Tools | `manage_plugins` | Action | `ManagePluginsPlugin` |
+| Tools > Pipelines | `save_pipeline` | Action | `SavePipelinePlugin` |
+| Tools > Pipelines | `run_pipeline` | Action | `RunPipelinePlugin` |
 
 ### Help
 

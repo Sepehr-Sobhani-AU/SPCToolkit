@@ -77,7 +77,7 @@ After selecting points, go to **Selection > Separate Selected Points** to extrac
 Eigenvalues describe the local geometric structure around each point (planar, linear, scattered).
 
 1. Select a branch in the data tree
-2. Go to **Points > Analysis > Compute Eigenvalues**
+2. Go to **Features > Compute Eigenvalues**
 3. Set the **K** parameter (number of neighbors, typically 20-50)
 4. Results appear as a child branch in the data tree
 
@@ -85,13 +85,13 @@ Eigenvalues describe the local geometric structure around each point (planar, li
 Automatically classifies points based on their geometric structure:
 
 1. First compute eigenvalues (see above)
-2. Go to **Points > Analysis > Geometric Classification**
+2. Go to **Classify > Geometric > Geometric Classification**
 3. Configure thresholds for planar, linear, and scatter features
 4. Results assign a class label to each point
 
 ### Normal Estimation
 1. Select a branch
-2. Go to **Points > Analysis > Estimate Normals**
+2. Go to **Features > Estimate Normals**
 3. Set K neighbors and orientation method
 
 ## 6. Clustering
@@ -100,7 +100,7 @@ Automatically classifies points based on their geometric structure:
 Segments the point cloud into spatial clusters:
 
 1. Select a branch in the data tree
-2. Go to **Points > Clustering > DBSCAN**
+2. Go to **Segmentation > Clustering > DBSCAN**
 3. Set parameters:
    - **Epsilon** — Maximum distance between neighboring points
    - **Min Points** — Minimum points to form a cluster
@@ -113,14 +113,14 @@ Once you have clusters, you can:
 - **Delete** — Remove selected clusters
 - **Clusters > Lock/Unlock Clusters** — Protect clusters from edits
 - **Clusters > Color Clusters** — Assign custom colors
-- **Clusters > Classify Cluster** — Assign semantic class labels
+- **Clusters > Name Clusters** — Assign semantic class labels
 
 ## 7. Machine Learning
 
 ### PointNet Classification
 Train a model to classify clusters by type:
 
-1. **Prepare training data**: Classify several clusters manually using **Clusters > Classify Cluster**
+1. **Prepare training data**: Classify several clusters manually using **Clusters > Name Clusters**
 2. **Generate training data**: ML Models > PointNet > Classification > Generate Training Data
 3. **Train the model**: ML Models > PointNet > Classification > Train PointNet Model
 4. **Apply to new data**: ML Models > PointNet > Classification > Classify Clusters

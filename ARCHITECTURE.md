@@ -650,9 +650,9 @@ plugins/
 │   ├── 000_Import Point Cloud/      ->   Submenu: "Import Point Cloud"
 │   └── 010_load_project_plugin.py   ->   "Load Project"
 ├── 010_View/                        -> Menu: "View"
-│   └── 005_zoom_to_extent_plugin.py ->   "Zoom To Extent"
-└── 020_Points/                      -> Menu: "Points"
-    └── 020_Clustering/              ->   Submenu: "Clustering"
+│   └── 005_zoom_to_extent_plugin.py ->   "Zoom to Extent"
+└── 060_Segmentation/                -> Menu: "Segmentation"
+    └── 000_Clustering/              ->   Submenu: "Clustering"
         └── 000_dbscan_plugin.py     ->     "DBSCAN"
 ```
 

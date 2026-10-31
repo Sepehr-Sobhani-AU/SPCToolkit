@@ -108,8 +108,8 @@ python main.py
 
 1. **Import a point cloud**: File > Import Point Cloud > choose format (PLY, LAS, E57, etc.)
 2. **Navigate**: Left-click to rotate, right-click to pan, scroll to zoom, press **F** to fit view
-3. **Analyze**: Points > Analysis > Compute Eigenvalues for geometric features
-4. **Cluster**: Points > Clustering > DBSCAN to segment the point cloud
+3. **Analyze**: Features > Compute Eigenvalues for geometric features
+4. **Cluster**: Segmentation > Clustering > DBSCAN to segment the point cloud
 5. **Classify**: Use geometric classification or train a PointNet model under ML Models
 6. **Flythrough**: View > Flythrough — navigate to a camera angle, click **Add Waypoint**, repeat, then hit **Play** for a smooth animated path
 7. **Save**: File > Save Project to preserve your work as a `.pcdtk` project file
@@ -141,14 +141,15 @@ SPCToolkit uses a folder-based plugin architecture. Plugins are automatically di
 
 ```
 plugins/
-  010_File/
-    000_import_ply_plugin.py      # File > Import Point Cloud > PLY
-    100_save_project_plugin.py    # File > Save Project
-  020_Points/
-    010_Subsampling/
-      000_subsampling_plugin.py   # Points > Subsampling > Subsampling
-    030_Analysis/
-      000_eigenvalues_plugin.py   # Points > Analysis > Compute Eigenvalues
+  000_File/
+    000_Import Point Cloud/
+      020_ply_plugin.py           # File > Import Point Cloud > Import Ply
+    020_save_project_plugin.py    # File > Save Project
+  030_Points/
+    000_Subsample/
+      000_subsampling_plugin.py   # Points > Subsample > Subsampling
+  040_Features/
+    000_compute_eigenvalues_plugin.py  # Features > Compute Eigenvalues
 ```
 
 Creating a new plugin is as simple as implementing the `AnalysisPlugin` or `ActionPlugin` interface and placing the file in the appropriate directory.

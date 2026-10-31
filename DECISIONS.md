@@ -6,6 +6,21 @@ the *what* is already captured in `PROJECT.md` or in code. Newest at the top.
 
 ---
 
+## 2026-10-31 — Menus follow the scan-to-CAD workflow; each menu has one job
+The plugins had spread across 15 menus with no clear rule (Points › Analysis held fifteen
+mixed items, and "find the feature" and "draw it" were split across Clustering,
+Infrastructure and CAD), so the menus now run in workflow order and each answers one question:
+Points changes points, Features adds per-point values, Classify gives per-point classes,
+Segmentation divides the cloud, Clusters fixes segments by hand, Vectorise draws them. Branch
+stays separate because it holds only logical branch operations that never change point data,
+and Machine Learning stays grouped by model because each model needs its own training and
+input data. Five duplicates or one-off tools were removed (Merge Branches, which Union covers;
+Average Distance, which KNN Analysis covers; Split Geometric Classes, which Classes into
+Branches covers; Power Line Detection, cable-specific; DBSCAN Benchmark). Agreed next, as
+its own piece of work: the segmentation tools that also draw vectors (Linear Region Growing,
+Trace Edges, Crease Edge, Contour Growing, Line Preview) should call shared Vectorise code
+instead of carrying their own copy.
+
 ## 2026-10-20 — Trace Lines: its real settings back, seed values filled from the picks
 Five settings proved too few on the user's data (200 picks on 8 parallel cables: 73 seed
 groups, radius wrong), so the tracer's real settings came back - not Linear Region Growing's,
