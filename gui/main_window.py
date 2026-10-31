@@ -429,10 +429,13 @@ class MainWindow(QtWidgets.QMainWindow):
         words = formatted.split()
         formatted_words = []
 
-        for word in words:
+        for i, word in enumerate(words):
             # Keep acronyms uppercase (like DBSCAN, SOR, MLS)
             if word.upper() in ['DBSCAN', 'HDBSCAN', 'SOR', 'MLS', 'PCA', 'ICP', 'RGB']:
                 formatted_words.append(word.upper())
+            # Keep short joining words lowercase ("Classes into Branches")
+            elif i > 0 and word.lower() in ['to', 'into', 'by', 'of', 'and', 'or', 'from']:
+                formatted_words.append(word.lower())
             else:
                 formatted_words.append(word.capitalize())
 
