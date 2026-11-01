@@ -1,6 +1,6 @@
 # SPCToolkit
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 **An open-source, plugin-based research and development platform for point cloud processing.**
 
@@ -173,4 +173,10 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+Copyright (C) 2025-2026 Sepehr Sobhani
+
+This project is licensed under the GNU Affero General Public License v3.0 — see the [LICENSE](LICENSE) file for details.
+
+In short: you may use, study, change and share it. If you distribute a changed version, or run one as a network service for others, you must make your source code available under the same licence.
+
+Releases up to and including commit `e2dd308` were published under the MIT License, and copies obtained then remain under MIT.

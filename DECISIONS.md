@@ -1097,3 +1097,23 @@ A flagged point is kept when the unflagged points round it (thinned to even
 out density) leave no gap over 180 deg — a sparse point at a density step is
 surrounded, a stray outside an edge is not. Cost: about 1 real point in
 2000-8000 dropped, which moves no outline.
+
+## 2026-11-01 — Licence changed from MIT to AGPL-3.0
+
+The code stays open source, but under AGPL-3.0 instead of MIT. MIT let anyone
+take the code, close it and sell it as their own product. AGPL requires anyone
+who distributes a changed version, or runs one as a network service, to publish
+their changes under the same licence.
+
+Why not go private: the business sells drawings, not software. The edge is
+drafting experience, client trust and tuned settings, not the general code.
+Being open helps credibility with international clients and brings users.
+
+What AGPL does not stop: someone using the tool in-house to do the same kind of
+work. That is handled by keeping the valuable know-how out of the public repo —
+tuned presets, scenario pipelines, client layer-mapping files and QA steps live
+in a separate private repository.
+
+Copies taken under MIT before this change (up to commit `e2dd308`) stay MIT.
+The user was advised to confirm the switch with a lawyer.
+
