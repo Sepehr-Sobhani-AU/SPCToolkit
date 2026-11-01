@@ -53,28 +53,50 @@ class PointPickingMixin:
         Resolves whatever geometry was drawn at that pixel — points, lines, or
         anything else — so it carries no dependency on point data.
 
+        When the pixel under the cursor is empty — a sparse area, or points
+        drawn only a pixel wide — it looks in a small square around the cursor
+        (``_PICK_SEARCH_RADIUS_PX``) and uses the drawn pixel nearest to it, the
+        frontmost one on a tie. Without this a click had to land exactly on a
+        point, and the snap tolerance never got a chance to help.
+
         Args:
             mouse_pos (QPoint): The position of the mouse click in widget coordinates.
 
         Returns:
-            numpy.ndarray: (3,) world coordinates, or None if the pixel is empty.
+            numpy.ndarray: (3,) world coordinates, or None if nothing is drawn nearby.
         """
         self.makeCurrent()
 
         modelview = self.model_view_matrix
         projection = self.projection_matrix
         viewport = self.viewport
+        vp_w, vp_h = int(viewport[2]), int(viewport[3])
 
-        win_x = mouse_pos.x()
-        win_y = viewport[3] - mouse_pos.y()
+        win_x = int(mouse_pos.x())
+        win_y = vp_h - int(mouse_pos.y())
 
-        z_buffer = glReadPixels(int(win_x), int(win_y), 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT)
-        win_z = z_buffer[0][0]
+        r = int(self._PICK_SEARCH_RADIUS_PX)
+        x0, x1 = max(win_x - r, 0), min(win_x + r, vp_w - 1)
+        y0, y1 = max(win_y - r, 0), min(win_y + r, vp_h - 1)
+        if x0 > x1 or y0 > y1:
+            return None
+        w, h = x1 - x0 + 1, y1 - y0 + 1
 
-        if win_z == 1.0:
+        raw = glReadPixels(x0, y0, w, h, GL_DEPTH_COMPONENT, GL_FLOAT)
+        if isinstance(raw, (bytes, bytearray)):
+            raw = np.frombuffer(raw, dtype=np.float32)
+        depth = np.asarray(raw, dtype=np.float32).reshape(h, w)   # row = y
+
+        rows, cols = np.nonzero(depth < 1.0)
+        if rows.size == 0:
             return None
 
-        world_coords = gluUnProject(win_x, win_y, win_z, modelview, projection, viewport)
+        dist_sq = (cols + x0 - win_x) ** 2 + (rows + y0 - win_y) ** 2
+        z = depth[rows, cols]
+        best = np.lexsort((z, dist_sq))[0]        # nearest pixel, then frontmost
+
+        px, py = float(cols[best] + x0), float(rows[best] + y0)
+        world_coords = gluUnProject(px, py, float(z[best]), modelview, projection, viewport)
         return np.array(world_coords[:3])
 
     def _unproject_mouse_to_nearest_point(self, mouse_pos):

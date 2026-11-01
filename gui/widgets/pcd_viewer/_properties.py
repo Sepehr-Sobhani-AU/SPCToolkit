@@ -59,6 +59,9 @@ class ViewerPropertiesMixin:
         # Rows per pass when scanning the combined buffer for the nearest point
         # to a pick. Keeps the intermediate masks bounded on a 50M-point buffer.
         self._PICK_SCAN_CHUNK = 2_000_000
+        # How far from the cursor, in pixels, a click looks for drawn geometry
+        # when the pixel right under it is empty (sparse areas, tiny points).
+        self._PICK_SEARCH_RADIUS_PX = 15
         # Isolation box grip handles: drawn size and how close a click must be.
         self._HANDLE_SIZE_PX = 10.0
         self._HANDLE_PICK_RADIUS_PX = 10
