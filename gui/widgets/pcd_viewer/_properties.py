@@ -31,6 +31,9 @@ class ViewerPropertiesMixin:
         self._zoom_sensitivity = 1
         self._pan_sensitivity = 1
         self._rotate_sensitivity = 1
+        # "orbit": left drag spins around the vertical Z axis and tilts, so Z
+        # stays up. "free": left drag turns around the screen's X and Y axes.
+        self._rotation_style = "orbit"
         self._pixel_threshold = 5
         # Isolation box (see IsolationBoxMixin): size of a new box and of a new
         # slab, in metres.
@@ -170,6 +173,22 @@ class ViewerPropertiesMixin:
         if value > 0:
             self._axis_line_width = value
             self.update()
+
+    ROTATION_STYLES = ("orbit", "free")
+
+    @property
+    def rotation_style(self):
+        """
+        str: How a left drag turns the view. "orbit" spins around the vertical
+        Z axis (left/right) and tilts (up/down), keeping Z pointing up. "free"
+        turns around the screen's X and Y axes.
+        """
+        return self._rotation_style
+
+    @rotation_style.setter
+    def rotation_style(self, value):
+        if value in self.ROTATION_STYLES:
+            self._rotation_style = value
 
     @property
     def picking_point_threshold_factor(self):

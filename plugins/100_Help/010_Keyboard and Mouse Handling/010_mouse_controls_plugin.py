@@ -15,7 +15,10 @@ from plugins.interfaces import ActionPlugin
 # (combination, action) rows grouped into titled sections.
 MOUSE_SECTIONS = [
     ("Camera — 3D viewer", [
-        ("Left drag", "Rotate around the X and Y axes."),
+        ("Left drag (Orbit, default)", "Left/right spins the view around the vertical Z axis; "
+                                       "up/down tilts it. Z always stays pointing up."),
+        ("Left drag (Free)", "Rotate around the screen's X and Y axes. Switch in "
+                             "View > Display Settings > Rotation Style."),
         ("Ctrl + Left drag", "Rotate around the Z axis."),
         ("Right or Middle drag", "Pan along the X and Y axes."),
         ("Ctrl + Right/Middle drag", "Pan along the Z axis."),

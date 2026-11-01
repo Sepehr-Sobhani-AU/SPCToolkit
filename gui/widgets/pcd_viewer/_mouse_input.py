@@ -217,7 +217,9 @@ class MouseInputEventHandler:
         dx = event.x() - self.last_mouse_pos.x()
         dy = event.y() - self.last_mouse_pos.y()
 
-        if self.is_rotating:
+        if self.is_rotating and self.rotation_style == "orbit":
+            self._orbit(dx, dy)
+        elif self.is_rotating:
             # Rotate around X and Y axes
             # / 10 is a scaling factor to adjust the rotation sensitivity
             self.rot_x += dy * self.rotate_sensitivity / self._ROTATION_SENSITIVITY_DIVISOR
@@ -235,6 +237,22 @@ class MouseInputEventHandler:
 
         self.last_mouse_pos = event.pos()
         self.update()
+
+    def _orbit(self, dx, dy):
+        """Turntable orbit: left/right spins around the vertical Z axis,
+        up/down tilts.
+
+        paintGL applies Rx(rot_x) · Ry(rot_y) · Rz(rot_z), so with rot_y at 0
+        rot_z is a spin around world Z and rot_x is the tilt — Z stays pointing
+        up on screen. rot_x 0 is the top view, -90 a side view, -180 the view
+        from below. The tilt is held inside that range so the view never flips
+        upside down; a view already outside it (left by Free rotation) is not
+        snapped back, it just cannot go further out.
+        """
+        step = self.rotate_sensitivity / self._ROTATION_SENSITIVITY_DIVISOR
+        self.rot_z += dx * step
+        tilt = self.rot_x + dy * step
+        self.rot_x = min(max(tilt, min(-180.0, self.rot_x)), max(0.0, self.rot_x))
 
     def wheelEvent(self, event):
         """
