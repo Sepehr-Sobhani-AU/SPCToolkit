@@ -13,6 +13,7 @@ from ._polygon_selection import PolygonSelectionMixin
 from ._zoom_window import ZoomWindowMixin
 from ._overlay_rendering import OverlayRenderingMixin
 from ._isolation_box import IsolationBoxMixin
+from ._view_cube import ViewCube
 
 
 class PCDViewerWidget(
@@ -118,3 +119,11 @@ class PCDViewerWidget(
         self._init_polygon_state()
         self._init_zoom_window_state()
         self._init_clip_state()
+
+        # Orientation cube in the top-right corner; double-click a face to look
+        # at that side. See _view_cube.py.
+        self.view_cube = ViewCube(self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.view_cube.place()

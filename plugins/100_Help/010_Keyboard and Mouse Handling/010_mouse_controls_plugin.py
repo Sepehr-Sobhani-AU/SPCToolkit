@@ -24,6 +24,9 @@ MOUSE_SECTIONS = [
         ("Ctrl + Right/Middle drag", "Pan along the Z axis."),
         ("Wheel", "Zoom in and out."),
         ("Double Left click", "Move the centre of rotation to the clicked point."),
+        ("Double Left click a view cube face", "The cube in the top-right corner turns with "
+                                               "the view. Double-click a face to look straight "
+                                               "at that side (Top, Front, Right, ...)."),
     ]),
     ("Selection — 3D viewer", [
         ("Shift + Left click", "Select the point under the cursor."),

@@ -138,6 +138,9 @@ class GLRenderingMixin:
         # Draw zoom window overlay (2D rubber band rectangle)
         self.render_zoom_window_overlay()
 
+        # Turn the view cube to match the camera
+        self.view_cube.sync()
+
     def render_point_cloud(self):
         """Render visible branches as GL_POINTS, one VBO per branch.
 
