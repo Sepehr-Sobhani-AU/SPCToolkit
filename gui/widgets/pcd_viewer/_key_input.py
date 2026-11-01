@@ -1,10 +1,15 @@
 import logging
+import time
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QMessageBox
 
 from config.config import global_variables
 
 logger = logging.getLogger(__name__)
+
+# Two-key zoom commands, AutoCAD style: Z then E zooms to extent, Z then R
+# resets the view. The second key must follow Z within this many seconds.
+_ZOOM_SEQUENCE_WINDOW_S = 1.5
 
 
 class KeyInputEventHandler:
@@ -22,12 +27,30 @@ class KeyInputEventHandler:
             event (QKeyEvent): The key event containing details such as the key pressed.
         """
 
+        no_mods = not (event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier))
+
+        # Second key of a Z sequence: ZE = zoom to extent, ZR = reset view.
+        # Z has already switched zoom window mode on, so that is undone first.
+        z_at = getattr(self, "_zoom_key_pressed_at", None)
+        if z_at is not None:
+            self._zoom_key_pressed_at = None
+            if (no_mods and event.key() in (Qt.Key_E, Qt.Key_R)
+                    and time.monotonic() - z_at <= _ZOOM_SEQUENCE_WINDOW_S):
+                if self._zoom_window_mode:
+                    self.exit_zoom_window_mode()
+                if event.key() == Qt.Key_E:
+                    self.zoom_to_extent()
+                else:
+                    self.reset_view()
+                return
+
         if event.key() == Qt.Key_Z and not (event.modifiers() & Qt.ControlModifier):
-            # Z: Toggle zoom window mode
+            # Z: Toggle zoom window mode. Also starts a ZE / ZR sequence.
             if self._zoom_window_mode:
                 self.exit_zoom_window_mode()
             else:
                 self.enter_zoom_window_mode()
+                self._zoom_key_pressed_at = time.monotonic()
             return
         elif event.key() == Qt.Key_P and not (event.modifiers() & Qt.ShiftModifier):
             # P: Toggle polygon mode (double-click closes: left selects, right deselects)

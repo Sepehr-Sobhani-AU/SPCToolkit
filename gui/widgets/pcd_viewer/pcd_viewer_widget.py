@@ -45,8 +45,8 @@ class PCDViewerWidget(
         - Right/Middle Click: Pan along the X and Y axes.
         - CTRL + Right/Middle Click: Pan along the Z-axis.
         - Mouse Wheel: Zoom in and out.
-        - CTRL + R: Reset the camera view to its default state.
-        - F: Zoom to extent (fit all visible points in viewport).
+        - CTRL + R, or Z then R: Reset the camera view to its default state.
+        - F, or Z then E: Zoom to extent (fit all visible points in viewport).
         - SHIFT + Left Click: Select a point in the point cloud.
         - SHIFT + Right Click: Deselect a point in the point cloud.
         - P: Toggle polygon mode (left-click adds vertices, left double-click closes and selects,

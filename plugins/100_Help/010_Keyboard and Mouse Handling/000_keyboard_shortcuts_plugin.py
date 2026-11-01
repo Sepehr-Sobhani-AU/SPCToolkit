@@ -15,8 +15,11 @@ from plugins.interfaces import ActionPlugin
 # (combination, action) rows grouped into titled sections.
 KEYBOARD_SECTIONS = [
     ("View — 3D viewer", [
-        ("F", "Zoom to extent (fit all visible points in the viewport)."),
-        ("Ctrl + R", "Reset the camera to its default view."),
+        ("Z then E", "Zoom to extent (fit all visible points in the viewport). "
+                     "Press E within 1.5 s of Z."),
+        ("F", "Zoom to extent (same as Z then E)."),
+        ("Z then R", "Reset the camera to its default view. Press R within 1.5 s of Z."),
+        ("Ctrl + R", "Reset the camera to its default view (same as Z then R)."),
         ("Z", "Toggle zoom window mode, then drag a rectangle to zoom into it."),
     ]),
     ("Isolation box — 3D viewer", [
