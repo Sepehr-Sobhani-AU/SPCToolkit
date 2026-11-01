@@ -393,6 +393,10 @@ class GLRenderingMixin:
                 the axis symbol should be drawn.
         """
 
+        length = self._axis_world_length(position)
+        if length is None:
+            return
+
         glPushMatrix()
 
         glLineWidth(self.axis_line_width)
@@ -402,22 +406,42 @@ class GLRenderingMixin:
         # X-axis in red
         glColor3f(1.0, 0.0, 0.0)
         glVertex3f(0.0, 0.0, 0.0)
-        glVertex3f(self.axis_line_length, 0.0, 0.0)
+        glVertex3f(length, 0.0, 0.0)
 
         # Y-axis in green
         glColor3f(0.0, 1.0, 0.0)
         glVertex3f(0.0, 0.0, 0.0)
-        glVertex3f(0.0, self.axis_line_length, 0.0)
+        glVertex3f(0.0, length, 0.0)
 
         # Z-axis in blue
         glColor3f(0.0, 0.0, 1.0)
         glVertex3f(0.0, 0.0, 0.0)
-        glVertex3f(0.0, 0.0, self.axis_line_length)
+        glVertex3f(0.0, 0.0, length)
         glEnd()
 
         glLineWidth(self.axis_line_width)
 
         glPopMatrix()
+
+    def _axis_world_length(self, position):
+        """World length that shows as ``axis_line_length`` pixels at *position*.
+
+        The symbol is drawn in world space, so a fixed world length grows as
+        the camera moves in and shrinks as it moves out. Scaling it by the
+        distance from the camera keeps it the same size on screen.
+
+        Returns None when *position* is behind the camera.
+        """
+        p = np.array([position[0], position[1], position[2], 1.0], dtype=np.float64)
+        eye = p @ np.asarray(self.model_view_matrix, dtype=np.float64)
+        depth = -eye[2]                      # distance in front of the camera
+        if depth <= 0:
+            return None
+
+        h = max(self.height(), 1)
+        fov = self.fov * min(self.zoom_factor, 1.0)     # as set in paintGL
+        world_per_px = 2.0 * depth * np.tan(np.radians(fov) / 2.0) / h
+        return self.axis_line_length * world_per_px
 
     def draw_sphere(self, position, radius, slices=16, stacks=16):
         """

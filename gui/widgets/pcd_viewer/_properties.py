@@ -17,7 +17,7 @@ class ViewerPropertiesMixin:
         self._line_width = 1.0  # width of rendered vector-feature line geometry
         self._LINE_WIDTH_MIN = 1.0
         self._LINE_WIDTH_MAX = 20.0
-        self._axis_line_length = 5
+        self._axis_line_length = 60  # on-screen pixels, whatever the zoom
         self._axis_line_width = 5
         self._picking_point_threshold_factor = 1.0
         self._picked_point_highlight_color = (1.0, 0.0, 0.0)
@@ -148,7 +148,7 @@ class ViewerPropertiesMixin:
     @property
     def axis_line_length(self):
         """
-        float: Length of the axis lines for the axis symbol. Can be set to adjust axis visibility.
+        float: Length of the axis symbol's lines in screen pixels. It stays this size on screen at any zoom.
         """
         return self._axis_line_length
 
