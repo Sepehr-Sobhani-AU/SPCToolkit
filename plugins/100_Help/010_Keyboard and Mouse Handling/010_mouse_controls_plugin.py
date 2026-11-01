@@ -34,8 +34,10 @@ MOUSE_SECTIONS = [
         ("Left drag a face handle", "Grow or shrink the whole box in every direction, keeping its centre and shape. A slab keeps its thickness."),
         ("Ctrl + Left drag a face handle", "Move that face only; the opposite face stays put."),
         ("Left drag the centre handle", "Move the whole box without changing its size."),
-        ("Double Left click", "Outside the box, while all points are shown, resets the "
-                              "box to the default at the new centre. Inside, keeps it."),
+        ("Centre of rotation", "If it has moved outside the box by the time you press I "
+                               "(double-click, zoom to extent, zoom window, any tool), "
+                               "the box resets to the default around it. Inside, the box "
+                               "is kept."),
         ("", "Clicks, the polygon and the zoom window never pick a hidden point."),
     ]),
     ("Zoom window mode (press Z)", [

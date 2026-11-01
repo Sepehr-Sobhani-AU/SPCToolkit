@@ -142,10 +142,8 @@ class MouseInputEventHandler:
             return
 
         if event.button() == Qt.LeftButton:
-            # Update the rotation center on double left-click. A new centre
-            # outside the isolation box resets the box to its default.
+            # Update the rotation center on double left-click
             self.update_rotation_center(event.pos())
-            self.forget_box_if_outside(self.center)
 
     def mouseReleaseEvent(self, event):
         """

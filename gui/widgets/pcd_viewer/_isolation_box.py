@@ -70,8 +70,7 @@ class IsolationBoxMixin:
     def toggle_isolation(self):
         """Hide everything outside the box, or show everything again."""
         if not self._isolated:
-            if self._clip_box is None:
-                self._clip_box = IsolationBox.cube(self.center, self.isolation_box_size)
+            self._ensure_box_at_centre()
             self._isolated = True
         else:
             self._isolated = False
@@ -86,8 +85,8 @@ class IsolationBoxMixin:
             self._box_before_slab = None
             self._slab_mode = False
         else:
-            if self._clip_box is None:
-                self._clip_box = IsolationBox.cube(self.center, self.isolation_box_size)
+            if not self._isolated:
+                self._ensure_box_at_centre()
             self._box_before_slab = self._clip_box.copy()
             self._clip_box = self._clip_box.slab(self._camera_axes(),
                                                  self.slab_thickness)
@@ -118,17 +117,20 @@ class IsolationBoxMixin:
         self.update()
         self._refill_level_of_detail()
 
-    def forget_box_if_outside(self, point):
-        """A new centre of rotation outside the box resets it to the default.
+    def _ensure_box_at_centre(self):
+        """Before isolating: keep the box if the centre of rotation is still
+        inside it, otherwise start a default box around the centre.
 
-        Called after a double-click. Inside the box, the box stays as it is.
+        Checked here, when isolation is turned on, rather than wherever the
+        centre moves: a double-click, zoom to extent, the zoom window, reset
+        view, the flythrough and the trace tools all move it, and any of them
+        added later would otherwise have to remember to call this.
         """
-        if self._isolated or self._clip_box is None:
+        if self._clip_box is not None and self._clip_box.contains_point(self.center):
             return
-        if not self._clip_box.contains_point(point):
-            self._clip_box = None
-            self._box_before_slab = None
-            self._slab_mode = False
+        self._clip_box = IsolationBox.cube(self.center, self.isolation_box_size)
+        self._box_before_slab = None
+        self._slab_mode = False
 
     def _camera_axes(self) -> np.ndarray:
         """(3, 3) rows: the camera's right, up and viewing direction, in world
